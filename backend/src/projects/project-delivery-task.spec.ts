@@ -21,6 +21,10 @@ describe('ProjectsService 项目交付任务', () => {
       {} as never,
       tasksService as never,
       projectChats as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
     );
 
   it('创建交付任务时把项目名称传给任务服务，并绑定项目沟通群', async () => {

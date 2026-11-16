@@ -1,6 +1,6 @@
 ---
 description: "> AI 助手提示：定义 lita-work / lita-bots / lita-proxy 三个 MCP 服务的令牌获取与客户端接入配置（opencode / Claude Code / Codex CLI）。"
-version: 1.1.0
+version: 1.2.0
 type: docs
 ---
 
@@ -14,9 +14,9 @@ type: docs
 |---|---|---|---|
 | `lita-work` | `http://work.cinta.team/api/mcp/work` | 直接操作平台数据：项目 / 文档 / 知识库 / 脚本运行 / 缺陷 / 提测 / 反馈 / 灵感 / 代码分支 / 任务协同 / 工单 / 机器人管理 / 飞书会话历史与消息发送 | 97 |
 | `lita-bots` | `http://work.cinta.team/api/mcp/bots` | 把平台机器人当**子 Agent** 调用（多轮会话、提问、中断、断线找回） | 6 |
-| `lita-proxy` | `http://proxy.cinta.team/mcp` | 内部资源运维：MySQL SQL、Nacos 配置、XXL-JOB 任务 | 14 |
+| `lita-proxy` | `http://proxy.cinta.team/mcp` | 内部资源运维：MySQL/ClickHouse/MaxCompute（ODPS）SQL、Redis 命令、阿里云 SLS 只读日志、Nacos 配置、XXL-JOB 任务、Firebase Firestore 只读查询、线上操作工单、GitHub PR 创建 | 31 |
 
-- 本地开发环境把 `work.cinta.team` 换成 `localhost:3100`（`lita-proxy` 无本地实例）。
+- 本地开发环境把 `work.cinta.team` 换成 `localhost:3100`；`lita-proxy` 本地实例默认 `http://localhost:3101/mcp`。
 - 鉴权统一：`Authorization: Bearer <LITA_WORK_TOKEN>`。`lita-work` / `lita-bots` 还接受 `X-Worker-Token` / `X-Agent-Token` 头或 `?token=` 参数；`lita-proxy` 只接受 `Authorization: Bearer` 或 `X-Worker-Token`（`X-Agent-Token` 返回 401）。
 
 ---
@@ -112,19 +112,32 @@ Claude Code 的 `--header`、Codex 的 `bearer_token_env_var` 均见下文各节
 
 ### 2.3 lita-proxy：内部资源运维
 
-独立服务（不在本仓库），按机器人 `resourcePermission` 鉴权：`write` 可访问全部资源，`read` 仅可访问 `readOnly=true` 的资源，`none` 无权限。`name` / `env` 必须取自 `list_resources`，不要猜测。
+独立服务（不在本仓库）。权限以控制台「管理 → 用户」中机器人归属用户的配置为准（本地覆盖平台，即时生效）：
 
-**资源**
+- **资源权限** `none` / `read` / `write`：决定可见范围。`read` 只能访问 `readOnly=true` 的资源；`write` 可见测试环境全部 + 生产环境 `readOnly=true`；
+- **操作权限** `allow` / `deny`：决定能否直接执行写操作（SQL/Redis 写、Nacos 发布/删除、XXL-JOB 触发/启停、创建 PR）；
+- **工单权限** `none` / `create`：决定能否建单（`list_ticket_resources` / `create_ticket`）。
+
+生产可写资源（`env=prod` 且 `readOnly=false`）任何配置都不能直接操作，只会出现在工单资源清单里，经人工审批后执行。`name` / `env` 必须取自 `list_resources`，不要猜测。
+
+**资源发现**
 
 | 工具 | 主要入参 | 说明 |
 |---|---|---|
-| `list_resources` | `kind?`（mysql/nacos/redis/xxljob）、`env?`（test/prod） | 列出当前机器人有权访问的资源元信息（不含密码）；`read` 权限仅返回只读资源 |
+| `list_resources` | `kind?`（mysql/clickhouse/odps/sls/nacos/redis/xxljob/firebase）、`env?`（test/prod） | 列出当前机器人可见的资源元信息（不含密码）；`read` 权限仅返回只读资源 |
+| `list_ticket_resources` | `kind?`（mysql/redis/nacos/xxljob）、`env?`（test/prod） | 可建单资源清单（仅 `readOnly=false`，含生产可写）；需工单权限=可建；`create_ticket` 的 `resourceName` 必须取自这里 |
 
-**MySQL**
+**SQL / Redis / 日志 / Firestore 查询**
 
 | 工具 | 主要入参 | 说明 |
 |---|---|---|
-| `execute_sql` | `name`、`env`、`query` | 执行单条 SQL（≤65536 字符）；只读资源由数据库只读事务强制拒绝写语句；查询务必带条件与 `LIMIT` |
+| `execute_sql` | `name`、`env`、`query` | MySQL 单条 SQL（≤65536 字符）；只读资源由数据库只读事务强制拒绝写语句；查询务必带条件与 `LIMIT` |
+| `execute_clickhouse_sql` | `name`、`env`、`query` | ClickHouse 单条 SQL；只读资源仅接受 SELECT/SHOW/DESCRIBE 等查询语句 |
+| `execute_odps_sql` | `name`、`env`、`query` | MaxCompute（ODPS）单条 SQL；异步执行，大查询可能耗时数分钟，务必带分区条件与 LIMIT |
+| `execute_redis_command` | `name`、`env`、`command` | 单条 Redis 命令，`command` 为参数数组（如 `["GET","user:1"]`）；只读资源仅允许只读命令，`CONFIG`/`EVAL`/`FLUSHALL` 等在任何资源上都被拒绝 |
+| `list_sls_logstores` / `get_sls_index` | `name`、`logstore?` | 阿里云 SLS 只读日志：列 logstore、查索引字段定义 |
+| `query_sls_logs` / `get_sls_histogram` | `name`、`logstore`、`query`、`from`、`to` | 日志检索（支持 `检索语句 \| SELECT ...` SQL 分析）与数量时间分布；`from`/`to` 为 unix 时间戳 |
+| `list_firebase_collections` / `query_firebase` | `name`、`env`、`collection?` | Firebase Firestore 只读查询；`query_firebase` 支持 `where` / `orderBy` / `limit` |
 
 **Nacos**
 
@@ -133,7 +146,7 @@ Claude Code 的 `--header`、Codex 的 `bearer_token_env_var` 均见下文各节
 | `list_nacos_namespaces` | `name`、`env` | 列出命名空间 |
 | `list_nacos_configs` | `name`、`env`、`namespace?`、`dataId?`、`group?`、`pageNo?`、`pageSize?` | 分页列出配置标识（不含正文） |
 | `get_nacos_config` | `name`、`env`、`dataId`、`group?`、`namespace?` | 读取配置正文 |
-| `publish_nacos_config` | `name`、`env`、`dataId`、`content`、`group?`、`namespace?`、`type?` | 发布/覆盖配置；需 `write` 权限，生产变更前必须获得用户明确确认 |
+| `publish_nacos_config` | `name`、`env`、`dataId`、`content`、`group?`、`namespace?`、`type?` | 发布/覆盖配置；需操作权限=有且资源 `readOnly=false`，生产变更前必须获得用户明确确认 |
 | `delete_nacos_config` | `name`、`env`、`dataId`、`group?`、`namespace?` | 删除配置；不可逆，生产环境删除前必须获得用户明确确认 |
 
 **XXL-JOB**
@@ -141,14 +154,32 @@ Claude Code 的 `--header`、Codex 的 `bearer_token_env_var` 均见下文各节
 | 工具 | 主要入参 | 说明 |
 |---|---|---|
 | `list_xxljob_executors` | `name`、`env`、`appname?`、`title?`、`pageNo?`、`pageSize?` | 执行器（job group）清单 |
+| `count_xxljob_executors` | `name`、`env` | 统计执行器数量并返回全部 `appname` 清单（单次调用，网关内部翻页） |
 | `list_xxljob_jobs` | `name`、`env`、`jobGroup?`、`triggerStatus?`、`jobDesc?`、`executorHandler?`、`author?`、`pageNo?`、`pageSize?` | 任务清单（不含 GLUE 源码） |
 | `list_xxljob_logs` | `name`、`env`、`jobGroup`、`jobId?`、`logStatus?`、`filterTime?`、`pageNo?`、`pageSize?` | 调度日志摘要 |
 | `get_xxljob_log` | `name`、`env`、`logId`、`fromLineNum?` | 日志正文，可用 `fromLineNum` 增量拉取 |
-| `trigger_xxljob_job` | `name`、`env`、`jobId`、`executorParam?` | 手动触发一次（异步执行） |
-| `start_xxljob_job` | `name`、`env`、`jobId` | 启动调度 |
-| `stop_xxljob_job` | `name`、`env`、`jobId` | 停止调度 |
+| `trigger_xxljob_job` | `name`、`env`、`jobId`、`executorParam?` | 手动触发一次（异步执行）；需操作权限=有且资源 `readOnly=false` |
+| `start_xxljob_job` | `name`、`env`、`jobId` | 启动调度；需操作权限=有且资源 `readOnly=false` |
+| `stop_xxljob_job` | `name`、`env`、`jobId` | 停止调度；需操作权限=有且资源 `readOnly=false` |
 
-> 生产环境的写操作（SQL 写入、Nacos 发布/删除、任务启动/停止/触发）必须先获得用户明确确认，Agent 不得自行执行。
+**工单（生产人工审批 / 测试非高风险自动执行）**
+
+| 工具 | 主要入参 | 说明 |
+|---|---|---|
+| `create_ticket` | `kind` 及类型专属字段；非 code 还需 `env`、`resourceName` | 线上操作工单：`mysql` 传 `sql`；`redis` 传 `command` 数组；`nacos` 传 `operation=publish\|delete`；`xxljob` 传 `operation=start\|stop\|create\|update\|delete`；`code` 传 `repo` + `branch`（`env=test` 提测只合并到 `test`、`env=prod` 发布按 `branch → main → stable`）。创建不立即执行：AI 审计异步出结论，测试环境非高风险审计通过后自动执行，生产环境由控制台人工审批 |
+| `cancel_ticket` | `ticketId`、`reason?` | 取消自己创建且仍为 `waiting` 的工单 |
+| `query_tickets` | `kind?`、`status?`、`env?`、`limit?` | 查询自己创建的工单（含 AI 审计结论与执行结果） |
+| `subscribe_ticket` / `unsubscribe_ticket` | `ticketId`、`callbackUrl?` | 登记/清除工单状态变更回调（仅 http/https、不带鉴权，仅作通知） |
+
+**GitHub PR**
+
+| 工具 | 主要入参 | 说明 |
+|---|---|---|
+| `create_pull_request` | `repo`、`branch` | 为 `github.com/LitaGroup/<repo>` 创建合入 `main` 的 PR（直接执行，需操作权限=有）；`branch` 须符合 Git 规范（`feat-`/`fix-`/`doc-`/`refactor-` 前缀 + 小写描述）；PR 只发起评审，合并仍在 GitHub 完成 |
+
+> 生产环境的写操作（SQL 写入、Redis 写命令、Nacos 发布/删除、任务启动/停止/触发）必须先获得用户明确确认，Agent 不得自行执行；线上变更推荐走工单流转（生产人工审批、测试非高风险自动执行）。
+
+全部 31 个工具的参数、限制、工单流程与安全边界见 [lita-proxy 完整文档](http://proxy.cinta.team/MCP.md)。
 
 ---
 
@@ -316,7 +347,7 @@ curl -sS -X POST http://work.cinta.team/api/mcp/bots \
   -H 'Accept: application/json, text/event-stream' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 
-# lita-proxy：应返回 list_resources / execute_sql 等 14 个工具
+# lita-proxy：应返回 list_resources / execute_sql 等 31 个工具
 curl -sS -X POST http://proxy.cinta.team/mcp \
   -H "Authorization: Bearer $LITA_WORK_TOKEN" \
   -H 'Content-Type: application/json' \
@@ -341,7 +372,7 @@ curl -sS -X POST http://proxy.cinta.team/mcp \
 |---|---|
 | 401 缺少鉴权 / 无效令牌 | 检查请求头格式；令牌可能已被重置，去个人中心重新复制并更新 `LITA_WORK_TOKEN` |
 | `lita-proxy` 返回 401 且用的是 `X-Agent-Token` | 该服务不支持此头，改用 `Authorization: Bearer` 或 `X-Worker-Token` |
-| `lita-proxy` 看不到资源 / 403 | 机器人权限不足：`read` 只能访问 `readOnly=true` 的资源，写操作需管理员开通 `write` 并确认资源非只读 |
+| `lita-proxy` 看不到资源 / 403 | 机器人权限不足（控制台「管理 → 用户」配置）：资源权限 `read` 只能访问 `readOnly=true` 的资源，生产可写资源只能走工单；直接执行写操作需操作权限=有，建单需工单权限=可建 |
 | `{env:LITA_WORK_TOKEN}` 展开为空 | 变量不在 opencode 进程环境：写入 `~/.zshrc` 后重开终端，或改用 `{file:secrets/lita-work-token}` |
 | opencode 工具列表没有新服务 | 配置 JSON 格式错误或客户端未重载，检查日志后重启 |
 | 收不到中间进度 | 客户端未携带 `_meta.progressToken`；opencode / Claude Code 默认携带 |
@@ -356,6 +387,7 @@ curl -sS -X POST http://proxy.cinta.team/mcp \
 |---|---|
 | [lita-work 接入指南](http://work.cinta.team/work-mcp.md) | lita-work 全部工具清单、入参、流式进度与身份规则 |
 | [lita-bots 接入指南](http://work.cinta.team/MCP_BOTS.md) | lita-bots 会话、提问、状态码、审计与管理细节 |
+| [lita-proxy 完整文档](http://proxy.cinta.team/MCP.md) | lita-proxy 全部 31 个工具参数、鉴权与权限模型、工单审批流程与安全边界 |
 
 ---
 

@@ -159,12 +159,23 @@ export function DocumentsPage() {
           {filtered.map((d) => (
             <TableRow key={d.id}>
               <TableCell className="max-w-xl truncate" title={d.title}>
-                <Link
-                  to={`/documents/${d.id}`}
-                  className="text-foreground-intense underline"
-                >
-                  {d.title}
-                </Link>
+                {d.url ? (
+                  <a
+                    href={d.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-foreground-intense underline"
+                  >
+                    {d.title}
+                  </a>
+                ) : (
+                  <Link
+                    to={`/documents/${d.id}`}
+                    className="text-foreground-intense underline"
+                  >
+                    {d.title}
+                  </Link>
+                )}
               </TableCell>
               <TableCell className="text-center">
                 <Badge variant="secondary">{d.type}</Badge>

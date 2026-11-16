@@ -122,6 +122,21 @@ export function BacklogSelection({
     onChange(next)
   }
 
+  /** 表头全选只作用于当前显示的行（含置顶的已选项） */
+  const allChecked =
+    visible.length > 0 && visible.every((project) => drafts.has(project.id))
+  const someChecked = visible.some((project) => drafts.has(project.id))
+
+  /** 全选/取消全选当前显示行；保留已有负责人选择 */
+  const toggleAll = (checked: boolean) => {
+    const next = new Map(drafts)
+    for (const project of visible) {
+      if (checked) next.set(project.id, next.get(project.id) ?? null)
+      else next.delete(project.id)
+    }
+    onChange(next)
+  }
+
   const setOwner = (projectId: number, ownerWorkerId: number) => {
     const next = new Map(drafts)
     next.set(projectId, ownerWorkerId)
@@ -193,7 +208,16 @@ export function BacklogSelection({
         <Table hoverableRows>
           <TableHeader className="sticky top-0 z-10">
             <TableRow>
-              <TableHead className="w-14 text-center">选择</TableHead>
+              <TableHead className="w-14 text-center">
+                <Checkbox
+                  className="cursor-pointer"
+                  checked={allChecked}
+                  indeterminate={someChecked && !allChecked}
+                  disabled={visible.length === 0}
+                  onCheckedChange={(value) => toggleAll(value === true)}
+                  aria-label="全选当前显示的需求"
+                />
+              </TableHead>
               <TableHead className="w-16">ID</TableHead>
               <TableHead>需求</TableHead>
               <TableHead className="w-20 text-center">类型</TableHead>

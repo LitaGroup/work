@@ -86,8 +86,8 @@ export class ProjectSummaryService {
     }
   }
 
-  /** 组织素材：需求名称 + 描述 + 全部「需求」类文档正文（按更新时间升序） */
-  private async buildMaterial(
+  /** 组织素材：需求名称 + 描述 + 全部「需求」类文档正文（按更新时间升序）；供摘要/描述生成复用 */
+  async buildMaterial(
     project: Pick<Project, 'id' | 'name' | 'description'>,
   ): Promise<string> {
     const parts: string[] = [`# 需求：${project.name}`];

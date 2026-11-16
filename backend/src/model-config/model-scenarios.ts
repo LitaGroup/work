@@ -17,6 +17,9 @@ export const MODEL_SCENARIO_TITLE_NAMING = 'title-naming';
 /** 需求摘要场景（需求创建/同步或需求类文档更新后，摘要为空时自动生成 ≤200 字摘要） */
 export const MODEL_SCENARIO_REQUIREMENT_SUMMARY = 'requirement-summary';
 
+/** 需求描述场景（需求创建/同步或需求类文档更新后，描述为空时自动生成结构化需求描述） */
+export const MODEL_SCENARIO_REQUIREMENT_DESCRIPTION = 'requirement-description';
+
 export const MODEL_SCENARIOS: ModelScenarioDefinition[] = [
   {
     scenario: MODEL_SCENARIO_TITLE_NAMING,
@@ -29,6 +32,12 @@ export const MODEL_SCENARIOS: ModelScenarioDefinition[] = [
     name: '需求摘要',
     description:
       '需求创建/同步或「需求」类文档新增/更新后，摘要为空时自动生成 200 字以内的需求摘要；未配置时跳过，失败不影响主流程。',
+  },
+  {
+    scenario: MODEL_SCENARIO_REQUIREMENT_DESCRIPTION,
+    name: '需求描述',
+    description:
+      '需求创建/同步或「需求」类文档新增/更新后，需求描述为空时自动生成结构化 Markdown 描述；已有描述不会被清空或覆盖，未配置时跳过。',
   },
 ];
 

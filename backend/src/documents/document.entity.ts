@@ -59,6 +59,10 @@ export class Document {
   @Column({ type: 'varchar', length: 500, nullable: true })
   apipostUrl: string | null;
 
+  /** 链接型文档（type=设计）的外部链接；链接型不存正文（content/knowledgeId 为空） */
+  @Column({ type: 'varchar', length: 500, nullable: true })
+  url: string | null;
+
   // 测试库账号无 REFERENCES 权限，暂不建物理外键；获得授权后可移除该选项
   @ManyToOne(() => Project, (project) => project.documents, {
     createForeignKeyConstraints: false,

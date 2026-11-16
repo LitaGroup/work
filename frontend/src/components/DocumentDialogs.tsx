@@ -57,16 +57,26 @@ export function CreateDocumentDialog({
   const [title, setTitle] = useState('')
   const [type, setType] = useState<DocumentType>('需求')
   const [content, setContent] = useState('')
+  const [url, setUrl] = useState('')
   const [error, setError] = useState<string | null>(null)
+
+  const isDesignLink = type === '设计'
 
   const submit = () => {
     setError(null)
     api
-      .createDocument({ projectId, title, type, content: content || undefined })
+      .createDocument({
+        projectId,
+        title,
+        type,
+        content: isDesignLink ? undefined : content || undefined,
+        url: isDesignLink ? url.trim() : undefined,
+      })
       .then((doc) => {
         setOpen(false)
         setTitle('')
         setContent('')
+        setUrl('')
         onCreated(doc.id)
       })
       .catch((e: Error) => setError(e.message))
@@ -93,15 +103,29 @@ export function CreateDocumentDialog({
                 placeholder="文档标题"
               />
             </label>
-            <label className="flex flex-col gap-1 text-sm">
-              内容（Markdown，可稍后补充）
-              <Textarea
-                value={content}
-                onChange={(e) => setContent(e.target.value)}
-                placeholder="# 标题&#10;&#10;正文…"
-                rows={6}
-              />
-            </label>
+            {isDesignLink ? (
+              <label className="flex flex-col gap-1 text-sm">
+                设计链接（必填，http(s) 完整链接）
+                <Input
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
+                  placeholder="https://…"
+                />
+                <span className="text-xs text-foreground-muted">
+                  链接型文档只保存链接，不存正文
+                </span>
+              </label>
+            ) : (
+              <label className="flex flex-col gap-1 text-sm">
+                内容（Markdown，可稍后补充）
+                <Textarea
+                  value={content}
+                  onChange={(e) => setContent(e.target.value)}
+                  placeholder="# 标题&#10;&#10;正文…"
+                  rows={6}
+                />
+              </label>
+            )}
             {error && <p className="text-sm">创建失败:{error}</p>}
           </div>
         </DialogBody>
@@ -109,7 +133,11 @@ export function CreateDocumentDialog({
           <DialogClose>
             <Button variant="outline" size="sm">取消</Button>
           </DialogClose>
-          <Button size="sm" onClick={submit} disabled={!title.trim()}>
+          <Button
+            size="sm"
+            onClick={submit}
+            disabled={!title.trim() || (isDesignLink && !url.trim())}
+          >
             创建
           </Button>
         </DialogFooter>

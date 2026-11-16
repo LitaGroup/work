@@ -39,6 +39,10 @@ describe('ProjectsService 项目任务板块', () => {
       {} as never,
       { latestProjectProgressLine: latestLine } as never,
       { ensureForProjectTask: jest.fn() } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
     );
 
   it('归集主任务、子任务、缺陷处理任务和关联工单', async () => {

@@ -2,11 +2,9 @@ import {
   BadRequestException,
   Body,
   Controller,
-  Delete,
   ForbiddenException,
   Get,
   Header,
-  HttpCode,
   Param,
   ParseIntPipe,
   Patch,
@@ -97,11 +95,6 @@ class MoveBacklogDto {
 
 class UpdateBacklogMembersDto {
   members: BacklogMemberInput[];
-}
-
-class AddBacklogDocumentDto {
-  /** 已有文档（documents.id，须属于该迭代项的原始需求） */
-  documentId: number;
 }
 
 class CreateBacklogTaskDto implements CreateBacklogTaskInput {
@@ -282,35 +275,6 @@ export class BacklogsController {
     @Param('id', ParseIntPipe) id: number,
   ): ReturnType<BacklogsService['listDocuments']> {
     return this.backlogsService.listDocuments(id);
-  }
-
-  /** 关联已有文档（须属于该迭代项的原始需求）；成员或管理员 */
-  @Post(':id/documents')
-  addDocument(
-    @Param('id', ParseIntPipe) id: number,
-    @Body() dto: AddBacklogDocumentDto,
-    @Req() req: AuthedRequest,
-  ): Promise<{ linked: boolean }> {
-    return this.backlogsService.addDocument(
-      id,
-      Number(dto.documentId),
-      iterationActor(req),
-    );
-  }
-
-  /** 取消文档关联（不删除文档本体）；成员或管理员 */
-  @Delete(':id/documents/:documentId')
-  @HttpCode(204)
-  removeDocument(
-    @Param('id', ParseIntPipe) id: number,
-    @Param('documentId', ParseIntPipe) documentId: number,
-    @Req() req: AuthedRequest,
-  ): Promise<void> {
-    return this.backlogsService.removeDocument(
-      id,
-      documentId,
-      iterationActor(req),
-    );
   }
 
   /** 事件流（倒序，最近 100 条） */

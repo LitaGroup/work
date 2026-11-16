@@ -20,6 +20,7 @@ import { FeishuService } from '../feishu/feishu.service';
 import { KnowledgeService } from '../knowledge/knowledge.service';
 import { BacklogDocument } from '../iterations/backlog-document.entity';
 import { ProjectSummaryService } from '../projects/project-summary.service';
+import { ProjectDescriptionService } from '../projects/project-description.service';
 import { Document } from './document.entity';
 
 /**
@@ -38,6 +39,7 @@ export const DOCUMENT_LIST_SELECT: FindOptionsSelect<Document> = {
   feishuUrl: true,
   feishuToken: true,
   apipostUrl: true,
+  url: true,
   projectId: true,
   createdAt: true,
   updatedAt: true,
@@ -47,6 +49,12 @@ export const DOCUMENT_LIST_SELECT: FindOptionsSelect<Document> = {
 function isExternalSource(source: DocumentSource): boolean {
   return source !== DocumentSource.MARKDOWN;
 }
+
+/** 设计链接文档默认标题（飞书同步与手动创建共用） */
+export const DESIGN_DOC_TITLE = '设计稿';
+
+/** 迭代项「取消」状态值（取消的迭代项不再自动关联需求文档） */
+const BACKLOG_CANCELED_STATUS = '取消';
 
 @Injectable()
 export class DocumentsService implements OnApplicationBootstrap {
@@ -61,6 +69,7 @@ export class DocumentsService implements OnApplicationBootstrap {
     private readonly apipost: ApipostService,
     private readonly knowledge: KnowledgeService,
     private readonly projectSummary: ProjectSummaryService,
+    private readonly projectDescription: ProjectDescriptionService,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -166,7 +175,8 @@ export class DocumentsService implements OnApplicationBootstrap {
     const meta = [`- 类型：${doc.type}`, `- 来源：${doc.source}`];
     if (doc.description) meta.push(`- 描述：${doc.description}`);
     if (doc.remark) meta.push(`- 备注：${doc.remark}`);
-    if (doc.feishuUrl) meta.push(`- 原始链接：${doc.feishuUrl}`);
+    if (doc.url) meta.push(`- 链接：${doc.url}`);
+    if (doc.feishuUrl && !doc.url) meta.push(`- 原始链接：${doc.feishuUrl}`);
     if (doc.apipostUrl) meta.push(`- 原始链接：${doc.apipostUrl}`);
     if (this.knowledge.isEnabled) {
       meta.push(
@@ -193,8 +203,9 @@ export class DocumentsService implements OnApplicationBootstrap {
     ].join('\n');
   }
 
-  /** 正文：apipost 来源为原始 JSON，实时转换为 Markdown 便于阅读；其余原样输出 */
+  /** 正文：apipost 来源为原始 JSON，实时转换为 Markdown 便于阅读；链接型文档输出链接；其余原样输出 */
   private markdownBody(doc: Document): string {
+    if (doc.url) return `链接型文档：${doc.url}`;
     if (!doc.content) return '（无正文）';
     if (doc.source !== DocumentSource.APIPOST) return doc.content;
     try {
@@ -240,23 +251,97 @@ export class DocumentsService implements OnApplicationBootstrap {
     }
   }
 
-  /** 平台内直接编写（无外部来源，source 记为 '-'） */
+  /** 文档写入后自动绑定到原始需求下所有未取消的迭代项（幂等；失败只告警） */
+  private async linkToBacklogs(
+    documentId: number,
+    projectId: number,
+  ): Promise<void> {
+    try {
+      await this.documents.manager.query(
+        `INSERT INTO "backlog_documents" ("backlogId", "documentId")
+         SELECT b."id", $1 FROM "backlogs" b
+         WHERE b."projectId" = $2 AND b."status" <> $3
+         ON CONFLICT ("backlogId", "documentId") DO NOTHING`,
+        [documentId, projectId, BACKLOG_CANCELED_STATUS],
+      );
+    } catch (error) {
+      this.logger.warn(
+        `文档 ${documentId} 自动关联迭代项失败：${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  /** 平台内直接编写（无外部来源，source 记为 '-'）；传 url 时创建链接型文档（不存正文） */
   async createMarkdown(input: {
     projectId: number;
     title: string;
     type: DocumentType;
     content?: string;
+    url?: string;
   }): Promise<Document> {
+    const url = input.url?.trim() || null;
+    if (url && !/^https?:\/\//i.test(url)) {
+      throw new BadRequestException('文档链接须为 http(s) 完整链接');
+    }
     const doc = await this.documents.save(
       this.documents.create({
-        ...input,
+        projectId: input.projectId,
+        title: input.title,
+        type: input.type,
         source: DocumentSource.MARKDOWN,
-        content: input.content ?? '',
+        content: url ? null : (input.content ?? ''),
+        url,
       }),
     );
+    // 链接型文档没有正文，不写知识库
+    await this.linkToBacklogs(doc.id, doc.projectId);
+    if (url) return this.hydrate(doc);
     const hydrated = await this.hydrate(await this.syncKnowledge(doc));
     this.maybeTriggerSummary(hydrated);
     return hydrated;
+  }
+
+  /**
+   * 设计链接镜像同步（需求池「设计链接」字段）：
+   * - 提取到的 http(s) 链接逐个 upsert（type=设计，url 存链接，不写正文/知识库）；
+   * - 同步创建的设计文档记 feishuUrl（与 url 相同）作为同步标识，源字段不再包含的链接删除；
+   * - 平台手动创建的链接文档（feishuUrl 为空）不受同步影响。
+   */
+  async syncDesignLinks(projectId: number, urls: string[]): Promise<void> {
+    const unique = [
+      ...new Set(
+        urls
+          .map((url) => url.trim())
+          .filter((url) => /^https?:\/\//i.test(url))
+          .slice(0, 50),
+      ),
+    ];
+    const existing = await this.documents.find({
+      where: { projectId, type: DocumentType.DESIGN },
+      select: { id: true, url: true, feishuUrl: true },
+    });
+    const keep = new Set(unique);
+    for (const doc of existing) {
+      if (!doc.feishuUrl) continue; // 手动创建的链接文档不参与镜像删除
+      if (!doc.url || !keep.has(doc.url)) await this.remove(doc.id);
+    }
+    for (const url of unique) {
+      if (existing.some((doc) => doc.url === url)) continue;
+      const saved = await this.documents.save(
+        this.documents.create({
+          projectId,
+          title: DESIGN_DOC_TITLE,
+          type: DocumentType.DESIGN,
+          source: DocumentSource.MARKDOWN,
+          content: null,
+          url,
+          feishuUrl: url,
+        }),
+      );
+      await this.linkToBacklogs(saved.id, projectId);
+    }
   }
 
   /**
@@ -285,9 +370,9 @@ export class DocumentsService implements OnApplicationBootstrap {
     if (input.description !== undefined) {
       entity.description = input.description || null;
     }
-    const doc = await this.hydrate(
-      await this.syncKnowledge(await this.documents.save(entity)),
-    );
+    const saved = await this.documents.save(entity);
+    await this.linkToBacklogs(saved.id, saved.projectId);
+    const doc = await this.hydrate(await this.syncKnowledge(saved));
     this.maybeTriggerSummary(doc);
     return doc;
   }
@@ -317,9 +402,9 @@ export class DocumentsService implements OnApplicationBootstrap {
     if (input.description !== undefined) {
       entity.description = input.description || null;
     }
-    const doc = await this.hydrate(
-      await this.syncKnowledge(await this.documents.save(entity)),
-    );
+    const saved = await this.documents.save(entity);
+    await this.linkToBacklogs(saved.id, saved.projectId);
+    const doc = await this.hydrate(await this.syncKnowledge(saved));
     this.maybeTriggerSummary(doc);
     return doc;
   }
@@ -351,7 +436,7 @@ export class DocumentsService implements OnApplicationBootstrap {
       where: { projectId: input.projectId, fileName },
     });
     if (existing) {
-      if (isExternalSource(existing.source)) {
+      if (isExternalSource(existing.source) || existing.url) {
         throw new ForbiddenException(
           '外部导入的文档不允许本地修改，请使用更新同步',
         );
@@ -363,6 +448,7 @@ export class DocumentsService implements OnApplicationBootstrap {
       }
       existing.content = input.content;
       const saved = await this.documents.save(existing);
+      await this.linkToBacklogs(saved.id, saved.projectId);
       const doc = await this.hydrate(await this.syncKnowledge(saved));
       this.maybeTriggerSummary(doc);
       return { doc, created: false };
@@ -379,6 +465,7 @@ export class DocumentsService implements OnApplicationBootstrap {
       }),
     );
     const created = await this.hydrate(await this.syncKnowledge(doc));
+    await this.linkToBacklogs(doc.id, doc.projectId);
     this.maybeTriggerSummary(created);
     return { doc: created, created: true };
   }
@@ -411,9 +498,12 @@ export class DocumentsService implements OnApplicationBootstrap {
     ].join('\n');
   }
 
-  /** 本地修改正文：仅允许 Markdown 编写的文档；外部导入（飞书/apipost）的文档只允许源同步更新 */
+  /** 本地修改正文：仅允许 Markdown 编写的文档；外部导入（飞书/apipost）或链接型文档只允许源同步更新 */
   async updateContent(id: number, content: string): Promise<Document> {
     const doc = await this.getEntity(id);
+    if (doc.url) {
+      throw new ForbiddenException('链接型文档不支持编辑正文');
+    }
     if (isExternalSource(doc.source)) {
       throw new ForbiddenException(
         '外部导入的文档不允许本地修改，请使用更新同步',
@@ -427,12 +517,13 @@ export class DocumentsService implements OnApplicationBootstrap {
   }
 
   /**
-   * 需求类文档新增/更新后触发需求摘要生成（摘要为空且无进行中生成时才会实际调用模型）。
+   * 需求类文档新增/更新后触发需求摘要与描述生成（为空且无进行中生成时才会实际调用模型）。
    * fire-and-forget，失败不影响文档写入主流程。
    */
   private maybeTriggerSummary(doc: Document): void {
     if (doc.type !== DocumentType.REQUIREMENT) return;
     this.projectSummary.maybeGenerateSummary(doc.projectId);
+    this.projectDescription.maybeGenerateDescription(doc.projectId);
   }
 
   /** 备注（为后续 AI 阅读准备），任何来源都可编辑 */

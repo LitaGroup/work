@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
   OnModuleInit,
 } from '@nestjs/common';
@@ -14,6 +15,7 @@ import { WorkflowDefinition } from './workflow-definition.entity';
 import {
   SYSTEM_TICKET_WORKFLOWS,
   buildDefaultWorkflowDefinition,
+  type SystemTicketWorkflow,
 } from './system-workflows';
 import { normalizeWorkflowDefinition } from './workflow-validation';
 import type {
@@ -146,30 +148,45 @@ export class WorkflowDefinitionsService implements OnModuleInit {
     private readonly dataSource: DataSource,
   ) {}
 
+  private readonly logger = new Logger(WorkflowDefinitionsService.name);
+
   async onModuleInit(): Promise<void> {
     for (const workflow of SYSTEM_TICKET_WORKFLOWS) {
-      const existing = await this.definitions.findOne({
-        where: [{ code: workflow.code }, { category: workflow.category }],
-      });
-      if (existing) continue;
-      await this.definitions
-        .createQueryBuilder()
-        .insert()
-        .into(WorkflowDefinition)
-        .values({
-          code: workflow.code,
-          category: workflow.category,
-          name: workflow.name,
-          description: workflow.description,
-          builtIn: true,
-          enabled: true,
-          draftDefinition: workflow.definition,
-          latestPublishedVersion: 0,
-          latestPublishedAt: null,
-          draftUpdatedAt: null,
-        })
-        .orIgnore()
-        .execute();
+      try {
+        const existing = await this.definitions.findOne({
+          where: [{ code: workflow.code }, { category: workflow.category }],
+        });
+        if (!existing) {
+          await this.definitions
+            .createQueryBuilder()
+            .insert()
+            .into(WorkflowDefinition)
+            .values({
+              code: workflow.code,
+              category: workflow.category,
+              name: workflow.name,
+              description: workflow.description,
+              builtIn: true,
+              enabled: true,
+              draftDefinition: workflow.definition,
+              latestPublishedVersion: 0,
+              latestPublishedAt: null,
+              draftUpdatedAt: null,
+            })
+            .orIgnore()
+            .execute();
+        }
+        const definition = await this.definitions.findOne({
+          where: { code: workflow.code },
+        });
+        if (definition) {
+          await this.ensureSystemWorkflowPublished(definition, workflow);
+        }
+      } catch (error) {
+        this.logger.warn(
+          `系统工单工作流 ${workflow.code} 预置失败：${(error as Error).message}`,
+        );
+      }
     }
     // 兼容存量草稿：补齐起始/验收节点；不影响已发布不可变版本
     const rows = await this.definitions.find();
@@ -180,6 +197,46 @@ export class WorkflowDefinitionsService implements OnModuleInit {
       row.draftUpdatedAt = new Date();
       await this.definitions.save(row);
     }
+  }
+
+  /**
+   * 启动兜底：系统内置工作流尚未发布时，按代码预置的规范定义幂等发布 v1。
+   * 与迁移预置效果一致；已发布过的环境不重复发布，不升版本、不覆盖已发布内容。
+   */
+  private async ensureSystemWorkflowPublished(
+    definition: WorkflowDefinition,
+    workflow: SystemTicketWorkflow,
+  ): Promise<void> {
+    if (definition.latestPublishedVersion > 0) return;
+    await this.dataSource.transaction(async (manager) => {
+      const locked = await manager.findOne(WorkflowDefinition, {
+        where: { id: definition.id },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!locked || locked.latestPublishedVersion > 0) return;
+      const publishedAt = new Date();
+      const published = await manager.findOne(WorkflowDefinitionVersion, {
+        where: { definitionId: locked.id, version: 1 },
+      });
+      if (!published) {
+        await manager.insert(WorkflowDefinitionVersion, {
+          definitionId: locked.id,
+          version: 1,
+          name: locked.name,
+          description: locked.description,
+          definition: workflow.definition,
+          publishedById: null,
+          publishedByName: null,
+          publishedAt,
+        });
+      }
+      await manager.update(WorkflowDefinition, locked.id, {
+        enabled: true,
+        latestPublishedVersion: 1,
+        latestPublishedAt: publishedAt,
+      });
+      this.logger.log(`系统工单工作流 ${workflow.code} 已发布 v1`);
+    });
   }
 
   async findAll(): Promise<TicketWorkflowDefinitionSummary[]> {

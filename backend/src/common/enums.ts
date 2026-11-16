@@ -10,6 +10,8 @@ export enum DocumentType {
   TECH = '技术',
   API = '接口',
   CONFIG = '配置',
+  /** 设计：链接型文档（url 存链接，不存正文），飞书「设计链接」同步或平台手动创建 */
+  DESIGN = '设计',
 }
 
 export enum DocumentSource {

@@ -64,7 +64,6 @@ import {
   type IterationSummary,
   type PlatformUser,
   type Project,
-  type ProjectDocument,
   type TaskTemplate,
   type Worker,
 } from '../lib/api'
@@ -163,7 +162,7 @@ function eventSummary(event: BacklogEvent): string {
 type BacklogDetailTab = 'info' | 'docs' | 'tasks' | 'defects' | 'events' | 'members'
 
 /**
- * 迭代项详情：基本信息（预期上线时间）、阶段时间、文档（转入时自需求迁入）、
+ * 迭代项详情：基本信息（需求方/备注/预期上线时间）、文档（转入时自需求迁入）、
  * 任务树与关联工单、缺陷（按迭代项关联，可页内新建）、事件流与成员；
  * 成员或管理员可推进状态（弹窗 + 备注）、发起提测（创建提测工单），管理员可编辑成员/移动迭代。
  */
@@ -199,10 +198,6 @@ export function BacklogDetailPage() {
 
   // 文档
   const [docs, setDocs] = useState<BacklogDocumentSummary[] | null>(null)
-  const [projectDocs, setProjectDocs] = useState<ProjectDocument[] | null>(null)
-  const [linkOpen, setLinkOpen] = useState(false)
-  const [linkTarget, setLinkTarget] = useState<string | undefined>(undefined)
-  const [linkSaving, setLinkSaving] = useState(false)
 
   // 原始需求（信息分区展示需求内容）
   const [project, setProject] = useState<Project | null>(null)
@@ -633,70 +628,6 @@ export function BacklogDetailPage() {
       .finally(() => setSavingOwner(false))
   }
 
-  const linkDocument = (documentId?: number) => {
-    if (linkSaving) return
-    const target = documentId ?? Number(linkTarget)
-    if (!Number.isInteger(target) || target <= 0) {
-      showFeedback({ kind: 'failure', message: '请选择要关联的文档' }, FAILURE_STAY_MS)
-      return
-    }
-    setLinkSaving(true)
-    api
-      .addBacklogDocument(id, target)
-      .then(() => {
-        setLinkOpen(false)
-        setLinkTarget(undefined)
-        return api.listBacklogDocuments(id).then(setDocs)
-      })
-      .then(() =>
-        showFeedback({ kind: 'success', message: '文档已关联' }, SUCCESS_STAY_MS),
-      )
-      .catch((e: Error) =>
-        showFeedback(
-          { kind: 'failure', message: e.message || '关联失败' },
-          FAILURE_STAY_MS,
-        ),
-      )
-      .finally(() => setLinkSaving(false))
-  }
-
-  const unlinkDocument = (documentId: number) => {
-    api
-      .removeBacklogDocument(id, documentId)
-      .then(() => api.listBacklogDocuments(id).then(setDocs))
-      .then(() =>
-        showFeedback({ kind: 'success', message: '已取消关联（文档保留）' }, SUCCESS_STAY_MS),
-      )
-      .catch((e: Error) =>
-        showFeedback(
-          { kind: 'failure', message: e.message || '取消关联失败' },
-          FAILURE_STAY_MS,
-        ),
-      )
-  }
-
-  const openLinkDialog = () => {
-    if (!projectDocs) {
-      api
-        .listDocuments(backlog.projectId)
-        .then(setProjectDocs)
-        .catch((e: Error) =>
-          showFeedback(
-            { kind: 'failure', message: e.message || '加载需求文档失败' },
-            FAILURE_STAY_MS,
-          ),
-        )
-    }
-    setLinkTarget(undefined)
-    setLinkOpen(true)
-  }
-
-  const linkableItems = Object.fromEntries(
-    (projectDocs ?? [])
-      .filter((doc) => !(docs ?? []).some((linked) => linked.id === doc.id))
-      .map((doc) => [String(doc.id), doc.title]),
-  )
-
   const openRelease = () => {
     setReleaseTitle(`提测-${backlog.code} ${backlog.title}`.slice(0, 200))
     setReleaseSupplement('')
@@ -792,15 +723,6 @@ export function BacklogDetailPage() {
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <a
-              href={`/api/backlogs/${id}.md`}
-              target="_blank"
-              rel="noreferrer"
-              className="text-sm underline"
-              title="Markdown 视图"
-            >
-              MD
-            </a>
             {canOperate && (
               <>
                 <Button
@@ -1020,23 +942,24 @@ export function BacklogDetailPage() {
               <CardHeader>
                 <CardTitle>信息</CardTitle>
                 <CardDescription>
-                  迭代项属性、阶段时间、原始需求内容与关联文档
+                  迭代项属性、原始需求内容与关联文档
                 </CardDescription>
               </CardHeader>
               <div className="flex flex-col gap-6 px-4 pb-4">
-                <div className="grid grid-cols-1 gap-x-8 gap-y-5 lg:grid-cols-2">
+                <div className="flex flex-col">
                   <section className="flex flex-col gap-2 text-sm">
                     <h3 className="text-sm font-medium text-foreground-intense">基本信息</h3>
                     <InfoRow label="所属迭代">
                       <Link to={`/iterations/${backlog.iterationId}`} className="underline">
-                        #{backlog.iterationId}
+                        {backlog.iteration?.code ?? `#${backlog.iterationId}`}
                       </Link>
                     </InfoRow>
                     <InfoRow label="原始需求">
                       <Link to={`/requirements/${backlog.projectId}`} className="underline">
-                        #{backlog.projectId}
+                        {project?.name ?? `#${backlog.projectId}`}
                       </Link>
                     </InfoRow>
+                    <InfoRow label="需求方">{backlog.owner ?? '—'}</InfoRow>
                     <InfoRow label="负责人">
                       <span className="inline-flex items-center gap-2">
                         {backlog.ownerName ?? '—'}
@@ -1074,16 +997,9 @@ export function BacklogDetailPage() {
                         '—'
                       )}
                     </InfoRow>
-                    <InfoRow label="状态操作人">{backlog.statusBy ?? '—'}</InfoRow>
-                  </section>
-
-                  <section className="flex flex-col gap-2 text-sm">
-                    <h3 className="text-sm font-medium text-foreground-intense">阶段时间</h3>
-                    <InfoRow label="开始执行">{formatTime(backlog.startedAt)}</InfoRow>
-                    <InfoRow label="进入测试">{formatTime(backlog.testingAt)}</InfoRow>
-                    <InfoRow label="进入发布">{formatTime(backlog.releasingAt)}</InfoRow>
-                    <InfoRow label="完成">{formatTime(backlog.completedAt)}</InfoRow>
-                    <InfoRow label="取消">{formatTime(backlog.canceledAt)}</InfoRow>
+                    <InfoRow label="备注">
+                      <span className="whitespace-pre-wrap">{project?.remark || '—'}</span>
+                    </InfoRow>
                   </section>
                 </div>
 
@@ -1130,7 +1046,7 @@ export function BacklogDetailPage() {
           </TabsContent>
 
           <TabsContent value="docs" keepMounted className="pt-4">
-            {/* 文档：转入时自需求迁入，可继续创建 / 导入 / 关联 */}
+            {/* 文档：原始需求的文档全部自动关联，不提供手动关联/取消关联 */}
             <Card>
               <CardHeader>
                 <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1140,85 +1056,24 @@ export function BacklogDetailPage() {
                       <Badge variant="soft">{docs?.length ?? 0}</Badge>
                     </CardTitle>
                     <CardDescription>
-                      转入迭代时已迁移原始需求的文档；可继续创建、导入或关联需求下的其他文档
+                      原始需求的文档全部自动关联到迭代项；可继续创建或导入文档
                     </CardDescription>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
                     <CreateDocumentDialog
                       projectId={backlog.projectId}
-                      onCreated={(documentId) => {
-                        if (documentId) {
-                          api
-                            .addBacklogDocument(id, documentId)
-                            .catch(() => undefined)
-                            .finally(() => {
-                              api.listBacklogDocuments(id).then(setDocs).catch(() => undefined)
-                            })
-                        } else {
-                          api.listBacklogDocuments(id).then(setDocs).catch(() => undefined)
-                        }
+                      onCreated={() => {
+                        api.listBacklogDocuments(id).then(setDocs).catch(() => undefined)
                         showFeedback({ kind: 'success', message: '文档已创建并关联' }, SUCCESS_STAY_MS)
                       }}
                     />
                     <ImportDocumentDialog
                       projectId={backlog.projectId}
-                      onImported={(documentId) => {
-                        if (documentId) {
-                          api
-                            .addBacklogDocument(id, documentId)
-                            .catch(() => undefined)
-                            .finally(() => {
-                              api.listBacklogDocuments(id).then(setDocs).catch(() => undefined)
-                            })
-                        } else {
-                          api.listBacklogDocuments(id).then(setDocs).catch(() => undefined)
-                        }
+                      onImported={() => {
+                        api.listBacklogDocuments(id).then(setDocs).catch(() => undefined)
                         showFeedback({ kind: 'success', message: '文档已导入并关联' }, SUCCESS_STAY_MS)
                       }}
                     />
-                    {canOperate && (
-                      <Dialog open={linkOpen} onOpenChange={(open) => (open ? openLinkDialog() : setLinkOpen(false))}>
-                        <DialogTrigger render={<Button variant="outline" size="sm" />}>
-                          关联已有文档
-                        </DialogTrigger>
-                        <DialogContent className="max-w-md">
-                          <DialogHeader>
-                            <DialogTitle>关联需求下的已有文档</DialogTitle>
-                          </DialogHeader>
-                          <DialogBody>
-                            <label className="flex flex-col gap-1 text-sm">
-                              文档（仅列出原始需求下尚未关联的文档）
-                              <Select
-                                value={linkTarget}
-                                onValueChange={(v) => setLinkTarget(v as string)}
-                                items={linkableItems}
-                              >
-                                <SelectTrigger>
-                                  <SelectValue placeholder="选择文档" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  {(projectDocs ?? [])
-                                    .filter((doc) => !(docs ?? []).some((linked) => linked.id === doc.id))
-                                    .map((doc) => (
-                                      <SelectItem key={doc.id} value={String(doc.id)}>
-                                        {doc.title}
-                                      </SelectItem>
-                                    ))}
-                                </SelectContent>
-                              </Select>
-                            </label>
-                          </DialogBody>
-                          <DialogFooter>
-                            <DialogClose>
-                              <Button variant="outline" size="sm">取消</Button>
-                            </DialogClose>
-                            <Button size="sm" onClick={() => linkDocument()} disabled={linkSaving || !linkTarget}>
-                              {linkSaving ? '关联中…' : '确认关联'}
-                            </Button>
-                          </DialogFooter>
-                        </DialogContent>
-                      </Dialog>
-                    )}
                   </div>
                 </div>
               </CardHeader>
@@ -1229,39 +1084,36 @@ export function BacklogDetailPage() {
                     <TableHead className="w-20 text-center">类型</TableHead>
                     <TableHead className="w-24 text-center">来源</TableHead>
                     <TableHead className="w-44 text-center">更新时间</TableHead>
-                    <TableHead className="w-24 text-center">操作</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {(docs ?? []).map((doc) => (
                     <TableRow key={doc.id}>
                       <TableCell>
-                        <Link to={`/documents/${doc.id}`} className="underline">
-                          {doc.title}
-                        </Link>
+                        {doc.url ? (
+                          <a
+                            href={doc.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="underline"
+                          >
+                            {doc.title}
+                          </a>
+                        ) : (
+                          <Link to={`/documents/${doc.id}`} className="underline">
+                            {doc.title}
+                          </Link>
+                        )}
                       </TableCell>
                       <TableCell className="text-center">{doc.type}</TableCell>
                       <TableCell className="text-center">{documentSourceLabel(doc.source)}</TableCell>
                       <TableCell className="text-center">{formatTime(doc.updatedAt)}</TableCell>
-                      <TableCell className="text-center">
-                        {canOperate ? (
-                          <button
-                            type="button"
-                            className="text-sm text-foreground-muted underline"
-                            onClick={() => unlinkDocument(doc.id)}
-                          >
-                            取消关联
-                          </button>
-                        ) : (
-                          <span className="text-foreground-muted">—</span>
-                        )}
-                      </TableCell>
                     </TableRow>
                   ))}
                   {(docs ?? []).length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={5}>
-                        {docs === null ? '加载中…' : '暂无文档；转入迭代时会自动迁入原始需求的文档'}
+                      <TableCell colSpan={4}>
+                        {docs === null ? '加载中…' : '暂无可显示的文档；原始需求的文档会自动关联到迭代项'}
                       </TableCell>
                     </TableRow>
                   )}

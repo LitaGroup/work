@@ -156,7 +156,12 @@ function makeIterationsService(options?: {
       .mockImplementation((value: unknown) => Promise.resolve(value)),
   };
   const backlogs = { find: jest.fn().mockResolvedValue([]) };
-  const service = new IterationsService(iterations as never, backlogs as never);
+  const projects = { find: jest.fn().mockResolvedValue([]) };
+  const service = new IterationsService(
+    iterations as never,
+    backlogs as never,
+    projects as never,
+  );
   return { service, iterations };
 }
 
@@ -461,7 +466,11 @@ function makeOwnerFixture(overrides?: {
   worker?: Record<string, unknown> | null;
   project?: { id: number; name: string } | null;
   iteration?: Record<string, unknown> | null;
-  projectRows?: Array<{ id: number; name: string; resources: null }>;
+  projectRows?: Array<{
+    id: number;
+    name: string;
+    resources: null;
+  }>;
 }) {
   let nextId = 501;
   const save = jest

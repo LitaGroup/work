@@ -8,6 +8,7 @@ import { DocumentsService } from '../documents/documents.service';
 import { BitableRecord, FeishuService } from '../feishu/feishu.service';
 import { Project } from './project.entity';
 import { ProjectSummaryService } from './project-summary.service';
+import { ProjectDescriptionService } from './project-description.service';
 import { SyncState } from './sync-state.entity';
 
 const SYNC_KEY = 'projects:feishu';
@@ -101,8 +102,49 @@ function extractText(value: unknown): string | null {
   return text || null;
 }
 
+/** 需求备注：由飞书「排期优先级」+「排期备注」合成（单行，分号分隔；均为空时为 null） */
+export function composeScheduleRemark(
+  priority: unknown,
+  note: unknown,
+): string | null {
+  const parts: string[] = [];
+  const priorityText = extractText(priority);
+  const noteText = extractText(note);
+  if (priorityText) parts.push(`排期优先级：${priorityText}`);
+  if (noteText) parts.push(`排期备注：${noteText}`);
+  return parts.length ? parts.join('；') : null;
+}
+
+/**
+ * 通用 http(s) 链接提取（「设计链接」等字段）：支持纯文本与 segment 数组
+ * （url 段取 link，文本段走正则），去重保序并去掉结尾标点。
+ */
+export function extractHttpLinks(value: unknown): string[] {
+  const texts: string[] = [];
+  if (typeof value === 'string') texts.push(value);
+  else if (Array.isArray(value)) {
+    for (const seg of value as Array<{ text?: string; link?: string }>) {
+      if (typeof seg?.link === 'string') texts.push(seg.link);
+      if (typeof seg?.text === 'string') texts.push(seg.text);
+    }
+  }
+  const links: string[] = [];
+  const seen = new Set<string>();
+  for (const text of texts) {
+    const matches = text.match(/https?:\/\/[^\s<>"'`）)\]】}，,；;]+/gi) ?? [];
+    for (const match of matches) {
+      const url = match.replace(/[.,;:!?，。；：！？、]+$/, '');
+      if (!seen.has(url)) {
+        seen.add(url);
+        links.push(url);
+      }
+    }
+  }
+  return links;
+}
+
 /** 人员字段：人员类型为 [{name}]，文本类型为 mention segment（text 带 @ 前缀） */
-function extractPeople(value: unknown): string | undefined {
+export function extractPeople(value: unknown): string | undefined {
   if (!Array.isArray(value)) return undefined;
   const names = value
     .map((seg: { name?: string; text?: string }) =>
@@ -201,6 +243,7 @@ export class ProjectSyncService {
     @InjectRepository(SyncState)
     private readonly syncStates: Repository<SyncState>,
     private readonly projectSummary: ProjectSummaryService,
+    private readonly projectDescription: ProjectDescriptionService,
   ) {}
 
   /** 需求池 → 平台单向同步，每 1 小时自动增量一次；失败仅告警不中断 */
@@ -336,7 +379,9 @@ export class ProjectSyncService {
       })) ?? this.projects.create({ feishuRecordId: record.record_id });
 
     project.name = name;
-    project.description = fullText !== name ? fullText : null;
+    // 需求列只有标题时不覆盖平台维护的描述（可能由模型生成或人工补充）；
+    // 飞书提供了额外正文时以源数据为准
+    if (fullText !== name) project.description = fullText;
     project.type = toProjectType(f['需求类型']);
     const resources: SyncResources = {
       frontend:
@@ -362,10 +407,24 @@ export class ProjectSyncService {
     project.priority = typeof f['优先级'] === 'string' ? f['优先级'] : null;
     project.expectedReleaseAt = extractDate(f['理想上线时间']);
     project.iterationCycle = toIterationCycle(f['w']);
+    // 需求方为飞书人员字段（[{name}]），空值/无姓名时置空，与飞书侧保持一致
+    project.owner = extractPeople(f['需求方']) ?? null;
+    // 备注由飞书「排期优先级」「排期备注」合成（平台内展示；人工编辑会被下次同步覆盖）
+    project.remark = composeScheduleRemark(f['排期优先级'], f['排期备注']);
     await this.projects.save(project);
     await this.syncRequirementDocuments(project.id, f['需求'], fullText);
-    // 同步后触发需求摘要（摘要非空即 no-op；小时级同步天然形成生成失败的重试机会）
+    // 设计链接镜像同步（字段为空/无完整链接时删除同步创建的设计文档）
+    try {
+      await this.documents.syncDesignLinks(
+        project.id,
+        extractHttpLinks(f['设计链接']),
+      );
+    } catch (e) {
+      this.logger.warn(`项目设计链接同步失败: ${(e as Error).message}`);
+    }
+    // 同步后触发需求摘要/描述生成（为空才生成，失败或未配置不影响同步）
     this.projectSummary.maybeGenerateSummary(project.id);
+    this.projectDescription.maybeGenerateDescription(project.id);
   }
 
   /**

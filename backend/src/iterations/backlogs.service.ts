@@ -86,6 +86,8 @@ export type BacklogListItem = Pick<
   | 'expectedOnlineAt'
   | 'updatedAt'
 > & {
+  /** 需求方：实时取自原始需求 projects.owner（不落库） */
+  owner: string | null;
   iteration: {
     id: number;
     code: string;
@@ -171,10 +173,22 @@ export class BacklogsService {
       ? await this.iterations.find({ where: { id: In(iterationIds) } })
       : [];
     const iterationById = new Map(iterations.map((it) => [it.id, it]));
+    // 需求方实时取原始需求（projects.owner），不落库
+    const projectIds = [...new Set(rows.map((row) => row.projectId))];
+    const projects = projectIds.length
+      ? await this.projects.find({
+          where: { id: In(projectIds) },
+          select: { id: true, owner: true },
+        })
+      : [];
+    const ownerByProject = new Map(
+      projects.map((project) => [project.id, project.owner]),
+    );
     return rows.map((row) => {
       const iteration = iterationById.get(row.iterationId);
       return {
         ...row,
+        owner: ownerByProject.get(row.projectId) ?? null,
         iteration: iteration
           ? { id: iteration.id, code: iteration.code, type: iteration.type }
           : null,
@@ -640,12 +654,37 @@ export class BacklogsService {
     return { from, to: worker.name, previousTaskId };
   }
 
-  /** 详情视图：迭代项 + 提测工单工作流可用性（供前端提测按钮置灰） */
-  async getDetail(
-    id: number,
-  ): Promise<Backlog & { releaseWorkflow: BacklogReleaseWorkflow | null }> {
+  /** 详情视图：迭代项 + 需求方（实时取自原始需求）+ 所属迭代标识 + 提测工单工作流可用性（供前端提测按钮置灰） */
+  async getDetail(id: number): Promise<
+    Backlog & {
+      owner: string | null;
+      iteration: {
+        id: number;
+        code: string;
+        type: Iteration['type'];
+      } | null;
+      releaseWorkflow: BacklogReleaseWorkflow | null;
+    }
+  > {
     const backlog = await this.findOne(id);
-    return { ...backlog, releaseWorkflow: await this.releaseWorkflowInfo() };
+    const [project, iteration] = await Promise.all([
+      this.projects.findOne({
+        where: { id: backlog.projectId },
+        select: { id: true, owner: true },
+      }),
+      this.iterations.findOne({
+        where: { id: backlog.iterationId },
+        select: { id: true, code: true, type: true },
+      }),
+    ]);
+    return {
+      ...backlog,
+      owner: project?.owner ?? null,
+      iteration: iteration
+        ? { id: iteration.id, code: iteration.code, type: iteration.type }
+        : null,
+      releaseWorkflow: await this.releaseWorkflowInfo(),
+    };
   }
 
   /** 提测工单工作流信息（code 固定 release-ticket） */
@@ -676,6 +715,7 @@ export class BacklogsService {
         | 'remark'
         | 'feishuUrl'
         | 'projectId'
+        | 'url'
         | 'createdAt'
         | 'updatedAt'
       >
@@ -698,58 +738,12 @@ export class BacklogsService {
         remark: true,
         feishuUrl: true,
         projectId: true,
+        url: true,
         createdAt: true,
         updatedAt: true,
       },
     });
     return docs.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
-  }
-
-  /** 关联已有文档（须属于该迭代项的原始需求）；成员或管理员 */
-  async addDocument(
-    id: number,
-    documentId: number,
-    actor: IterationActor,
-  ): Promise<{ linked: boolean }> {
-    const backlog = await this.findOne(id);
-    if (!actor.isAdmin && !this.isMember(backlog, actor.userId)) {
-      throw new ForbiddenException('仅迭代项成员或管理员可管理迭代项文档');
-    }
-    if (!Number.isInteger(documentId) || documentId <= 0) {
-      throw new BadRequestException('文档 ID 非法');
-    }
-    const doc = await this.documents.findOne({
-      where: { id: documentId },
-      select: { id: true, projectId: true },
-    });
-    if (!doc) throw new NotFoundException(`Document ${documentId} not found`);
-    if (doc.projectId !== backlog.projectId) {
-      throw new BadRequestException('文档须属于该迭代项的原始需求');
-    }
-    const existing = await this.backlogDocuments.findOne({
-      where: { backlogId: backlog.id, documentId },
-    });
-    if (existing) return { linked: false };
-    await this.backlogDocuments.save(
-      this.backlogDocuments.create({ backlogId: backlog.id, documentId }),
-    );
-    return { linked: true };
-  }
-
-  /** 取消关联（不删除文档本体）；成员或管理员 */
-  async removeDocument(
-    id: number,
-    documentId: number,
-    actor: IterationActor,
-  ): Promise<void> {
-    const backlog = await this.findOne(id);
-    if (!actor.isAdmin && !this.isMember(backlog, actor.userId)) {
-      throw new ForbiddenException('仅迭代项成员或管理员可管理迭代项文档');
-    }
-    await this.backlogDocuments.delete({
-      backlogId: backlog.id,
-      documentId,
-    });
   }
 
   /** 事件流（append-only，倒序，最近 100 条） */
@@ -1080,9 +1074,14 @@ export class BacklogsService {
 
   async findOneMarkdown(id: number): Promise<string> {
     const backlog = await this.findOne(id);
-    const iteration = await this.iterations.findOne({
-      where: { id: backlog.iterationId },
-    });
+    const [iteration, project] = await Promise.all([
+      this.iterations.findOne({ where: { id: backlog.iterationId } }),
+      // 需求方/备注实时取原始需求（projects），不落库
+      this.projects.findOne({
+        where: { id: backlog.projectId },
+        select: { id: true, owner: true, remark: true },
+      }),
+    ]);
     const head = mdFrontmatter({
       update: backlog.updatedAt,
       title: backlog.title,
@@ -1099,6 +1098,8 @@ export class BacklogsService {
           : `#${backlog.iterationId}`
       }`,
       `- 状态：${backlog.status}`,
+      `- 需求方：${project?.owner ?? '-'}`,
+      `- 备注：${project?.remark ?? '-'}`,
       `- 负责人：${backlog.ownerName ?? '-'}`,
       `- 预期上线：${
         backlog.expectedOnlineAt
@@ -1135,9 +1136,10 @@ export class BacklogsService {
     ]);
     const docsText = docs.length
       ? docs
-          .map(
-            (doc) =>
-              `- ${doc.title}（${doc.type}｜\`GET /api/documents/${doc.id}.md\`）`,
+          .map((doc) =>
+            doc.url
+              ? `- ${doc.title}（${doc.type}｜${doc.url}）`
+              : `- ${doc.title}（${doc.type}｜\`GET /api/documents/${doc.id}.md\`）`,
           )
           .join('\n')
       : '（暂无）';

@@ -1,6 +1,9 @@
 import {
+  composeScheduleRemark,
   extractDocLinks,
+  extractHttpLinks,
   extractLinkedNames,
+  extractPeople,
   toIterationCycle,
   toLastModifiedMs,
 } from './project-sync.service';
@@ -114,6 +117,87 @@ describe('extractDocLinks（需求字段 → 文档链接）', () => {
     expect(extractDocLinks(null)).toEqual([]);
     expect(extractDocLinks(undefined)).toEqual([]);
     expect(extractDocLinks([])).toEqual([]);
+  });
+});
+
+describe('composeScheduleRemark（排期优先级 + 排期备注 → 需求备注）', () => {
+  it('两者都有时按「排期优先级：…；排期备注：…」合成', () => {
+    expect(composeScheduleRemark('P0', '需要设计先行')).toBe(
+      '排期优先级：P0；排期备注：需要设计先行',
+    );
+  });
+
+  it('只有一项时只输出对应片段', () => {
+    expect(composeScheduleRemark('S1', null)).toBe('排期优先级：S1');
+    expect(composeScheduleRemark('', '等产品确认')).toBe(
+      '排期备注：等产品确认',
+    );
+  });
+
+  it('飞书 segment 数组文本正常提取', () => {
+    expect(
+      composeScheduleRemark([{ text: 'P1' }], [{ text: '下周排期' }]),
+    ).toBe('排期优先级：P1；排期备注：下周排期');
+  });
+
+  it('均为空 / 非法值返回 null', () => {
+    expect(composeScheduleRemark(null, null)).toBe(null);
+    expect(composeScheduleRemark('', undefined)).toBe(null);
+    expect(composeScheduleRemark([], [])).toBe(null);
+    expect(composeScheduleRemark(0, false)).toBe(null);
+  });
+});
+
+describe('extractHttpLinks（设计链接等通用 http(s) 链接提取）', () => {
+  it('纯文本中的链接提取，去重保序并忽略结尾标点', () => {
+    expect(
+      extractHttpLinks(
+        '设计稿：https://figma.com/file/abc，备用 https://figma.com/file/abc。',
+      ),
+    ).toEqual(['https://figma.com/file/abc']);
+    expect(
+      extractHttpLinks(
+        'https://a.example/x, https://b.example/y；https://a.example/x',
+      ),
+    ).toEqual(['https://a.example/x', 'https://b.example/y']);
+  });
+
+  it('segment 数组取 link 与 text，非 http 文本忽略', () => {
+    expect(
+      extractHttpLinks([
+        { text: '设计稿', link: 'https://figma.com/file/1' },
+        { text: '见 https://mastergo.com/file/2' },
+        { text: '无链接说明' },
+      ]),
+    ).toEqual(['https://figma.com/file/1', 'https://mastergo.com/file/2']);
+  });
+
+  it('空值 / 无链接返回空数组', () => {
+    expect(extractHttpLinks(null)).toEqual([]);
+    expect(extractHttpLinks(undefined)).toEqual([]);
+    expect(extractHttpLinks([])).toEqual([]);
+    expect(extractHttpLinks('没有链接')).toEqual([]);
+  });
+});
+
+describe('extractPeople（人员字段 → 姓名，需求方同步复用）', () => {
+  it('飞书人员字段 [{name}] 解析为姓名，多值顿号连接', () => {
+    expect(extractPeople([{ name: '张三' }, { name: '李四' }])).toBe(
+      '张三、李四',
+    );
+  });
+
+  it('文本 mention segment 去掉 @ 前缀', () => {
+    expect(extractPeople([{ text: '@张三' }, { text: '@李四' }])).toBe(
+      '张三、李四',
+    );
+  });
+
+  it('空值 / 空数组 / 无姓名返回 undefined', () => {
+    expect(extractPeople(null)).toBe(undefined);
+    expect(extractPeople(undefined)).toBe(undefined);
+    expect(extractPeople([])).toBe(undefined);
+    expect(extractPeople([{ name: '' }, { text: '@' }])).toBe(undefined);
   });
 });
 

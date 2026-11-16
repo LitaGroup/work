@@ -2,14 +2,15 @@ import { BacklogStatus, IterationType, WorkerRole } from '../common/enums';
 import { SYSTEM_BACKLOG_DELIVERY_TASK_TEMPLATE_ID } from '../tasks/system-task-templates';
 import { BacklogsService } from './backlogs.service';
 
-/** 只覆盖 list 的两个仓库：其余依赖在本用例中不会被调用 */
+/** 只覆盖 list 的三个仓库：其余依赖在本用例中不会被调用 */
 function buildService() {
   const backlogs = { find: jest.fn() };
   const iterations = { find: jest.fn() };
+  const projects = { find: jest.fn().mockResolvedValue([]) };
   const service = new BacklogsService(
     backlogs as never,
     iterations as never,
-    {} as never,
+    projects as never,
     {} as never,
     {} as never,
     {} as never,
@@ -24,7 +25,7 @@ function buildService() {
     {} as never,
     {} as never,
   );
-  return { service, backlogs, iterations };
+  return { service, backlogs, iterations, projects };
 }
 
 const backlogRow = {
@@ -59,9 +60,26 @@ describe('BacklogsService.list', () => {
     expect(rows).toEqual([
       {
         ...backlogRow,
+        owner: null,
         iteration: { id: 3, code: '2026W47', type: IterationType.T7 },
       },
     ]);
+  });
+
+  it('需求方实时取自原始需求（projects.owner）', async () => {
+    const { service, backlogs, iterations, projects } = buildService();
+    backlogs.find.mockResolvedValue([backlogRow]);
+    iterations.find.mockResolvedValue([
+      { id: 3, code: '2026W47', type: IterationType.T7 },
+    ]);
+    projects.find.mockResolvedValue([{ id: 7, owner: '张三、李四' }]);
+
+    const rows = await service.list({ projectId: 7 });
+
+    expect(rows[0].owner).toBe('张三、李四');
+    expect(projects.find).toHaveBeenCalledWith(
+      expect.objectContaining({ select: { id: true, owner: true } }),
+    );
   });
 
   it('includeCanceled 时不按状态过滤（含全部历史）', async () => {

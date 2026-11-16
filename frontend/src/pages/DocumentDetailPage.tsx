@@ -70,6 +70,7 @@ export function DocumentDetailPage() {
   const isFeishu = doc?.source === '飞书'
   const isApipost = doc?.source === 'apipost'
   const isExternal = isFeishu || isApipost
+  const isLinkDoc = Boolean(doc?.url)
 
   const reload = useCallback(() => {
     if (!id) return
@@ -306,7 +307,7 @@ export function DocumentDetailPage() {
         <div className="flex items-center justify-between">
           <h2 className="text-base font-semibold">内容</h2>
           <div className="flex gap-2">
-            {isExternal ? (
+            {isLinkDoc ? null : isExternal ? (
               <Button variant="outline" size="sm" onClick={handleResync} disabled={saving}>
                 {saving ? '同步中…' : '更新同步'}
               </Button>
@@ -318,7 +319,21 @@ export function DocumentDetailPage() {
             <DeleteDocumentButton doc={doc} />
           </div>
         </div>
-        {isApipost ? (
+        {isLinkDoc ? (
+          <div className="flex flex-col gap-2 border border-border-strong bg-background-muted p-4 text-sm">
+            <span className="text-foreground-muted">
+              链接型文档只保存外部链接，不存正文。
+            </span>
+            <a
+              href={doc.url ?? undefined}
+              target="_blank"
+              rel="noreferrer"
+              className="break-all underline"
+            >
+              {doc.url}
+            </a>
+          </div>
+        ) : isApipost ? (
           <>
             <div className="flex min-h-0 flex-1 flex-col">
               <ApipostDocViewer content={doc.content} docsUrl={doc.apipostUrl ?? null} />

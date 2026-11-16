@@ -34,6 +34,7 @@ import {
 } from '@appica/ui-react/select'
 import { Badge } from '@appica/ui-react/badge'
 import { DatePicker } from '@appica/ui-react/date-picker'
+import { Input } from '@appica/ui-react/input'
 import {
   Tooltip,
   TooltipProvider,
@@ -212,6 +213,18 @@ export function RequirementDetailPage() {
                     />
                   </dd>
                 </div>
+                <div className="flex items-center justify-between">
+                  <dt>需求方</dt>
+                  <dd>
+                    <OwnerInput project={project} onChanged={reload} />
+                  </dd>
+                </div>
+                <div className="flex items-center justify-between">
+                  <dt>备注</dt>
+                  <dd>
+                    <RemarkInput project={project} onChanged={reload} />
+                  </dd>
+                </div>
                 <div className="flex justify-between">
                   <dt>来源</dt>
                   <dd>{project.feishuRecordId ? '飞书同步' : '手动创建'}</dd>
@@ -381,9 +394,20 @@ function DocumentsPanel({
         {documents.map((d) => (
           <TableRow key={d.id}>
             <TableCell className="max-w-md truncate" title={d.title}>
-              <Link to={`/documents/${d.id}`} className="underline">
-                {d.title}
-              </Link>
+              {d.url ? (
+                <a
+                  href={d.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="underline"
+                >
+                  {d.title}
+                </a>
+              ) : (
+                <Link to={`/documents/${d.id}`} className="underline">
+                  {d.title}
+                </Link>
+              )}
             </TableCell>
             <TableCell>{d.type}</TableCell>
             <TableCell className="max-w-48 truncate" title={d.description ?? ''}>
@@ -613,6 +637,146 @@ function ExpectedReleaseInput({
       ) : (
         <EditableValue onClick={() => setEditing(true)}>
           {project.expectedReleaseAt ?? '未定'}
+        </EditableValue>
+      )}
+      {error && <span className="text-xs">{error}</span>}
+    </span>
+  )
+}
+
+/** 展示需求方；点击值展开输入框，Enter / 失焦保存，Esc 取消（空串清除；须在用户系统内） */
+function OwnerInput({
+  project,
+  onChanged,
+}: {
+  project: Project
+  onChanged: () => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [value, setValue] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const startEditing = () => {
+    setValue(project.owner ?? '')
+    setError(null)
+    setEditing(true)
+  }
+
+  const save = () => {
+    if (!editing || submitting) return
+    const next = value.trim()
+    if (next === (project.owner ?? '')) {
+      setEditing(false)
+      return
+    }
+    setSubmitting(true)
+    setError(null)
+    api
+      .updateProject(project.id, { owner: next })
+      .then(() => {
+        setEditing(false)
+        onChanged()
+      })
+      .catch((e: Error) => setError(e.message))
+      .finally(() => setSubmitting(false))
+  }
+
+  return (
+    <span className="flex flex-col items-end gap-1">
+      {editing ? (
+        <Input
+          autoFocus
+          inputSize="sm"
+          className="w-40"
+          value={value}
+          disabled={submitting}
+          placeholder="姓名，多个用、分隔"
+          onChange={(e) => setValue(e.target.value)}
+          onBlur={save}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') save()
+            if (e.key === 'Escape') {
+              setEditing(false)
+              setError(null)
+            }
+          }}
+        />
+      ) : (
+        <EditableValue onClick={startEditing}>
+          <span className="block max-w-40 truncate" title={project.owner ?? undefined}>
+            {project.owner || '—'}
+          </span>
+        </EditableValue>
+      )}
+      {error && <span className="text-xs">{error}</span>}
+    </span>
+  )
+}
+
+/** 展示备注；点击值展开输入框，Enter / 失焦保存，Esc 取消（空串清除） */
+function RemarkInput({
+  project,
+  onChanged,
+}: {
+  project: Project
+  onChanged: () => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [value, setValue] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const startEditing = () => {
+    setValue(project.remark ?? '')
+    setError(null)
+    setEditing(true)
+  }
+
+  const save = () => {
+    if (!editing || submitting) return
+    const next = value.trim()
+    if (next === (project.remark ?? '')) {
+      setEditing(false)
+      return
+    }
+    setSubmitting(true)
+    setError(null)
+    api
+      .updateProject(project.id, { remark: next })
+      .then(() => {
+        setEditing(false)
+        onChanged()
+      })
+      .catch((e: Error) => setError(e.message))
+      .finally(() => setSubmitting(false))
+  }
+
+  return (
+    <span className="flex flex-col items-end gap-1">
+      {editing ? (
+        <Input
+          autoFocus
+          inputSize="sm"
+          className="w-48"
+          value={value}
+          disabled={submitting}
+          placeholder="备注"
+          onChange={(e) => setValue(e.target.value)}
+          onBlur={save}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') save()
+            if (e.key === 'Escape') {
+              setEditing(false)
+              setError(null)
+            }
+          }}
+        />
+      ) : (
+        <EditableValue onClick={startEditing}>
+          <span className="block max-w-40 truncate" title={project.remark ?? undefined}>
+            {project.remark || '—'}
+          </span>
         </EditableValue>
       )}
       {error && <span className="text-xs">{error}</span>}

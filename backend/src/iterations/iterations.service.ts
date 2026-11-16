@@ -7,9 +7,10 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { FindOptionsWhere, Like, Repository } from 'typeorm';
+import { FindOptionsWhere, In, Like, Repository } from 'typeorm';
 import { BacklogStatus, IterationStatus, IterationType } from '../common/enums';
 import { beijingTime, mdFrontmatter } from '../common/frontmatter';
+import { Project } from '../projects/project.entity';
 import { Backlog } from './backlog.entity';
 import { Iteration } from './iteration.entity';
 import {
@@ -112,6 +113,8 @@ export class IterationsService implements OnModuleInit {
     private readonly iterations: Repository<Iteration>,
     @InjectRepository(Backlog)
     private readonly backlogs: Repository<Backlog>,
+    @InjectRepository(Project)
+    private readonly projects: Repository<Project>,
   ) {}
 
   /** 启动时保证 T0 常驻快速通道存在 */
@@ -331,14 +334,23 @@ export class IterationsService implements OnModuleInit {
       sections.push('（暂无迭代项）');
     } else {
       sections.push(
-        '| ID | 编号 | 原始需求 | 状态 | 负责人 | 交付任务 | 详情 |',
-        '| --- | --- | --- | --- | --- | --- | --- |',
+        '| ID | 编号 | 原始需求 | 需求方 | 状态 | 负责人 | 交付任务 | 详情 |',
+        '| --- | --- | --- | --- | --- | --- | --- | --- |',
+      );
+      // 需求方实时取原始需求（projects.owner），不落库
+      const projectIds = [...new Set(detail.backlogs.map((b) => b.projectId))];
+      const projects = await this.projects.find({
+        where: { id: In(projectIds) },
+        select: { id: true, owner: true },
+      });
+      const ownerByProject = new Map(
+        projects.map((project) => [project.id, project.owner]),
       );
       for (const backlog of detail.backlogs) {
         sections.push(
           `| ${backlog.id} | ${backlog.code} | #${backlog.projectId} ${escapeCell(
             backlog.title,
-          )} | ${backlog.status} | ${escapeCell(backlog.ownerName ?? '-')} | ${
+          )} | ${escapeCell(ownerByProject.get(backlog.projectId) ?? '-')} | ${backlog.status} | ${escapeCell(backlog.ownerName ?? '-')} | ${
             backlog.taskId ? `#${backlog.taskId}` : '-'
           } | /api/backlogs/${backlog.id}.md |`,
         );

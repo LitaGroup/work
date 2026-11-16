@@ -68,6 +68,7 @@ import { Backlog } from '../iterations/backlog.entity';
 import { Iteration } from '../iterations/iteration.entity';
 import { Project } from './project.entity';
 import { ProjectSummaryService } from './project-summary.service';
+import { ProjectDescriptionService } from './project-description.service';
 import {
   DAY_MS,
   UNSCHEDULED_FRESH_DAYS,
@@ -358,6 +359,7 @@ export class ProjectsService {
     @InjectRepository(Iteration)
     private readonly iterationRows: Repository<Iteration>,
     private readonly projectSummary: ProjectSummaryService,
+    private readonly projectDescription: ProjectDescriptionService,
   ) {}
 
   findAll(): Promise<Project[]> {
@@ -895,8 +897,9 @@ export class ProjectsService {
 
   async create(input: CreateProjectInput): Promise<Project> {
     const project = await this.projects.save(this.projects.create(input));
-    // 新建需求后触发摘要生成（摘要为空且无进行中生成时才会实际调用模型）
+    // 新建需求后触发摘要/描述生成（为空且无进行中生成时才会实际调用模型）
     this.projectSummary.maybeGenerateSummary(project.id);
+    this.projectDescription.maybeGenerateDescription(project.id);
     return project;
   }
 
@@ -1016,6 +1019,8 @@ export class ProjectsService {
     if (project.iterationCycle) {
       meta.push(`- 计划周(w)：${project.iterationCycle}`);
     }
+    if (project.owner) meta.push(`- 需求方：${project.owner}`);
+    if (project.remark) meta.push(`- 备注：${project.remark}`);
     if (project.resources) {
       const { frontend, backend, qa, product, client } = project.resources;
       if (frontend || backend || qa || product || client) {
@@ -1044,7 +1049,11 @@ export class ProjectsService {
     });
 
     const documentLines = documentRows.map((d) => {
-      const parts = [`**${d.type}** [${d.title}](/api/documents/${d.id}.md)`];
+      const parts = [
+        d.url
+          ? `**${d.type}** [${d.title}](${d.url})`
+          : `**${d.type}** [${d.title}](/api/documents/${d.id}.md)`,
+      ];
       if (d.description) parts.push(d.description);
       if (d.remark) parts.push(`备注：${d.remark}`);
       return `- ${parts.join(' — ')}`;
@@ -1103,7 +1112,7 @@ export class ProjectsService {
     ].join('\n');
   }
 
-  /** 更新项目可编辑字段：类型/优先级/迭代周期/预期发布时间 + 脚本目录（scriptsPath）、描述（description）、人员（resources）、摘要（summary），空串清除。状态为推导值不可手改。注意：飞书同步项目的同步字段（类型/优先级/迭代/预期发布/人员）会在下次同步时被飞书侧覆盖 */
+  /** 更新项目可编辑字段：类型/优先级/迭代周期/预期发布时间/需求方 + 脚本目录（scriptsPath）、描述（description）、人员（resources）、摘要（summary），空串清除。状态为推导值不可手改。注意：飞书同步项目的同步字段（类型/优先级/迭代/预期发布/需求方/人员）会在下次同步时被飞书侧覆盖 */
   async update(
     id: number,
     input: {
@@ -1111,6 +1120,9 @@ export class ProjectsService {
       priority?: string;
       iterationCycle?: string;
       expectedReleaseAt?: string;
+      owner?: string | null;
+      /** 备注（飞书「排期优先级」+「排期备注」同步合成；平台内可编辑，下次同步覆盖），空串清除 */
+      remark?: string | null;
       scriptsPath?: string;
       description?: string;
       summary?: string;
@@ -1146,6 +1158,24 @@ export class ProjectsService {
         throw new BadRequestException('预期发布时间须为 YYYY-MM-DD 格式');
       }
       project.expectedReleaseAt = v || null;
+    }
+    if (input.owner !== undefined) {
+      const owner = this.normalizeShortText(input.owner ?? '', 200, '需求方');
+      // 需求方同样不允许配置用户系统之外的用户
+      if (owner) {
+        await this.releasesService.assertNamesInUserSystem(
+          splitMemberNames(owner),
+          '需求方',
+        );
+      }
+      project.owner = owner;
+    }
+    if (input.remark !== undefined) {
+      project.remark = this.normalizeShortText(
+        input.remark ?? '',
+        2000,
+        '备注',
+      );
     }
     if (input.scriptsPath !== undefined) {
       project.scriptsPath = this.normalizeScriptsPath(input.scriptsPath);
@@ -1187,7 +1217,7 @@ export class ProjectsService {
   }
 
   /**
-   * AI 用：仅本地字段更新（脚本目录/描述/人员），返回 Markdown 结果。
+   * AI 用：仅本地字段更新（脚本目录/描述/人员/需求方），返回 Markdown 结果。
    * 刻意不含飞书同步字段（类型/优先级/迭代/预期发布），状态为推导值不可改。
    */
   async updateMarkdown(
@@ -1195,6 +1225,8 @@ export class ProjectsService {
     input: {
       scriptsPath?: string;
       description?: string;
+      owner?: string | null;
+      remark?: string | null;
       resources?: {
         frontend?: string;
         backend?: string;
@@ -1213,6 +1245,12 @@ export class ProjectsService {
     }
     if (input.description !== undefined) {
       lines.push(`- 描述：${project.description ? '已更新' : '已清除'}`);
+    }
+    if (input.owner !== undefined) {
+      lines.push(`- 需求方：${project.owner ?? '已清除'}`);
+    }
+    if (input.remark !== undefined) {
+      lines.push(`- 备注：${project.remark ?? '已清除'}`);
     }
     if (input.resources !== undefined) {
       const members = project.resources;

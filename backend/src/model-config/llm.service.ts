@@ -2,8 +2,9 @@ import { Injectable } from '@nestjs/common';
 import { ModelThinkingLevel } from '../common/enums';
 import { ModelConfigService } from './model-config.service';
 import {
-  MODEL_SCENARIO_TITLE_NAMING,
+  MODEL_SCENARIO_REQUIREMENT_DESCRIPTION,
   MODEL_SCENARIO_REQUIREMENT_SUMMARY,
+  MODEL_SCENARIO_TITLE_NAMING,
 } from './model-scenarios';
 
 /** 单次请求超时（毫秒） */
@@ -26,6 +27,13 @@ const SUMMARY_MATERIAL_LIMIT = 12_000;
 const SUMMARY_SYSTEM_PROMPT =
   '你是需求摘要助手。根据需求信息和需求文档，输出一段不超过 200 字的中文摘要，' +
   '概括需求的目标、范围与关键点；不要输出标题、列表标记、Markdown 格式或任何解释。';
+
+/** 需求描述最大字符数（text 列无硬限制，控制单次生成规模） */
+export const DESCRIPTION_MAX_CHARS = 4000;
+
+const DESCRIPTION_SYSTEM_PROMPT =
+  '你是需求描述助手。根据需求信息和需求文档，输出一份结构化的中文需求描述（Markdown），' +
+  '涵盖背景与目标、范围与关键规则、交付/验收要点；只输出描述正文，不要输出无关解释，控制在 1200 字以内。';
 
 export interface LlmAskInput {
   /** 系统提示词 */
@@ -139,6 +147,16 @@ export function sanitizeSummary(raw: string): string | null {
   return text.slice(0, SUMMARY_MAX_CHARS);
 }
 
+/** 清洗模型输出的描述：去掉包裹的代码围栏与首尾空白，保留 Markdown 正文 */
+export function sanitizeDescription(raw: string): string | null {
+  const text = raw
+    .replace(/^\s*```(?:markdown|md)?[^\S\n]*\n?/i, '')
+    .replace(/\n?```\s*$/i, '')
+    .trim();
+  if (!text) return null;
+  return text.slice(0, DESCRIPTION_MAX_CHARS);
+}
+
 /**
  * 通用单次大模型调用：按管理区「模型配置」的场景取连接信息，
  * 非流式、带超时与全局并发上限。未配置返回 null；请求失败抛错，
@@ -218,6 +236,23 @@ export class LlmService {
     });
     if (!content) return null;
     return sanitizeSummary(content);
+  }
+
+  /**
+   * 生成结构化需求描述（Markdown）：素材为需求名称 + 需求类文档正文，超长截断。
+   * 使用 requirement-description 场景；场景未配置或素材为空返回 null。
+   */
+  async generateDescription(material: string): Promise<string | null> {
+    const trimmed = material.trim();
+    if (!trimmed) return null;
+    const content = await this.ask(MODEL_SCENARIO_REQUIREMENT_DESCRIPTION, {
+      system: DESCRIPTION_SYSTEM_PROMPT,
+      prompt: `根据下面的需求信息与文档，写一份结构化的中文需求描述（Markdown）。\n\n${trimmed.slice(0, SUMMARY_MATERIAL_LIMIT)}`,
+      maxTokens: 2000,
+      temperature: 0.3,
+    });
+    if (!content) return null;
+    return sanitizeDescription(content);
   }
 
   private post(

@@ -46,6 +46,14 @@ export class Project {
   @Column({ type: 'varchar', length: 50, nullable: true })
   iterationCycle: string | null;
 
+  /** 需求方（飞书「需求方」人员字段同步，多姓名顿号连接；编辑校验用户系统内，飞书同步会覆盖） */
+  @Column({ type: 'varchar', length: 200, nullable: true })
+  owner: string | null;
+
+  /** 备注：由飞书「排期优先级」「排期备注」同步合成（单行分号分隔）；平台内可编辑，下次同步覆盖 */
+  @Column({ type: 'text', nullable: true })
+  remark: string | null;
+
   /** 人员：{ frontend?, backend?, qa?, product?, client? }（需求池同步含产品与客户端人员） */
   @Column({ type: 'simple-json', nullable: true })
   resources: {

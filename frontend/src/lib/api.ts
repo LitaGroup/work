@@ -74,6 +74,7 @@ export const DOCUMENT_TYPES = [
   '技术',
   '接口',
   '配置',
+  '设计',
 ] as const
 export type DocumentType = (typeof DOCUMENT_TYPES)[number]
 
@@ -302,6 +303,8 @@ export interface ProjectDocument {
   feishuUrl: string | null
   /** 来源为 apipost 时的规范化原文链接（docs.apipost.net），兼作同步判重 key */
   apipostUrl?: string | null
+  /** 链接型文档（type=设计）的外部链接；非空时不存正文 */
+  url?: string | null
   description: string | null
   remark: string | null
   content?: string | null
@@ -694,6 +697,10 @@ export interface Project {
   expectedReleaseAt: string | null
   iterationCycle: string | null
   priority: string | null
+  /** 需求方（飞书「需求方」人员字段同步，多姓名顿号连接；平台内可编辑） */
+  owner?: string | null
+  /** 备注（飞书「排期优先级」+「排期备注」同步合成；平台内可编辑，下次同步覆盖） */
+  remark?: string | null
   /** 以下字段仅详情接口（GET /projects/:id）返回，列表接口（GET /projects）不包含 */
   resources?: { frontend?: string; backend?: string; qa?: string; product?: string; client?: string } | null
   /** 飞书同步的项目有 record_id，可据此判断来源 */
@@ -781,6 +788,8 @@ export interface BacklogSummary {
   status: BacklogStatus
   ownerWorkerId: number | null
   ownerName: string | null
+  /** 需求方（实时取自原始需求 projects.owner，不落库） */
+  owner: string | null
   /** 预期上线时间（到小时，北京时间展示；可空） */
   expectedOnlineAt: string | null
   updatedAt: string
@@ -800,6 +809,8 @@ export interface Backlog {
   status: BacklogStatus
   ownerWorkerId: number | null
   ownerName: string | null
+  /** 需求方（实时取自原始需求 projects.owner，不落库） */
+  owner: string | null
   /** 预期上线时间（到小时，北京时间展示；可空） */
   expectedOnlineAt: string | null
   members: BacklogMember[] | null
@@ -824,6 +835,8 @@ export interface BacklogReleaseWorkflow {
 
 /** 迭代项详情（GET /backlogs/:id）：迭代项 + 提测工作流信息 */
 export interface BacklogDetail extends Backlog {
+  /** 所属迭代（唯一标识，供详情展示 2026WXX） */
+  iteration: { id: number; code: string; type: IterationType } | null
   releaseWorkflow: BacklogReleaseWorkflow | null
 }
 
@@ -2612,17 +2625,6 @@ export const api = {
   /** 迭代项关联文档列表（不含正文大字段） */
   listBacklogDocuments: (id: number) =>
     request<BacklogDocumentSummary[]>(`/backlogs/${id}/documents`),
-  /** 关联已有文档（须属于该迭代项的原始需求） */
-  addBacklogDocument: (id: number, documentId: number) =>
-    request<{ linked: boolean }>(`/backlogs/${id}/documents`, {
-      method: 'POST',
-      body: JSON.stringify({ documentId }),
-    }),
-  /** 取消文档关联（不删除文档本体） */
-  removeBacklogDocument: (id: number, documentId: number) =>
-    request<void>(`/backlogs/${id}/documents/${documentId}`, {
-      method: 'DELETE',
-    }),
   /** 迭代项事件流（倒序，最近 100 条） */
   listBacklogEvents: (id: number) =>
     request<BacklogEvent[]>(`/backlogs/${id}/events`),
@@ -2695,6 +2697,10 @@ export const api = {
       iterationCycle?: string
       /** YYYY-MM-DD，空串清除 */
       expectedReleaseAt?: string
+      /** 需求方（姓名，多个顿号连接，须在用户系统内），空串清除 */
+      owner?: string
+      /** 备注（飞书「排期优先级」+「排期备注」同步合成；平台内可编辑，下次同步覆盖），空串清除 */
+      remark?: string
       scriptsPath?: string
       /** 项目描述（Markdown），空串清除 */
       description?: string
@@ -2718,6 +2724,8 @@ export const api = {
     title: string
     type: DocumentType
     content?: string
+    /** type=设计 时的外部链接（链接型文档不存正文） */
+    url?: string
   }) =>
     request<ProjectDocument>('/documents', {
       method: 'POST',

@@ -20,6 +20,8 @@ class CreateMarkdownDocumentDto {
   title: string;
   type: DocumentType;
   content?: string;
+  /** type=设计 时的外部链接（链接型文档不存正文） */
+  url?: string;
 }
 
 class SyncFeishuDocumentDto {
