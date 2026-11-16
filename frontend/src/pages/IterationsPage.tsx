@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Badge } from '@appica/ui-react/badge'
 import { buttonVariants } from '@appica/ui-react/button'
@@ -39,19 +39,6 @@ export function IterationsPage() {
     }
   }, [])
 
-  const summary = useMemo(() => {
-    if (!items) return null
-    const t7 = items.filter((item) => item.type === 'T7')
-    const current = t7.find((item) => item.current)
-    return {
-      total: items.length,
-      t7: t7.length,
-      current: current?.code ?? '未命中',
-      backlogTotal: items.reduce((sum, item) => sum + item.total, 0),
-      done: items.reduce((sum, item) => sum + item.done, 0),
-    }
-  }, [items])
-
   return (
     <div>
       <div className="mb-4 flex items-center justify-between">
@@ -80,18 +67,6 @@ export function IterationsPage() {
       </div>
 
       {error && <p className="mb-4 text-sm">加载失败:{error}</p>}
-
-      {summary && (
-        <div className="mb-4 flex flex-wrap gap-3">
-          <IterationStat label="迭代数" value={summary.total} />
-          <IterationStat label="T7 迭代" value={summary.t7} />
-          <IterationStat label="当前迭代" value={summary.current} />
-          <IterationStat
-            label="迭代项 / 完成"
-            value={`${summary.done}/${summary.backlogTotal}`}
-          />
-        </div>
-      )}
 
       {!items && !error && (
         <p className="text-sm text-foreground-muted">加载中…</p>
@@ -161,24 +136,5 @@ export function IterationsPage() {
         )}
       </div>
     </div>
-  )
-}
-
-function IterationStat({
-  label,
-  value,
-}: {
-  label: string
-  value: string | number
-}) {
-  return (
-    <Card className="min-w-40">
-      <CardHeader>
-        <CardTitle className="text-sm font-medium text-foreground-muted">
-          {label}
-        </CardTitle>
-        <p className="text-xl font-semibold text-foreground-intense">{value}</p>
-      </CardHeader>
-    </Card>
   )
 }
