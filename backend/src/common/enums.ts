@@ -31,15 +31,18 @@ export enum ProjectType {
   OTHER = '其它',
 }
 
+/**
+ * 需求（项目）状态：读时按「是否进入迭代 + 创建时间」推导，不落库为准（见 project-status.ts）：
+ * - 待分配：无未取消迭代项且创建不超过 30 天；
+ * - 开发中：有未取消迭代项且迭代项未完成；
+ * - 已发布：有未取消迭代项且迭代项已完成；
+ * - 已关闭：无未取消迭代项且创建超过 30 天。
+ * 飞书「需求状态」不再同步到该字段。
+ */
 export enum ProjectStatus {
   PLANNED = '待分配',
   IN_PROGRESS = '开发中',
   FINISHED = '已关闭',
-  /** 飞书源表"需求状态"为「暂停」的项目（人工确认新增） */
-  PAUSED = '暂停中',
-  /** 项目提测后的流程态（仅平台内产生；飞书同步不覆盖，见 project-sync.service） */
-  IN_TEST = '测试中',
-  /** 已发布上线（飞书"✅ 已上线"同步映射，见 project-sync.service） */
   PUBLISHED = '已发布',
 }
 

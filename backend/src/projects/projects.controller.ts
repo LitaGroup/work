@@ -26,7 +26,6 @@ import {
 class CreateProjectDto {
   name: string;
   type?: ProjectType;
-  status?: ProjectStatus;
   /** ISO 日期，如 2026-09-01 */
   expectedReleaseAt?: string;
   description?: string;
@@ -35,8 +34,6 @@ class CreateProjectDto {
 class UpdateProjectDto {
   /** 项目类型 */
   type?: ProjectType;
-  /** 项目状态 */
-  status?: ProjectStatus;
   /** 优先级（如 S0/P0），空串清除 */
   priority?: string;
   /** 计划周(w)（如 "w281：08/19 - 08/25"，飞书 w 字段），空串清除 */
@@ -97,7 +94,7 @@ export class ProjectsController {
     return this.projectsService.searchMarkdown(q ?? '');
   }
 
-  /** 项目表格分页（须声明在 :id 之前）：page/pageSize/q/iteration/status/type/priority */
+  /** 项目表格分页（须声明在 :id 之前）：page/pageSize/q/iteration/status/type/priority/view */
   @Get('page')
   findPage(
     @Query('page') page?: string,
@@ -107,6 +104,7 @@ export class ProjectsController {
     @Query('status') status?: ProjectStatus,
     @Query('type') type?: ProjectType,
     @Query('priority') priority?: string,
+    @Query('view') view?: string,
   ): Promise<ProjectPage> {
     const query: ProjectPageQuery = {};
     if (page) query.page = +page;
@@ -116,6 +114,9 @@ export class ProjectsController {
     if (status) query.status = status;
     if (type) query.type = type;
     if (priority) query.priority = priority;
+    if (view === 'unscheduled' || view === 'scheduled' || view === 'expired') {
+      query.view = view;
+    }
     return this.projectsService.findPage(query);
   }
 

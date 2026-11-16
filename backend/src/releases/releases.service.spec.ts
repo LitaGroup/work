@@ -15,7 +15,6 @@ describe('ReleasesService', () => {
   let service: ReleasesService;
   let releasesSave: jest.Mock;
   let releasesFindOne: jest.Mock;
-  let projectsSave: jest.Mock;
   let usersFind: jest.Mock;
   let tasksFindOne: jest.Mock;
   let sendUserCard: jest.Mock;
@@ -36,8 +35,6 @@ describe('ReleasesService', () => {
       Promise.resolve({ id: 9, createdAt: new Date(), ...v } as ProjectRelease),
     );
     releasesFindOne = jest.fn();
-    projectsSave = jest.fn();
-    projectsSave.mockImplementation((v: Project) => Promise.resolve(v));
     // where.name 为 TypeORM In() FindOperator，取其 .value 还原姓名数组
     usersFind = jest.fn();
     usersFind.mockImplementation(
@@ -71,7 +68,6 @@ describe('ReleasesService', () => {
           provide: getRepositoryToken(Project),
           useValue: {
             findOne: () => Promise.resolve(project()),
-            save: projectsSave,
           },
         },
         { provide: getRepositoryToken(User), useValue: { find: usersFind } },
@@ -90,7 +86,7 @@ describe('ReleasesService', () => {
     service = moduleRef.get(ReleasesService);
   });
 
-  it('提测成功：创建记录 + 状态流转「测试中」+ 项目人员私聊通知', async () => {
+  it('提测成功：创建记录（待冒烟）+ 项目人员私聊通知', async () => {
     const release = await service.submit(1, {
       content: ' 修复了登录问题 ',
       urls: [' https://staging.example.com ', ''],
@@ -107,9 +103,6 @@ describe('ReleasesService', () => {
     ]);
     expect(release.testers).toEqual(['王五']);
     expect(release.status).toBe(ReleaseStatus.PENDING);
-    expect(projectsSave).toHaveBeenCalledWith(
-      expect.objectContaining({ status: ProjectStatus.IN_TEST }),
-    );
     await Promise.resolve(); // 放行 fire-and-forget 通知
     expect(sendUserCard).toHaveBeenCalledTimes(3); // 张三/李四/王五 去重后
   });
@@ -140,43 +133,6 @@ describe('ReleasesService', () => {
     await expect(
       service.submit(1, { testers: ['王五'], taskId: 89 }, { workerId: 7 }),
     ).rejects.toThrow(BadRequestException);
-  });
-
-  it('已是「测试中」的重复提测：仅追加记录，不改状态', async () => {
-    const inTest = {
-      findOne: () =>
-        Promise.resolve(project({ status: ProjectStatus.IN_TEST })),
-    };
-    // 覆盖 Project repo：项目已处于「测试中」
-    const moduleRef = await Test.createTestingModule({
-      providers: [
-        ReleasesService,
-        {
-          provide: getRepositoryToken(ProjectRelease),
-          useValue: {
-            create: (v: Partial<ProjectRelease>) => v,
-            save: releasesSave,
-            findOne: releasesFindOne,
-            delete: jest.fn(),
-          },
-        },
-        { provide: getRepositoryToken(Project), useValue: inTest },
-        { provide: getRepositoryToken(User), useValue: { find: usersFind } },
-        {
-          provide: getRepositoryToken(Task),
-          useValue: { findOne: jest.fn() },
-        },
-        { provide: FeishuService, useValue: { sendUserCard } },
-        {
-          provide: TaskWorkerInboxService,
-          useValue: { enqueueReleaseStatus },
-        },
-        { provide: ConfigService, useValue: { get: () => undefined } },
-      ],
-    }).compile();
-    const svc = moduleRef.get(ReleasesService);
-    await svc.submit(1, { testers: ['王五'] }, '操作人');
-    expect(projectsSave).not.toHaveBeenCalled();
   });
 
   it('测试人员为空 → 400', async () => {

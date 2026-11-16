@@ -7,12 +7,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
 import { In, Repository } from 'typeorm';
-import {
-  ProjectStatus,
-  ReleaseStatus,
-  TaskStatus,
-  TaskSubStatus,
-} from '../common/enums';
+import { ReleaseStatus, TaskStatus, TaskSubStatus } from '../common/enums';
 import { splitMemberNames } from '../common/names';
 import { beijingTime, mdFrontmatter } from '../common/frontmatter';
 import { FeishuService } from '../feishu/feishu.service';
@@ -119,12 +114,7 @@ export class ReleasesService {
       }),
     );
 
-    // 状态流转为「测试中」（重复提测保持该状态，仅追加记录）
-    if (project.status !== ProjectStatus.IN_TEST) {
-      project.status = ProjectStatus.IN_TEST;
-      await this.projects.save(project);
-    }
-
+    // 状态由平台按迭代项/创建时间推导，提测不再修改需求状态（重复提测仅追加记录）
     // 通知不阻断提测（私聊失败仅告警）
     void this.notify(release, project);
     return release;
@@ -243,7 +233,7 @@ export class ReleasesService {
       }),
       '# 项目已提测',
       '',
-      `- 项目：${project?.name ?? `#${release.projectId}`}（#${release.projectId}），状态已流转为「${ProjectStatus.IN_TEST}」`,
+      `- 项目：${project?.name ?? `#${release.projectId}`}（#${release.projectId}）`,
       `- 提测人：${release.operator ?? '—'}`,
       release.workerId ? `- 提测机器人：\`#${release.workerId}\`` : null,
       release.sourceTaskId ? `- 来源任务：#${release.sourceTaskId}` : null,

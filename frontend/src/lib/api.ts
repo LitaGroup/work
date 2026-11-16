@@ -2,7 +2,7 @@
 export const PROJECT_TYPES = ['活动', '功能', '游戏', '数据', '后台', '技术', '其它'] as const
 export type ProjectType = (typeof PROJECT_TYPES)[number]
 
-export const PROJECT_STATUSES = ['待分配', '开发中', '已关闭', '暂停中', '测试中', '已发布'] as const
+export const PROJECT_STATUSES = ['待分配', '开发中', '已发布', '已关闭'] as const
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number]
 
 /** 提测记录状态（与后端 ReleaseStatus 对应）：待冒烟（默认）/ 进行中 / 已通过 / 未通过 */
@@ -658,7 +658,7 @@ export interface ReleaseBranch {
   branch: string
 }
 
-/** 项目提测记录：点「提测」生成，项目状态随之流转「测试中」；允许重复提测追加 */
+/** 项目提测记录：点「提测」生成；需求状态由迭代项推导，提测不改变状态；允许重复提测追加 */
 export interface ProjectRelease {
   id: number
   projectId: number
@@ -1039,8 +1039,20 @@ export interface ProjectSchedule {
   updatedAt: string
 }
 
+/** 需求池「迭代」列：需求当前未取消迭代项所属迭代 */
+export interface ProjectIterationRef {
+  id: number
+  code: string
+  type: IterationType
+}
+
+/** 需求池列表项：项目轻量列 + 所属迭代；未进入迭代时 iteration 为 null */
+export interface ProjectListItem extends Project {
+  iteration: ProjectIterationRef | null
+}
+
 export interface ProjectPage {
-  items: Project[]
+  items: ProjectListItem[]
   total: number
   iterations: string[]
   priorities: string[]
@@ -1055,6 +1067,8 @@ export interface ProjectPageParams {
   status?: string
   type?: string
   priority?: string
+  /** 需求池快捷视图：未排期（创建不超过 30 天）/ 已排期 / 已过期（创建超过 30 天），与计划周无关 */
+  view?: 'unscheduled' | 'scheduled' | 'expired'
 }
 
 /** 平台设置（只读，来源于后端配置文件，不含密钥） */
@@ -2499,6 +2513,7 @@ export const api = {
     if (params.status) qs.set('status', params.status)
     if (params.type) qs.set('type', params.type)
     if (params.priority) qs.set('priority', params.priority)
+    if (params.view) qs.set('view', params.view)
     return request<ProjectPage>(`/projects/page?${qs.toString()}`)
   },
   /** 迭代分组视图：需求按迭代周期聚合 + 状态计数（业务分区「迭代」栏目） */
@@ -2644,7 +2659,6 @@ export const api = {
     id: number,
     input: {
       type?: ProjectType
-      status?: ProjectStatus
       priority?: string
       iterationCycle?: string
       /** YYYY-MM-DD，空串清除 */
@@ -3392,7 +3406,7 @@ export const api = {
     request<ProjectDeliveryTaskView>(`/projects/${projectId}/delivery-task`, {
       method: 'POST',
     }),
-  /** 项目提测：创建提测记录 + 状态流转「测试中」+ 通知提测群与项目人员（testers 至少 1 人且须为用户系统内用户） */
+  /** 项目提测：创建提测记录 + 通知提测群与项目人员（testers 至少 1 人且须为用户系统内用户；需求状态不随提测变化） */
   submitRelease: (
     projectId: number,
     input: {

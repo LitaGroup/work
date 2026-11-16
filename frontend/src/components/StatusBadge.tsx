@@ -3,14 +3,12 @@ import type { ProjectStatus } from '../lib/api'
 
 const variantByStatus: Record<
   ProjectStatus,
-  'info' | 'primary' | 'soft' | 'warning' | 'success' | 'secondary'
+  'info' | 'primary' | 'soft' | 'secondary'
 > = {
   待分配: 'info',
   开发中: 'primary',
-  已关闭: 'soft',
-  暂停中: 'warning',
-  测试中: 'success',
   已发布: 'secondary',
+  已关闭: 'soft',
 }
 
 export function StatusBadge({ status }: { status: ProjectStatus }) {

@@ -100,7 +100,7 @@ describe('groupProjectsByIteration（需求按迭代分组）', () => {
         project(2, 'w282: 08/26-09/01', '已发布'),
         project(3, UNSCHEDULED_CYCLE, '待分配'),
         project(4, null, '待分配'),
-        project(5, '', '暂停中'),
+        project(5, '', '已关闭'),
         project(6, 'Archive', '待分配'),
       ],
       new Date('2026-08-27T12:00:00+08:00'),
@@ -114,7 +114,7 @@ describe('groupProjectsByIteration（需求按迭代分组）', () => {
     expect(groups[0].current).toBe(true);
     expect(groups[1].current).toBe(false);
     expect(groups[3].total).toBe(3);
-    expect(groups[3].statusCounts).toEqual({ 待分配: 2, 暂停中: 1 });
+    expect(groups[3].statusCounts).toEqual({ 待分配: 2, 已关闭: 1 });
     expect(groups[0].items.map((p) => p.id)).toEqual([2]);
   });
 

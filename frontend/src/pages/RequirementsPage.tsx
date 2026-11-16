@@ -49,20 +49,27 @@ import {
   PROJECT_TYPES,
   PROJECT_STATUSES,
   type Project,
+  type ProjectListItem,
   type ProjectType,
   type ProjectStatus,
 } from '../lib/api'
 import { StatusBadge } from '../components/StatusBadge'
 import { TypeBadge, PriorityBadge } from '../components/ProjectBadges'
+import { useAuth } from '../context/AuthContext'
 
 /**
  * 需求（需求池）：汇集大家要做的事情。
  * 数据来源即现有项目实体（飞书需求池单向同步 + 平台内新建），详情沿用 /projects/:id。
- * 「未排期」快捷视图对应迭代筛选 '-'（后端把 空串/NULL 一并视为未排期）。
+ * 快捷 tab：未排期（未进入迭代且创建不超过 30 天）、已排期（已进入迭代）、已过期（未进入迭代且创建超过 30 天）、全部。
+ * 「是否进入迭代」以存在未取消迭代项判定，与计划周（iterationCycle）字段无关。
  */
 export function RequirementsPage() {
   const PAGE_SIZE = 20
-  const [items, setItems] = useState<Project[]>([])
+  const { user } = useAuth()
+  const isAdmin = user?.role === '管理员'
+  /** 快捷视图 tab：未排期 / 已排期 / 已过期 / 全部（默认未排期） */
+  const [viewTab, setViewTab] = useState<'unscheduled' | 'scheduled' | 'expired' | 'all'>('unscheduled')
+  const [items, setItems] = useState<ProjectListItem[]>([])
   const [total, setTotal] = useState(0)
   const [iterations, setIterations] = useState<string[]>([])
   const [priorities, setPriorities] = useState<string[]>([])
@@ -90,6 +97,7 @@ export function RequirementsPage() {
         page,
         pageSize: PAGE_SIZE,
         q: search || undefined,
+        view: viewTab === 'all' ? undefined : viewTab,
         iteration: iterationFilter === 'all' ? undefined : iterationFilter,
         status: statusFilter === 'all' ? undefined : statusFilter,
         type: typeFilter === 'all' ? undefined : typeFilter,
@@ -114,7 +122,7 @@ export function RequirementsPage() {
     return () => {
       cancelled = true
     }
-  }, [page, search, iterationFilter, statusFilter, typeFilter, priorityFilter, refresh])
+  }, [page, search, viewTab, iterationFilter, statusFilter, typeFilter, priorityFilter, refresh])
 
   const reload = useCallback(() => setRefresh((r) => r + 1), [])
 
@@ -137,30 +145,38 @@ export function RequirementsPage() {
         <div className="flex items-center gap-2">
           <SyncFeishuButton onSynced={reload} />
           <CreateRequirementDialog onCreated={reload} />
+          {isAdmin && (
+            <Link
+              to="/iterations/new"
+              className={buttonVariants({ variant: 'outline', size: 'sm' })}
+            >
+              创建迭代
+            </Link>
+          )}
         </div>
       </div>
 
       <div className="mb-3 flex items-center gap-2">
-        <Button
-          variant={iterationFilter === 'all' ? 'secondary' : 'ghost'}
-          size="sm"
-          onClick={() => {
-            setIterationFilter('all')
-            setPage(1)
-          }}
-        >
-          全部需求
-        </Button>
-        <Button
-          variant={iterationFilter === '-' ? 'secondary' : 'ghost'}
-          size="sm"
-          onClick={() => {
-            setIterationFilter('-')
-            setPage(1)
-          }}
-        >
-          未排期
-        </Button>
+        {(
+          [
+            { value: 'unscheduled', label: '未排期' },
+            { value: 'scheduled', label: '已排期' },
+            { value: 'expired', label: '已过期' },
+            { value: 'all', label: '全部' },
+          ] as const
+        ).map((tab) => (
+          <Button
+            key={tab.value}
+            variant={viewTab === tab.value ? 'secondary' : 'ghost'}
+            size="sm"
+            onClick={() => {
+              setViewTab(tab.value)
+              setPage(1)
+            }}
+          >
+            {tab.label}
+          </Button>
+        ))}
       </div>
 
       <Toolbar aria-label="需求筛选" className="mb-4">
@@ -310,6 +326,7 @@ export function RequirementsPage() {
             <TableHead className="text-center">优先级</TableHead>
             <TableHead className="text-center whitespace-nowrap">预期</TableHead>
             <TableHead className="text-center whitespace-nowrap">计划周(w)</TableHead>
+            <TableHead className="text-center whitespace-nowrap">迭代</TableHead>
             <TableHead className="text-center">状态</TableHead>
             <TableHead className="w-48 text-center">操作</TableHead>
           </TableRow>
@@ -342,6 +359,18 @@ export function RequirementsPage() {
                 )}
               </TableCell>
               <TableCell className="text-center">
+                {p.iteration ? (
+                  <Link
+                    to={`/iterations/${p.iteration.id}`}
+                    className="underline"
+                  >
+                    <Badge variant="secondary">{p.iteration.code}</Badge>
+                  </Link>
+                ) : (
+                  '—'
+                )}
+              </TableCell>
+              <TableCell className="text-center">
                 <StatusBadge status={p.status} />
               </TableCell>
               <TableCell className="text-center">
@@ -359,8 +388,16 @@ export function RequirementsPage() {
           ))}
           {items.length === 0 && (
             <TableRow>
-              <TableCell colSpan={8}>
-                {total === 0 ? '暂无需求，点击右上角新建或从飞书同步' : '没有符合筛选条件的需求'}
+              <TableCell colSpan={9}>
+                {total === 0
+                  ? viewTab === 'unscheduled'
+                    ? '暂无未排期的需求（最近 30 天内创建且尚未进入迭代）'
+                    : viewTab === 'scheduled'
+                      ? '暂无已排期的需求'
+                      : viewTab === 'expired'
+                        ? '暂无已过期的需求'
+                        : '暂无需求，点击右上角新建或从飞书同步'
+                  : '没有符合筛选条件的需求'}
               </TableCell>
             </TableRow>
           )}

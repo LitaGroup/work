@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { DocumentType, ProjectStatus, ProjectType } from '../common/enums';
+import { DocumentType, ProjectType } from '../common/enums';
 import { DocumentsService } from '../documents/documents.service';
 import { BitableRecord, FeishuService } from '../feishu/feishu.service';
 import { Project } from './project.entity';
@@ -84,24 +84,10 @@ export interface SyncResources {
 }
 
 /**
- * 需求池 → 平台项目状态（单向同步规则）：
- * - 源状态为 关闭 / 暂停 / ✅ 已上线 时直接同步（→ 已关闭 / 暂停中 / 已发布）；
- * - 其余状态（正常/有风险/Delay/空值/乱填等）按开发人员推导：
- *   前端 / 后端 / 客户端 任一已分配 → 开发中，全未分配 → 待分配。
+ * 需求池 → 平台项目同步（单向）。
+ * 状态不再从飞书同步：需求状态由平台按「是否进入迭代 + 创建时间」读时推导（见 project-status.ts），
+ * 飞书「需求状态」字段仅作为源数据保留在飞书侧，不写入 projects.status。
  */
-export function toProjectStatus(
-  value: unknown,
-  resources: SyncResources,
-): ProjectStatus {
-  if (typeof value === 'string') {
-    if (value.includes('关闭')) return ProjectStatus.FINISHED;
-    if (value.includes('暂停')) return ProjectStatus.PAUSED;
-    if (value.includes('已上线')) return ProjectStatus.PUBLISHED;
-  }
-  return resources.frontend || resources.backend || resources.client
-    ? ProjectStatus.IN_PROGRESS
-    : ProjectStatus.PLANNED;
-}
 
 /** 文本字段：segment 数组（含 mention）→ 纯文本 */
 function extractText(value: unknown): string | null {
@@ -370,11 +356,7 @@ export class ProjectSyncService {
     project.resources = Object.values(resources).some(Boolean)
       ? resources
       : null;
-    // 「测试中」为平台本地流程态（飞书侧无对应值），同步时保留不覆盖；
-    // 其余状态按规则映射（关闭/暂停/已上线直接同步，其余按开发人员推导）
-    if (project.status !== ProjectStatus.IN_TEST) {
-      project.status = toProjectStatus(f['需求状态'], resources);
-    }
+    // 状态为平台推导值（迭代项 + 创建时间），飞书「需求状态」不再写入
     project.priority = typeof f['优先级'] === 'string' ? f['优先级'] : null;
     project.expectedReleaseAt = extractDate(f['理想上线时间']);
     project.iterationCycle = toIterationCycle(f['w']);

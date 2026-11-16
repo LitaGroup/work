@@ -15,6 +15,8 @@ import { GithubModule } from '../github/github.module';
 import { ReleasesModule } from '../releases/releases.module';
 import { TasksModule } from '../tasks/tasks.module';
 import { Project } from './project.entity';
+import { Backlog } from '../iterations/backlog.entity';
+import { Iteration } from '../iterations/iteration.entity';
 import { ProjectSyncService } from './project-sync.service';
 import { ProjectsController } from './projects.controller';
 import { ProjectsService } from './projects.service';
@@ -22,7 +24,7 @@ import { SyncState } from './sync-state.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Project, SyncState]),
+    TypeOrmModule.forFeature([Project, SyncState, Backlog, Iteration]),
     DocumentsModule,
     ChecksModule,
     SchedulesModule,

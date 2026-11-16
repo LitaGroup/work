@@ -73,7 +73,6 @@ import {
   documentSourceLabel,
   CODE_BRANCH_CATEGORIES,
   MILESTONE_ACHIEVED,
-  PROJECT_STATUSES,
   PROJECT_TYPES,
   RELEASE_STATUSES,
   RESOURCE_STATUSES,
@@ -91,7 +90,6 @@ import {
   type ProjectExport,
   type ProjectRelease,
   type ProjectResource,
-  type ProjectStatus,
   type ProjectSchedule,
   type ProjectType,
   type ProjectWorkItem,
@@ -366,7 +364,8 @@ export function ProjectDetailPage() {
               <div className="flex items-center justify-between">
                 <dt>状态</dt>
                 <dd>
-                  <ProjectStatusSelect project={project} onChanged={reload} />
+                  {/* 状态为推导值（是否进入迭代 + 创建时间），不可手改 */}
+                  <StatusBadge status={project.status} />
                 </dd>
               </div>
               <div className="flex items-center justify-between">
@@ -915,59 +914,6 @@ function ProjectTypeSelect({
       ) : (
         <EditableValue onClick={() => setEditing(true)}>
           <Badge variant="secondary">{project.type}</Badge>
-        </EditableValue>
-      )}
-      {error && <span className="text-xs">{error}</span>}
-    </span>
-  )
-}
-
-/** 展示项目状态；点击值展开下拉，选中后立即保存（飞书同步项目下次同步会被飞书侧覆盖） */
-function ProjectStatusSelect({
-  project,
-  onChanged,
-}: {
-  project: Project
-  onChanged: () => void
-}) {
-  const [editing, setEditing] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  const change = (status: string) => {
-    if (status === project.status) return
-    setError(null)
-    api
-      .updateProject(project.id, { status: status as ProjectStatus })
-      .then(onChanged)
-      .catch((e: Error) => setError(e.message))
-  }
-
-  return (
-    <span className="flex flex-col items-end gap-1">
-      {editing ? (
-        <Select
-          defaultOpen
-          value={project.status}
-          onOpenChange={(open) => {
-            if (!open) setEditing(false)
-          }}
-          onValueChange={(v) => change(v as string)}
-          items={Object.fromEntries(PROJECT_STATUSES.map((s) => [s, s]))}
-        >
-          <SelectTrigger className="w-28">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {PROJECT_STATUSES.map((s) => (
-              <SelectItem key={s} value={s}>
-                {s}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      ) : (
-        <EditableValue onClick={() => setEditing(true)}>
-          <StatusBadge status={project.status} />
         </EditableValue>
       )}
       {error && <span className="text-xs">{error}</span>}
@@ -4173,7 +4119,7 @@ function ProjectDeliveryButton({
   )
 }
 
-/** 提测弹窗：内容/访问地址/代码分支/测试人员 + 提测时间（当前时间只读）；成功后状态流转「测试中」 */
+/** 提测弹窗：内容/访问地址/代码分支/测试人员 + 提测时间（当前时间只读）；需求状态由迭代项推导，不随提测变化 */
 function SubmitReleaseDialog({
   project,
   onSubmitted,

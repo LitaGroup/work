@@ -6,8 +6,18 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import * as path from 'path';
-import { FindOptionsWhere, ILike, In, IsNull, Not, Repository } from 'typeorm';
 import {
+  FindOptionsWhere,
+  ILike,
+  In,
+  IsNull,
+  Not,
+  Repository,
+  SelectQueryBuilder,
+} from 'typeorm';
+import {
+  BacklogStatus,
+  IterationType,
   MilestoneAchieved,
   ProjectStatus,
   ProjectType,
@@ -57,12 +67,18 @@ import { SYSTEM_PROJECT_DELIVERY_TASK_TEMPLATE_ID } from '../tasks/system-task-t
 import { Ticket } from '../tickets/ticket.entity';
 import { TicketWorkflowRun } from '../tickets/ticket-workflow-run.entity';
 import { Worker } from '../workers/worker.entity';
+import { Backlog } from '../iterations/backlog.entity';
+import { Iteration } from '../iterations/iteration.entity';
 import { Project } from './project.entity';
+import {
+  DAY_MS,
+  UNSCHEDULED_FRESH_DAYS,
+  deriveProjectStatus,
+} from './project-status';
 
 export interface CreateProjectInput {
   name: string;
   type?: ProjectType;
-  status?: ProjectStatus;
   expectedReleaseAt?: string;
   description?: string;
 }
@@ -76,6 +92,13 @@ export interface ProjectPageQuery {
   status?: ProjectStatus;
   type?: ProjectType;
   priority?: string;
+  /**
+   * 需求池快捷视图（与计划周无关，以「是否存在未取消迭代项」判定是否已排期）：
+   * - unscheduled：未排期且创建不超过 30 天；
+   * - scheduled：已排期（已进入迭代）；
+   * - expired：未排期且创建超过 30 天。
+   */
+  view?: 'unscheduled' | 'scheduled' | 'expired';
 }
 
 /** 人员字段（resources 列）键 → 展示名 */
@@ -87,9 +110,21 @@ const MEMBER_LABELS: Record<string, string> = {
   client: '客户端',
 };
 
+/** 需求池「迭代」列：需求当前未取消迭代项所属迭代（应用层引用 backlogs.iterationId） */
+export interface ProjectIterationRef {
+  id: number;
+  code: string;
+  type: IterationType;
+}
+
+/** 需求池列表项：项目轻量列 + 所属迭代；未进入迭代时 iteration 为 null */
+export interface ProjectListItem extends Project {
+  iteration: ProjectIterationRef | null;
+}
+
 /** 项目表格分页响应（items 只含当前页，total/iterations/priorities 供分页与筛选用） */
 export interface ProjectPage {
-  items: Project[];
+  items: ProjectListItem[];
   total: number;
   iterations: string[];
   priorities: string[];
@@ -320,13 +355,19 @@ export class ProjectsService {
     private readonly codeBranchesService: CodeBranchesService,
     private readonly tasksService: TasksService,
     private readonly projectChats: FeishuBotProjectChatService,
+    @InjectRepository(Backlog)
+    private readonly backlogRows: Repository<Backlog>,
+    @InjectRepository(Iteration)
+    private readonly iterationRows: Repository<Iteration>,
   ) {}
 
   findAll(): Promise<Project[]> {
-    return this.projects.find({
-      select: PROJECT_LIST_SELECT,
-      order: { createdAt: 'DESC' },
-    });
+    return this.projects
+      .find({
+        select: PROJECT_LIST_SELECT,
+        order: { createdAt: 'DESC' },
+      })
+      .then((projects) => this.applyDerivedStatuses(projects));
   }
 
   /**
@@ -336,48 +377,231 @@ export class ProjectsService {
   async findPage(query: ProjectPageQuery): Promise<ProjectPage> {
     const page = Math.max(1, query.page ?? 1);
     const pageSize = Math.min(200, Math.max(1, query.pageSize ?? 50));
-    const base: FindOptionsWhere<Project> = {};
-    if (query.q) base.name = ILike(`%${query.q}%`);
-    if (query.status) base.status = query.status;
-    if (query.type) base.type = query.type;
-    if (query.priority) base.priority = query.priority;
-    let where: FindOptionsWhere<Project> | FindOptionsWhere<Project>[] = base;
-    if (query.iteration) {
-      // 需求池「未排期」约定：迭代筛选传 '-' 时把 空串/NULL 一并视为未排期
-      where =
-        query.iteration === '-'
-          ? [
-              { ...base, iterationCycle: '-' },
-              { ...base, iterationCycle: '' },
-              { ...base, iterationCycle: IsNull() },
-            ]
-          : { ...base, iterationCycle: query.iteration };
+
+    const qb = this.projects.createQueryBuilder('project');
+    if (query.q) qb.andWhere('project.name ILIKE :q', { q: `%${query.q}%` });
+    if (query.type) qb.andWhere('project.type = :type', { type: query.type });
+    if (query.priority) {
+      qb.andWhere('project.priority = :priority', { priority: query.priority });
     }
-    const [items, total, iterations, priorities] = await Promise.all([
-      this.projects.find({
-        where,
-        select: PROJECT_LIST_SELECT,
-        order: { createdAt: 'DESC' },
-        skip: (page - 1) * pageSize,
-        take: pageSize,
-      }),
-      this.projects.count({ where }),
+    if (query.iteration === '-') {
+      // 需求池「未排期」约定：迭代筛选传 '-' 时把 空串/NULL 一并视为未排期
+      qb.andWhere(
+        "(project.iterationCycle IS NULL OR project.iterationCycle IN ('-', ''))",
+      );
+    } else if (query.iteration) {
+      qb.andWhere('project.iterationCycle = :iteration', {
+        iteration: query.iteration,
+      });
+    }
+    if (query.view) this.applyViewFilter(qb, query.view);
+    if (query.status) this.applyStatusFilter(qb, query.status);
+
+    const [items, total] = await qb
+      .select(Object.keys(PROJECT_LIST_SELECT).map((key) => `project.${key}`))
+      .orderBy('project.createdAt', 'DESC')
+      .skip((page - 1) * pageSize)
+      .take(pageSize)
+      .getManyAndCount();
+    const [iterations, priorities] = await Promise.all([
       this.distinctColumn('iterationCycle'),
       this.distinctColumn('priority'),
     ]);
-    return { items, total, iterations, priorities };
+    const activeBacklogs = await this.loadActiveBacklogs(
+      items.map((project) => project.id),
+    );
+    const iterationById = await this.loadIterations([
+      ...new Set([...activeBacklogs.values()].map((row) => row.iterationId)),
+    ]);
+    const now = new Date();
+    return {
+      items: items.map((project) => {
+        const backlog = activeBacklogs.get(project.id);
+        const iteration = backlog
+          ? iterationById.get(backlog.iterationId)
+          : undefined;
+        return {
+          ...project,
+          status: deriveProjectStatus(
+            backlog?.status ?? null,
+            project.createdAt,
+            now,
+          ),
+          iteration: iteration
+            ? { id: iteration.id, code: iteration.code, type: iteration.type }
+            : null,
+        };
+      }),
+      total,
+      iterations,
+      priorities,
+    };
+  }
+
+  /**
+   * 快捷视图（与计划周无关，按是否存在未取消迭代项判定）：
+   * - scheduled：已排期（不限创建时间）；
+   * - unscheduled：未排期且创建不超过 30 天；
+   * - expired：未排期且创建超过 30 天。
+   */
+  private applyViewFilter(
+    qb: SelectQueryBuilder<Project>,
+    view: NonNullable<ProjectPageQuery['view']>,
+  ): void {
+    if (view === 'scheduled') {
+      qb.andWhere(
+        `EXISTS (
+           SELECT 1 FROM "backlogs" backlog
+           WHERE backlog."projectId" = project.id
+             AND backlog."status"::text <> :canceledBacklogStatus
+         )`,
+        { canceledBacklogStatus: BacklogStatus.CANCELED },
+      );
+      return;
+    }
+    // 已完成但未取消的迭代项仍算已排期，只有取消后才能重新回到未排期。
+    qb.andWhere(
+      `NOT EXISTS (
+         SELECT 1 FROM "backlogs" backlog
+         WHERE backlog."projectId" = project.id
+           AND backlog."status"::text <> :canceledBacklogStatus
+       )`,
+      { canceledBacklogStatus: BacklogStatus.CANCELED },
+    );
+    const cutoff = new Date(Date.now() - UNSCHEDULED_FRESH_DAYS * DAY_MS);
+    qb.andWhere(
+      view === 'unscheduled'
+        ? 'project.createdAt >= :cutoff'
+        : 'project.createdAt < :cutoff',
+      { cutoff },
+    );
+  }
+
+  /**
+   * 状态筛选：四态全部按推导规则翻译成 SQL（存量落库值不参与判定），
+   * 与 deriveProjectStatus 口径保持一致。
+   */
+  private applyStatusFilter(
+    qb: SelectQueryBuilder<Project>,
+    status: ProjectStatus,
+  ): void {
+    const cutoff = new Date(Date.now() - UNSCHEDULED_FRESH_DAYS * DAY_MS);
+    const activeBacklogExists = (extra = '') =>
+      `EXISTS (
+         SELECT 1 FROM "backlogs" backlog
+         WHERE backlog."projectId" = project.id
+           AND backlog."status"::text <> :canceledBacklogStatus${extra}
+       )`;
+    const noActiveBacklog = `NOT EXISTS (
+       SELECT 1 FROM "backlogs" backlog
+       WHERE backlog."projectId" = project.id
+         AND backlog."status"::text <> :canceledBacklogStatus
+     )`;
+    const params = { canceledBacklogStatus: BacklogStatus.CANCELED };
+
+    switch (status) {
+      case ProjectStatus.PLANNED:
+        qb.andWhere(noActiveBacklog, params).andWhere(
+          'project.createdAt >= :cutoff',
+          { cutoff },
+        );
+        return;
+      case ProjectStatus.FINISHED:
+        qb.andWhere(noActiveBacklog, params).andWhere(
+          'project.createdAt < :cutoff',
+          { cutoff },
+        );
+        return;
+      case ProjectStatus.IN_PROGRESS:
+        qb.andWhere(
+          activeBacklogExists(
+            ' AND backlog."status"::text <> :completedBacklogStatus',
+          ),
+          { ...params, completedBacklogStatus: BacklogStatus.COMPLETED },
+        );
+        return;
+      case ProjectStatus.PUBLISHED:
+        qb.andWhere(
+          activeBacklogExists(
+            ' AND backlog."status"::text = :completedBacklogStatus',
+          ),
+          { ...params, completedBacklogStatus: BacklogStatus.COMPLETED },
+        );
+        return;
+      default:
+        // 理论不可达（枚举已收敛为四态），兜底按落库值过滤
+        qb.andWhere('project.status = :status', { status });
+    }
+  }
+
+  /** 批量覆盖推导状态（列表/详情/Markdown 视图统一入口，落库值不作为展示依据） */
+  private async applyDerivedStatuses<T extends Project>(
+    items: T[],
+  ): Promise<T[]> {
+    const activeBacklogs = await this.loadActiveBacklogs(
+      items.map((project) => project.id),
+    );
+    const now = new Date();
+    for (const project of items) {
+      project.status = deriveProjectStatus(
+        activeBacklogs.get(project.id)?.status ?? null,
+        project.createdAt,
+        now,
+      );
+    }
+    return items;
+  }
+
+  /**
+   * 批量读取需求的未取消迭代项（projectId → 迭代项摘要）。
+   * 一个需求同时只允许一个未取消迭代项（见 AGENTS.md 迭代与 Backlog），已取消的不计入。
+   */
+  private async loadActiveBacklogs(
+    projectIds: number[],
+  ): Promise<Map<number, { iterationId: number; status: BacklogStatus }>> {
+    const map = new Map<
+      number,
+      { iterationId: number; status: BacklogStatus }
+    >();
+    if (projectIds.length === 0) return map;
+    const backlogs = await this.backlogRows.find({
+      where: {
+        projectId: In(projectIds),
+        status: Not(BacklogStatus.CANCELED),
+      },
+      select: { projectId: true, iterationId: true, status: true },
+    });
+    for (const backlog of backlogs) {
+      map.set(backlog.projectId, {
+        iterationId: backlog.iterationId,
+        status: backlog.status,
+      });
+    }
+    return map;
+  }
+
+  /** 批量读取迭代摘要（id → code/type），供需求池「迭代」列展示 */
+  private async loadIterations(
+    iterationIds: number[],
+  ): Promise<Map<number, { id: number; code: string; type: IterationType }>> {
+    if (iterationIds.length === 0) return new Map();
+    const iterations = await this.iterationRows.find({
+      where: { id: In(iterationIds) },
+      select: { id: true, code: true, type: true },
+    });
+    return new Map(iterations.map((it) => [it.id, it]));
   }
 
   /**
    * 迭代分组视图（GET /projects/iterations）：把需求按迭代周期聚合，反映当前进度。
-   * 全量走列表轻列（与 GET /projects 同一模式），分组与统计在内存完成。
+   * 全量走列表轻列（与 GET /projects 同一模式），分组与统计在内存完成；状态按推导值统计。
    */
   async groupIterations(): Promise<IterationGroup[]> {
     const projects = await this.projects.find({
       select: PROJECT_LIST_SELECT,
       order: { createdAt: 'DESC' },
     });
-    return groupProjectsByIteration(projects);
+    return groupProjectsByIteration(await this.applyDerivedStatuses(projects));
   }
 
   /** 某列的去重取值（供筛选下拉），仅返回非空值 */
@@ -464,6 +688,8 @@ export class ProjectsService {
     project.projectBranches = projectBranches;
     project.projectReleases = projectReleases;
     Object.assign(project, { projectDeliveryTask, projectWorkItems });
+    // 状态为读时推导值（迭代项 + 创建时间），落库值不参与展示
+    await this.applyDerivedStatuses([project]);
     // 检查/测试/导出按编号自然排序
     project.checks.sort((a, b) => codeCollator.compare(a.code, b.code));
     project.tests.sort((a, b) => codeCollator.compare(a.code, b.code));
@@ -719,6 +945,7 @@ export class ProjectsService {
       order: { createdAt: 'DESC' },
       take: 100,
     });
+    await this.applyDerivedStatuses(candidates);
     const lower = q.toLowerCase();
     const rank = (name: string): number => {
       const n = name.toLowerCase();
@@ -1070,12 +1297,11 @@ export class ProjectsService {
     ].join('\n');
   }
 
-  /** 更新项目可编辑字段：类型/状态/优先级/迭代周期/预期发布时间 + 脚本目录（scriptsPath）、描述（description）、人员（resources），空串清除。注意：飞书同步项目的同步字段（类型/状态/优先级/迭代/预期发布/人员）会在下次同步时被飞书侧覆盖 */
+  /** 更新项目可编辑字段：类型/优先级/迭代周期/预期发布时间 + 脚本目录（scriptsPath）、描述（description）、人员（resources），空串清除。状态为推导值不可手改。注意：飞书同步项目的同步字段（类型/优先级/迭代/预期发布/人员）会在下次同步时被飞书侧覆盖 */
   async update(
     id: number,
     input: {
       type?: ProjectType;
-      status?: ProjectStatus;
       priority?: string;
       iterationCycle?: string;
       expectedReleaseAt?: string;
@@ -1096,12 +1322,6 @@ export class ProjectsService {
         throw new BadRequestException(`非法的项目类型：${input.type}`);
       }
       project.type = input.type;
-    }
-    if (input.status !== undefined) {
-      if (!Object.values(ProjectStatus).includes(input.status)) {
-        throw new BadRequestException(`非法的项目状态：${input.status}`);
-      }
-      project.status = input.status;
     }
     if (input.priority !== undefined) {
       project.priority = this.normalizeShortText(input.priority, 20, '优先级');
@@ -1152,7 +1372,7 @@ export class ProjectsService {
 
   /**
    * AI 用：仅本地字段更新（脚本目录/描述/人员），返回 Markdown 结果。
-   * 刻意不含飞书同步字段（类型/状态/优先级/迭代/预期发布），避免与飞书侧互相覆盖。
+   * 刻意不含飞书同步字段（类型/优先级/迭代/预期发布），状态为推导值不可改。
    */
   async updateMarkdown(
     id: number,

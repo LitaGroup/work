@@ -210,7 +210,10 @@ export class BacklogsController {
       }
       return parsed;
     };
-    if (status !== undefined && !Object.values(BacklogStatus).includes(status)) {
+    if (
+      status !== undefined &&
+      !Object.values(BacklogStatus).includes(status)
+    ) {
       throw new BadRequestException('迭代项状态非法');
     }
     return this.backlogsService.list({
