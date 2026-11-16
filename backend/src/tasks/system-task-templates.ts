@@ -72,12 +72,33 @@ export const SYSTEM_BACKLOG_DELIVERY_TASK_TEMPLATE_DESCRIPTION = [
   '任务创建时已明确指派给该迭代项的负责人机器人（AI 或真人），无需再经任务定义默认机器人分配。',
 ].join('\n');
 
+/** 迭代级整体交付使用的系统任务定义固定 ID（10-15 为已退役工单调度定义，跳过不复用） */
+export const SYSTEM_ITERATION_DELIVERY_TASK_TEMPLATE_ID = 16;
+
+export const SYSTEM_ITERATION_DELIVERY_TASK_TEMPLATE_NAME = '技术-迭代-交付';
+
+export const SYSTEM_ITERATION_DELIVERY_TASK_TEMPLATE_DESCRIPTION = [
+  '承接一次迭代的整体交付：负责完成该迭代内全部 Backlog 的交付。',
+  '',
+  '## 任务范围',
+  '',
+  '- 读取迭代 Markdown 上下文（任务描述中包含迭代地址，`GET /api/iterations/{id}.md`），确认迭代标识、类型、起止日期与 Backlog 清单。',
+  '- 逐个梳理 Backlog 的目标、负责人与状态（`GET /api/backlogs/{id}.md`），推进开发、配置和必要的技术文档交付。',
+  '- 在 HANDOFF 中记录整体实施过程与各 Backlog 的交付结论，完成后显式申请验收。',
+  '- 需要单条 Backlog 独立开发时，其交付任务使用「迭代-Backlog交付」（ID=9）；本定义负责迭代级统筹与整体交付。',
+  '',
+  '## 承接机器人',
+  '',
+  '普通 AI 机器人与真人类机器人均可承接；默认处理机器人由管理员配置，也可在创建任务时显式指派。',
+].join('\n');
+
 /** 系统任务定义固定 ID 集合（不可删除，名称/类型由平台保留） */
 export const SYSTEM_TASK_TEMPLATE_IDS: ReadonlySet<number> = new Set([
   SYSTEM_UNKNOWN_TASK_TEMPLATE_ID,
   SYSTEM_PROJECT_DELIVERY_TASK_TEMPLATE_ID,
   SYSTEM_FEEDBACK_TASK_TEMPLATE_ID,
   SYSTEM_BACKLOG_DELIVERY_TASK_TEMPLATE_ID,
+  SYSTEM_ITERATION_DELIVERY_TASK_TEMPLATE_ID,
 ]);
 
 export function isSystemTaskTemplateId(id: number): boolean {

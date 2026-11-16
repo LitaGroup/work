@@ -27,6 +27,9 @@ import {
   SYSTEM_FEEDBACK_TASK_TEMPLATE_DESCRIPTION,
   SYSTEM_FEEDBACK_TASK_TEMPLATE_ID,
   SYSTEM_FEEDBACK_TASK_TEMPLATE_NAME,
+  SYSTEM_ITERATION_DELIVERY_TASK_TEMPLATE_DESCRIPTION,
+  SYSTEM_ITERATION_DELIVERY_TASK_TEMPLATE_ID,
+  SYSTEM_ITERATION_DELIVERY_TASK_TEMPLATE_NAME,
   SYSTEM_PROJECT_DELIVERY_TASK_TEMPLATE_DESCRIPTION,
   SYSTEM_PROJECT_DELIVERY_TASK_TEMPLATE_ID,
   SYSTEM_PROJECT_DELIVERY_TASK_TEMPLATE_NAME,
@@ -93,6 +96,11 @@ export class TaskTemplatesService implements OnModuleInit {
       id: SYSTEM_BACKLOG_DELIVERY_TASK_TEMPLATE_ID,
       name: SYSTEM_BACKLOG_DELIVERY_TASK_TEMPLATE_NAME,
       description: SYSTEM_BACKLOG_DELIVERY_TASK_TEMPLATE_DESCRIPTION,
+    });
+    await this.ensureSystemTemplate({
+      id: SYSTEM_ITERATION_DELIVERY_TASK_TEMPLATE_ID,
+      name: SYSTEM_ITERATION_DELIVERY_TASK_TEMPLATE_NAME,
+      description: SYSTEM_ITERATION_DELIVERY_TASK_TEMPLATE_DESCRIPTION,
     });
     await ensureTaskTemplateSequenceFloor(this.templates);
   }
@@ -216,7 +224,7 @@ export class TaskTemplatesService implements OnModuleInit {
     }
     lines.push(
       '',
-      '系统任务定义（ID 6「未知任务」、ID 7「技术-项目开发交付」、ID 8「用户反馈处理」）不可改名、不可删除；描述和处理机器人仍可维护。',
+      '来源为「系统」的任务定义不可改名、不可删除；描述和处理机器人仍可维护。',
       '',
       '## AI 操作',
       '',
