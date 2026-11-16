@@ -7,13 +7,14 @@ import {
   AccordionTrigger,
 } from '@appica/ui-react/accordion'
 import { Badge } from '@appica/ui-react/badge'
-import { Wrench } from '@appica/icons-react'
+import { LayoutDashboard } from '@appica/icons-react'
 import {
   api,
   type WorkbenchSummary,
   type WorkbenchTask,
 } from '../lib/api'
 import { formatDuration, taskDurationMs } from '../lib/duration'
+import { WorkbenchOverview } from '../components/WorkbenchOverview'
 import { TaskDetailView } from './TaskPackageDetailPage'
 
 type TaskGroupKey = 'in-progress' | 'waiting' | 'completed'
@@ -31,29 +32,22 @@ function groupKeyOf(task: WorkbenchTask): TaskGroupKey {
   return 'completed'
 }
 
-/** 操作台：左侧任务列表 + 右侧复用任务中心的任务详情主体。 */
+/** 操作台：左侧任务列表 + 右侧概览或任务详情（复用任务中心的任务详情主体）。 */
 export function WorkbenchPage() {
   const { taskId } = useParams<{ taskId?: string }>()
   const navigate = useNavigate()
   const [summary, setSummary] = useState<WorkbenchSummary | null>(null)
-  const [selectedId, setSelectedId] = useState<number | null>(
-    taskId ? Number(taskId) : null,
-  )
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [now, setNow] = useState(() => Date.now())
+  /** 无 taskId 时展示概览（工作台默认落地页） */
+  const selectedId = taskId ? Number(taskId) : null
 
   const loadSummary = useCallback(async () => {
     try {
       const data = await api.getWorkbench()
       setSummary(data)
       setError(null)
-      setSelectedId((current) => {
-        if (current && data.tasks.some((task) => task.id === current)) {
-          return current
-        }
-        return data.tasks[0]?.id ?? null
-      })
     } catch (e) {
       setError((e as Error).message)
     } finally {
@@ -79,11 +73,14 @@ export function WorkbenchPage() {
 
   const selectTask = useCallback(
     (id: number) => {
-      setSelectedId(id)
       navigate(`/workbench/tasks/${id}`, { replace: true })
     },
     [navigate],
   )
+
+  const openOverview = useCallback(() => {
+    navigate('/workbench', { replace: true })
+  }, [navigate])
 
   const activeTasks = useMemo(() => summary?.tasks ?? [], [summary])
 
@@ -163,6 +160,20 @@ export function WorkbenchPage() {
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-2">
+          {/* 概览固定排第一位：无选中任务时高亮 */}
+          <button
+            type="button"
+            onClick={openOverview}
+            aria-current={selectedId === null ? 'page' : undefined}
+            className={`mb-1 flex w-full items-center gap-2 rounded-[var(--radius-md)] px-3 py-2 text-left text-sm transition-colors ${
+              selectedId === null
+                ? 'bg-background-muted font-medium text-foreground-intense'
+                : 'text-foreground-emphasis hover:bg-background-muted'
+            }`}
+          >
+            <LayoutDashboard className="size-4" />
+            概览
+          </button>
           {activeTasks.length === 0 ? (
             <p className="px-3 py-4 text-xs text-foreground-muted">
               暂无任务
@@ -243,21 +254,10 @@ export function WorkbenchPage() {
               onOpenTask={openRelatedTask}
             />
           ) : (
-            <EmptyWork />
+            <WorkbenchOverview onOpenTask={selectTask} />
           )}
         </div>
       </main>
-    </div>
-  )
-}
-
-function EmptyWork() {
-  return (
-    <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-sm text-foreground-muted">
-      <span className="rounded-full bg-background-muted p-3">
-        <Wrench className="size-5" />
-      </span>
-      <p>选择任务后查看工作内容</p>
     </div>
   )
 }

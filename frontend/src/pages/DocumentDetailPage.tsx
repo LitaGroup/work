@@ -59,6 +59,9 @@ export function DocumentDetailPage() {
   const [meta, setMeta] = useState<FrontmatterEntry[]>([])
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
+  // AI 面板（右下角浮动入口 + ⌥A 快捷键 + 可收起），与任务/迭代项详情页一致
+  const [aiOpen, setAiOpen] = useState(false)
+  const [aiUnread, setAiUnread] = useState(0)
   const editorBoxRef = useRef<HTMLDivElement>(null)
   const editorRef = useRef<MarkdownEditorHandle>(null)
   // 正文标题目录（随编辑实时更新）；锚点注入轮次——Toc 组件据此（重）挂载以观察到已注入 id 的标题
@@ -206,8 +209,15 @@ export function DocumentDetailPage() {
 
   return (
     <DetailPageLayout
+      aiCollapsible
+      aiOutsideContent
+      aiOpen={aiOpen}
+      onAiOpenChange={setAiOpen}
+      aiUnreadCount={aiUnread}
       ai={
         <DetailAgentPanel
+          visible={aiOpen}
+          onUnreadChange={setAiUnread}
           context={{
             type: 'document',
             id: `document:${doc.id}`,

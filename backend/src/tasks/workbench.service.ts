@@ -60,6 +60,14 @@ export interface WorkbenchSummary {
   tasks: WorkbenchTask[];
 }
 
+/** 操作台概览分页结果：与我相关的全部任务，按创建时间倒序 */
+export interface WorkbenchOverviewPage {
+  items: WorkbenchTask[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
 const WORKBENCH_STATUSES = [
   TaskStatus.WAITING,
   TaskStatus.RUNNING,
@@ -67,6 +75,9 @@ const WORKBENCH_STATUSES = [
 ];
 /** 操作台单次返回上限：等待/进行通常很少；已完成只保留最近记录，避免清单无限增长 */
 const WORKBENCH_TASK_LIMIT = 300;
+/** 概览分页：默认 50 条/页，单页上限 200 条（与项目表格分页一致） */
+const WORKBENCH_OVERVIEW_PAGE_SIZE = 50;
+const WORKBENCH_OVERVIEW_MAX_PAGE_SIZE = 200;
 
 /** 详情页「我的 AI」可用的页面类型 */
 export type AgentPageContextType =
@@ -209,11 +220,95 @@ export class WorkbenchService {
         reason: `个人 AGENT 加载失败：${error.message}`,
       }));
     const personalAgentId = agent.worker?.id ?? null;
+    const ownedWorkerIds = await this.ownedWorkerIds(user.id);
+    const rows = await this.tasks.find({
+      where: this.relatedTaskWhere(
+        user,
+        worker,
+        personalAgentId,
+        ownedWorkerIds,
+      ),
+      order: { updatedAt: 'DESC' },
+      take: WORKBENCH_TASK_LIMIT,
+    });
+    const byId = new Map<number, Task>();
+    for (const row of rows) byId.set(row.id, row);
+    const tasks = [...byId.values()].map((task) =>
+      this.toWorkbenchTask(task, worker, user, personalAgentId, ownedWorkerIds),
+    );
+    // 默认兜底排序；前端会按“分配到自己机器人”的时间分三组倒序展示。
+    tasks.sort((a, b) => {
+      const actionA = a.workbenchAction ? 0 : 1;
+      const actionB = b.workbenchAction ? 0 : 1;
+      if (actionA !== actionB) return actionA - actionB;
+      const assignedA = a.assignedAt ?? a.updatedAt;
+      const assignedB = b.assignedAt ?? b.updatedAt;
+      return new Date(assignedB).getTime() - new Date(assignedA).getTime();
+    });
+    return { worker, agent, tasks };
+  }
+
+  /** 工作台概览：与我相关的全部任务，按创建时间倒序分页 */
+  async overview(
+    user: User,
+    input: { page?: number; pageSize?: number } = {},
+  ): Promise<WorkbenchOverviewPage> {
+    const worker = await this.workersService.mustHumanWorker(user.id);
+    const personalAgent = await this.personalAgents.findForUser(user.id);
+    const personalAgentId = personalAgent?.id ?? null;
+    const ownedWorkerIds = await this.ownedWorkerIds(user.id);
+    const page = Math.max(1, Math.floor(input.page ?? 1));
+    const pageSize = Math.min(
+      WORKBENCH_OVERVIEW_MAX_PAGE_SIZE,
+      Math.max(1, Math.floor(input.pageSize ?? WORKBENCH_OVERVIEW_PAGE_SIZE)),
+    );
+    const [rows, total] = await this.tasks.findAndCount({
+      where: this.relatedTaskWhere(
+        user,
+        worker,
+        personalAgentId,
+        ownedWorkerIds,
+      ),
+      // 同秒创建时用 id 兜底，保证分页顺序稳定
+      order: { createdAt: 'DESC', id: 'DESC' },
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+    });
+    return {
+      items: rows.map((task) =>
+        this.toWorkbenchTask(
+          task,
+          worker,
+          user,
+          personalAgentId,
+          ownedWorkerIds,
+        ),
+      ),
+      total,
+      page,
+      pageSize,
+    };
+  }
+
+  /** 我负责的机器人（排除个人 AGENT） */
+  private async ownedWorkerIds(userId: number): Promise<number[]> {
     const ownedWorkers = await this.workers.find({
-      where: { ownerUserId: user.id, personalAgentUserId: IsNull() },
+      where: { ownerUserId: userId, personalAgentUserId: IsNull() },
       select: { id: true },
     });
-    const ownedWorkerIds = ownedWorkers.map((item) => item.id);
+    return ownedWorkers.map((item) => item.id);
+  }
+
+  /**
+   * 工作台「与我相关」的任务范围：
+   * 我执行 / 我是需求方（含历史个人 AGENT）/ 我负责的机器人执行 / 历史接管。
+   */
+  private relatedTaskWhere(
+    user: User,
+    worker: Worker,
+    personalAgentId: number | null,
+    ownedWorkerIds: number[],
+  ): FindOptionsWhere<Task>[] {
     const where: FindOptionsWhere<Task>[] = [
       { agentId: worker.id, status: In(WORKBENCH_STATUSES) },
       {
@@ -246,26 +341,7 @@ export class WorkbenchService {
         status: In(WORKBENCH_STATUSES),
       });
     }
-    const rows = await this.tasks.find({
-      where,
-      order: { updatedAt: 'DESC' },
-      take: WORKBENCH_TASK_LIMIT,
-    });
-    const byId = new Map<number, Task>();
-    for (const row of rows) byId.set(row.id, row);
-    const tasks = [...byId.values()].map((task) =>
-      this.toWorkbenchTask(task, worker, user, personalAgentId, ownedWorkerIds),
-    );
-    // 默认兜底排序；前端会按“分配到自己机器人”的时间分三组倒序展示。
-    tasks.sort((a, b) => {
-      const actionA = a.workbenchAction ? 0 : 1;
-      const actionB = b.workbenchAction ? 0 : 1;
-      if (actionA !== actionB) return actionA - actionB;
-      const assignedA = a.assignedAt ?? a.updatedAt;
-      const assignedB = b.assignedAt ?? b.updatedAt;
-      return new Date(assignedB).getTime() - new Date(assignedA).getTime();
-    });
-    return { worker, agent, tasks };
+    return where;
   }
 
   /** 当前用户必须是其个人机器人，且该机器人是任务执行方 */

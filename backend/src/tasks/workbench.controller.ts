@@ -23,6 +23,7 @@ import {
   WorkbenchService,
   WorkbenchSummary,
   type AgentPageContext,
+  type WorkbenchOverviewPage,
   type WorkbenchTask,
 } from './workbench.service';
 import { Task } from './task.entity';
@@ -120,6 +121,12 @@ class WorkbenchAgentTargetDto extends WorkbenchAgentPageContextDto {
 function parseTaskId(value: unknown): number | null {
   const id = Number(value);
   return Number.isInteger(id) && id > 0 ? id : null;
+}
+
+/** 分页参数只接受正整数，非法值交给服务层默认值 */
+function parsePageNumber(value: unknown): number | undefined {
+  const n = Number(value);
+  return Number.isInteger(n) && n > 0 ? n : undefined;
 }
 
 /** 把 query/body 的上下文扁平字段整理为规范化后的详情页上下文 */
@@ -281,6 +288,20 @@ export class WorkbenchController {
       parseTaskId(dto?.taskId),
       parsePageContext(dto),
     );
+  }
+
+  /** 概览：与我相关的全部任务，按创建时间倒序分页（须声明在 tasks/:id 之前） */
+  @Get('tasks')
+  overview(
+    @Req() req: AuthedRequest,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+  ): Promise<WorkbenchOverviewPage> {
+    this.requireUser(req);
+    return this.workbench.overview(req.user!, {
+      page: parsePageNumber(page),
+      pageSize: parsePageNumber(pageSize),
+    });
   }
 
   /** 单个任务在当前用户视角下的工作台角色（详情页复用身份对话） */

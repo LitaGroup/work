@@ -501,6 +501,9 @@ export function TaskDetailView({
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="outline" size="sm">
+                {currentTask.templateName ?? '未设置'}
+              </Badge>
               <h1 className="break-words text-xl font-semibold text-foreground-intense">
                 {title ?? `${currentTask.code} ${currentTask.title}`}
               </h1>
@@ -515,9 +518,6 @@ export function TaskDetailView({
                   审批任务
                 </Badge>
               )}
-              <Badge variant="soft" size="sm">
-                定义 · {currentTask.templateName ?? '未设置'}
-              </Badge>
             </div>
             <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-foreground-muted">
               <span>
@@ -825,10 +825,10 @@ function TaskDetailSkeleton({
       )}
       <header className="shrink-0 space-y-2">
         <div className="flex items-center gap-2">
+          <Skeleton className="h-5 w-20 rounded-full" />
           <Skeleton className="h-7 w-72 max-w-full" />
           <Skeleton className="h-5 w-24 rounded-full" />
           <Skeleton className="h-5 w-16 rounded-full" />
-          <Skeleton className="h-5 w-20 rounded-full" />
         </div>
         <Skeleton className="h-4 w-[28rem] max-w-full" />
       </header>
