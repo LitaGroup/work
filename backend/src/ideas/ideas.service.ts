@@ -262,7 +262,7 @@ export class IdeasService {
     const lines: string[] = [
       '# 灵感',
       '',
-      `共 ${rows.length} 条。详情：GET /api/ideas/{id}.md；采纳会进入需求池（GET /api/projects/{id}.md）。`,
+      `共 ${rows.length} 条。详情：GET /api/ideas/{id}.md；采纳会进入需求池（GET /api/requirements/{id}.md）。`,
       '',
     ];
     if (rows.length === 0) {
@@ -304,7 +304,7 @@ export class IdeasService {
     ];
     if (idea.adoptedAt) meta.push(`- 采纳时间：${beijingTime(idea.adoptedAt)}`);
     if (idea.projectId)
-      meta.push(`- 需求：\`GET /api/projects/${idea.projectId}.md\``);
+      meta.push(`- 需求：\`GET /api/requirements/${idea.projectId}.md\``);
     if (idea.images?.length) meta.push(`- 图片：${idea.images.join('、')}`);
     const sections = ['# 灵感', '', ...meta, ''];
     sections.push('## 正文', '', idea.content.trim() || '（暂无正文）');

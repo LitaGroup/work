@@ -86,7 +86,7 @@ export function releaseNotificationPrompt(
     '',
     '# 建议阅读',
     '',
-    `- 项目详情：GET ${api}/projects/${projectId}.md`,
+    `- 需求详情：GET ${api}/requirements/${projectId}.md`,
     `- 提测记录：GET ${api}/releases.md?projectId=${projectId}`,
     releaseId
       ? `- 关联缺陷：GET ${api}/defects.md?projectId=${projectId}&releaseId=${releaseId}`

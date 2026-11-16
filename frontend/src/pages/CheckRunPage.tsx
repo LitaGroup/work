@@ -158,7 +158,7 @@ export function CheckRunPage() {
       }
       breadcrumb={[
         { label: '检查', to: '/checks' },
-        { label: projectName ?? '…', to: `/projects/${projectId}` },
+        { label: projectName ?? '…', to: `/requirements/${projectId}` },
         { label: check?.code ?? '…' },
       ]}
       title={`检查：${check?.code ?? '…'}`}

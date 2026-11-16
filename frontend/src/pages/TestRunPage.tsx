@@ -200,7 +200,7 @@ export function TestRunPage() {
       }
       breadcrumb={[
         { label: '测试', to: '/tests' },
-        { label: projectName ?? '…', to: `/projects/${projectId}` },
+        { label: projectName ?? '…', to: `/requirements/${projectId}` },
         { label: test?.code ?? '…' },
       ]}
       title={`测试：${test?.code ?? '…'}`}

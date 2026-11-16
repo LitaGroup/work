@@ -42,6 +42,22 @@ export interface CreateBacklogItemInput {
   members?: BacklogMemberInput[];
 }
 
+/**
+ * 迭代项新建任务：
+ * - 已有交付任务：作为交付任务的子任务创建；
+ * - 无交付任务：按执行机器人创建交付任务，并登记为迭代项负责人（仅管理员）。
+ */
+export interface CreateBacklogTaskInput {
+  /** 标题（可空，缺省按描述首行生成；交付任务缺省用「迭代任务-{需求名}」） */
+  title?: string;
+  /** 任务描述（必填；交付任务缺省写入迭代与需求上下文） */
+  description?: string | null;
+  /** 任务定义（可空；交付任务缺省用系统「迭代-Backlog交付」） */
+  templateId?: number | null;
+  /** 执行机器人（可空；无交付任务时作为负责人，必填） */
+  agentId?: number | null;
+}
+
 /** 提测工单工作流可用性（迭代项详情返回，供前端提测按钮置灰） */
 export interface BacklogReleaseWorkflow {
   /** 工单配置（workflow_definitions.id） */
@@ -62,6 +78,8 @@ export interface BacklogTaskSummary {
   rootId: number;
   projectId: number | null;
   agentId: number | null;
+  /** 处理机器人名称（agentId 对应的 workers.name） */
+  agentName: string | null;
   templateName: string | null;
   sortOrder: number;
   createdAt: Date;

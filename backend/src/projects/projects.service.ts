@@ -18,10 +18,8 @@ import {
 import {
   BacklogStatus,
   IterationType,
-  MilestoneAchieved,
   ProjectStatus,
   ProjectType,
-  ResourceType,
   ResourceStatus,
   TaskStatus,
   TaskSubStatus,
@@ -47,15 +45,14 @@ import {
 } from '../resources/resources.service';
 import { Resource } from '../resources/resource.entity';
 import { MilestonesService } from '../milestones/milestones.service';
-import { deriveMilestoneStatus } from '../milestones/milestones.service';
 import { AppVersionsService } from '../app-versions/app-versions.service';
 import { CodeBranchesService } from '../github/code-branches.service';
 import { ProjectBranch } from '../github/project-branch.entity';
-import { runSummaryLine, RunDetailLike } from '../common/run-markdown';
 import { mdFrontmatter, beijingTime } from '../common/frontmatter';
 import { splitMemberNames } from '../common/names';
 import { ReleasesService } from '../releases/releases.service';
 import { ProjectRelease } from '../releases/project-release.entity';
+import { SUMMARY_MAX_CHARS } from '../model-config/llm.service';
 import { FeishuBotProjectChatService } from '../feishu-bot/feishu-bot-project-chat.service';
 import {
   TasksService,
@@ -70,6 +67,7 @@ import { Worker } from '../workers/worker.entity';
 import { Backlog } from '../iterations/backlog.entity';
 import { Iteration } from '../iterations/iteration.entity';
 import { Project } from './project.entity';
+import { ProjectSummaryService } from './project-summary.service';
 import {
   DAY_MS,
   UNSCHEDULED_FRESH_DAYS,
@@ -359,6 +357,7 @@ export class ProjectsService {
     private readonly backlogRows: Repository<Backlog>,
     @InjectRepository(Iteration)
     private readonly iterationRows: Repository<Iteration>,
+    private readonly projectSummary: ProjectSummaryService,
   ) {}
 
   findAll(): Promise<Project[]> {
@@ -894,8 +893,11 @@ export class ProjectsService {
     );
   }
 
-  create(input: CreateProjectInput): Promise<Project> {
-    return this.projects.save(this.projects.create(input));
+  async create(input: CreateProjectInput): Promise<Project> {
+    const project = await this.projects.save(this.projects.create(input));
+    // 新建需求后触发摘要生成（摘要为空且无进行中生成时才会实际调用模型）
+    this.projectSummary.maybeGenerateSummary(project.id);
+    return project;
   }
 
   /** 幂等创建项目开发交付任务；重复调用返回当前已有任务 */
@@ -925,7 +927,7 @@ export class ProjectsService {
   }
 
   /**
-   * 项目 Markdown 模糊搜索（GET /projects/search.md）：
+   * 需求 Markdown 模糊搜索（GET /requirements/search.md）：
    * LIKE 捞候选后在应用层按匹配度分级排序（精确 > 前缀 > 包含），同级创建时间倒序，取前 5。
    */
   async searchMarkdown(query: string): Promise<string> {
@@ -933,9 +935,9 @@ export class ProjectsService {
     if (!q) {
       return [
         mdFrontmatter({}),
-        '# 项目搜索',
+        '# 需求搜索',
         '',
-        '缺少查询参数 `q`，用法：`GET /api/projects/search.md?q={项目名称关键词}`',
+        '缺少查询参数 `q`，用法：`GET /api/requirements/search.md?q={名称关键词}`',
         '',
       ].join('\n');
     }
@@ -963,11 +965,11 @@ export class ProjectsService {
       .map(({ p }) => p);
     const items = matched.map(
       (p) =>
-        `- **${p.name}**（${p.type} / ${p.status}）— id：${p.id}，更新：${p.updatedAt.toISOString()} — [详情](/api/projects/${p.id}.md)`,
+        `- **${p.name}**（${p.type} / ${p.status}）— id：${p.id}，更新：${p.updatedAt.toISOString()} — [详情](/api/requirements/${p.id}.md)`,
     );
     return [
-      mdFrontmatter({ title: `项目搜索：${q}` }),
-      `# 项目搜索：${q}`,
+      mdFrontmatter({ title: `需求搜索：${q}` }),
+      `# 需求搜索：${q}`,
       '',
       `共 ${candidates.length} 个命中（按匹配度 + 创建时间倒序），返回前 ${items.length} 个：`,
       '',
@@ -976,24 +978,36 @@ export class ProjectsService {
     ].join('\n');
   }
 
-  /** Markdown 视图（GET /projects/:id.md）：项目描述 + 文档/检查/测试/导出/定时任务清单（含运行信息） */
-  async findOneMarkdown(id: number): Promise<string> {
-    const project = await this.findOne(id);
-    // 并行补齐运行信息：各检查/测试/导出/任务的最近几次运行 + 任务视图（下次执行时间）
-    const [checkRuns, testRuns, exportRuns, scheduleRuns, scheduleViews] =
-      await Promise.all([
-        this.checksService.recentRunsByCheckIds(
-          project.checks.map((c) => c.id),
-        ),
-        this.testsService.recentRunsByTestIds(project.tests.map((t) => t.id)),
-        this.exportsService.recentRunsByExportIds(
-          project.exports.map((e) => e.id),
-        ),
-        this.checksService.recentRunsByScheduleIds(
-          project.schedules.map((s) => s.id),
-        ),
-        this.schedulesService.findByProject(project.id),
-      ]);
+  /**
+   * 需求 Markdown 视图（GET /requirements/:id.md）：基本信息 + 描述 + 对应迭代 + 文档资料。
+   * 只加载需求本身的数据，不再附带检查/测试/提测/缺陷等研发关联（研发操作见任务定义说明）。
+   */
+  async findOneRequirementMarkdown(id: number): Promise<string> {
+    const project = await this.projects.findOne({ where: { id } });
+    if (!project) throw new NotFoundException(`Project ${id} not found`);
+    const { manager } = this.projects;
+    const [documentRows, backlogRows] = await Promise.all([
+      manager.find(Document, {
+        where: { projectId: id },
+        select: DOCUMENT_LIST_SELECT,
+        order: { updatedAt: 'DESC', id: 'DESC' },
+      }),
+      // 对应迭代：含已取消的历史迭代项，按创建倒序
+      manager.find(Backlog, {
+        where: { projectId: id },
+        order: { id: 'DESC' },
+      }),
+    ]);
+    const iterationIds = [...new Set(backlogRows.map((b) => b.iterationId))];
+    const iterationById = new Map(
+      (iterationIds.length
+        ? await manager.find(Iteration, { where: { id: In(iterationIds) } })
+        : []
+      ).map((it) => [it.id, it]),
+    );
+    // 状态为读时推导值（迭代项 + 创建时间），落库值不参与展示
+    await this.applyDerivedStatuses([project]);
+
     const meta = [`- 类型：${project.type}`, `- 状态：${project.status}`];
     if (project.priority) meta.push(`- 优先级：${project.priority}`);
     if (project.expectedReleaseAt) {
@@ -1013,134 +1027,26 @@ export class ProjectsService {
     if (project.scriptsPath) meta.push(`- 脚本目录：${project.scriptsPath}`);
     meta.push(`- 更新时间：${project.updatedAt.toISOString()}`);
 
-    const documents = project.documents.map((d) => {
+    const backlogLines = backlogRows.map((b) => {
+      const iteration = iterationById.get(b.iterationId);
+      const parts = [
+        iteration
+          ? `**${iteration.code}**（${iteration.type}，[迭代](/api/iterations/${iteration.id}.md)）`
+          : `迭代 #${b.iterationId}`,
+        `[${b.code} ${b.title}](/api/backlogs/${b.id}.md)`,
+        `状态：${b.status}`,
+      ];
+      if (b.ownerName) parts.push(`负责人：${b.ownerName}`);
+      if (b.expectedOnlineAt) {
+        parts.push(`预期上线：${beijingTime(b.expectedOnlineAt)}`);
+      }
+      return `- ${parts.join(' — ')}`;
+    });
+
+    const documentLines = documentRows.map((d) => {
       const parts = [`**${d.type}** [${d.title}](/api/documents/${d.id}.md)`];
       if (d.description) parts.push(d.description);
       if (d.remark) parts.push(`备注：${d.remark}`);
-      return `- ${parts.join(' — ')}`;
-    });
-    /** 检查/测试/导出条目：编号、描述、运行命令、最近结果、最近记录（多行列表项，用换行连接） */
-    const runEntry = (
-      kind: 'checks' | 'tests' | 'exports',
-      item: {
-        id: number;
-        code: string;
-        scriptPath: string;
-        description: string | null;
-      },
-      runs: Pick<
-        RunDetailLike,
-        'id' | 'status' | 'success' | 'fail' | 'skip'
-      >[],
-    ): string => {
-      const head = `- \`${item.code}\`（脚本：${item.scriptPath}）`;
-      const lines = [item.description ? `${head}— ${item.description}` : head];
-      lines.push(`  - 运行命令：\`POST /api/${kind}/${item.id}/run.md\``);
-      if (runs.length > 0) {
-        const [latest, ...rest] = runs;
-        lines.push(
-          `  - 最近一次：#${latest.id} ${runSummaryLine(latest)} — 详情：\`GET /api/${kind}/runs/${latest.id}.md\``,
-        );
-        if (rest.length > 0) {
-          lines.push(
-            `  - 最近记录：${rest.map((r) => `#${r.id} ${runSummaryLine(r)}`).join('、')}`,
-          );
-        }
-      }
-      lines.push(`  - 运行历史：\`GET /api/${kind}/${item.id}/runs\``);
-      return lines.join('\n');
-    };
-    const checks = project.checks.map((c) =>
-      runEntry('checks', c, checkRuns.get(c.id) ?? []),
-    );
-    const tests = project.tests.map((t) =>
-      runEntry('tests', t, testRuns.get(t.id) ?? []),
-    );
-    const exports = project.exports.map((e) =>
-      runEntry('exports', e, exportRuns.get(e.id) ?? []),
-    );
-    const checkName = (checkId: number) =>
-      project.checks.find((c) => c.id === checkId)?.code ?? `#${checkId}`;
-    const schedules = project.schedules.map((s) => {
-      const view = scheduleViews.find((v) => v.id === s.id);
-      const lines = [
-        `- **${s.title}**（cron：\`${s.cron}\`，检查：\`${checkName(s.checkId)}\`${s.enabled ? '' : '，已停用'}）`,
-        `  - 上次执行：${s.lastRunAt ? new Date(s.lastRunAt).toISOString() : '未执行过'}；下次执行：${view?.nextRunAt ?? '-'}`,
-      ];
-      const lastRun = (scheduleRuns.get(s.id) ?? [])[0];
-      if (lastRun) {
-        lines.push(
-          `  - 上次结果：#${lastRun.id} ${runSummaryLine(lastRun)} — 详情：\`GET /api/checks/runs/${lastRun.id}.md\``,
-        );
-      }
-      lines.push(
-        `  - 执行地址：\`POST /api/schedules/${s.id}/run.md\`；运行记录：\`GET /api/schedules/${s.id}/runs\``,
-      );
-      return lines.join('\n');
-    });
-    const defects = project.defects.map((d) => {
-      const parts = [
-        `[${d.id}](/api/defects/${d.id}.md) **${d.status}** ${d.expected.replace(/\s*\n\s*/g, ' ')}`,
-      ];
-      if (d.platform) parts.push(`端：${d.platform}`);
-      if (d.priority) parts.push(`优先级：${d.priority}`);
-      if (d.testScript) parts.push(`测试脚本：${d.testScript}`);
-      if (d.followupTaskId) {
-        parts.push(
-          `处理任务：[#${d.followupTaskId}](/api/tasks/${d.followupTaskId}.md)`,
-        );
-      }
-      return `- ${parts.join(' — ')}`;
-    });
-    const resourceLines = project.projectResources.map((r) => {
-      const parts = [
-        `**${r.status}** [${r.title}](/api/resources/${r.id}.md)（${r.type}）`,
-      ];
-      if (r.type === ResourceType.I18N && r.prefix)
-        parts.push(`前缀 \`${r.prefix}\``);
-      else if (r.url) parts.push(r.url);
-      if (r.description) parts.push(r.description);
-      return `- ${parts.join(' — ')}`;
-    });
-    const milestoneLines = project.milestones.map((m) => {
-      // findOne 经 MilestonesService 查询已附带推导状态，此处重新推导以满足实体类型
-      const status = deriveMilestoneStatus(m);
-      const parts = [`**${status}** ${m.date} — ${m.content}（id：${m.id}）`];
-      if (m.achieved === MilestoneAchieved.YES && m.achievedAt) {
-        parts.push(`实际达成：${m.achievedAt}`);
-      }
-      if (m.deliverer) parts.push(`交付人：${m.deliverer}`);
-      if (m.acceptor) parts.push(`验收人：${m.acceptor}`);
-      if (m.remark) parts.push(`备注：${m.remark}`);
-      return `- ${parts.join(' — ')}`;
-    });
-    const branchLines = project.projectBranches.map((b) => {
-      const parts = [`**${b.category}** \`${b.repo}\` @ \`${b.branch}\``];
-      if (b.remark) parts.push(`备注：${b.remark}`);
-      return `- ${parts.join(' — ')}`;
-    });
-    // 提测记录：详情页仅展示最近 5 条，全量走 /api/releases.md
-    const releaseLines = project.projectReleases.slice(0, 5).map((r) => {
-      const parts = [
-        `**${beijingTime(r.createdAt)}**（id：${r.id}）提测人 ${r.operator ?? '—'} — 状态：**${r.status ?? '待冒烟'}**`,
-        `测试人员：${r.testers.join('、')}`,
-      ];
-      if (r.workerId) parts.push(`提测机器人：#${r.workerId}`);
-      if (r.sourceTaskId) parts.push(`来源任务：#${r.sourceTaskId}`);
-      if (r.verifier) parts.push(`判定人：${r.verifier}`);
-      if (r.verifiedAt) parts.push(`判定时间：${beijingTime(r.verifiedAt)}`);
-      if (r.urls?.length) parts.push(`访问地址：${r.urls.join('、')}`);
-      if (r.branches?.length) {
-        parts.push(
-          `代码分支：${r.branches.map((b) => `\`${b.repo}\` @ \`${b.branch}\``).join('、')}`,
-        );
-      }
-      if (r.content) {
-        const oneLine = r.content.replace(/\s*\n\s*/g, ' ').trim();
-        parts.push(
-          `提测内容：${oneLine.length > 80 ? `${oneLine.slice(0, 80)}…` : oneLine}`,
-        );
-      }
       return `- ${parts.join(' — ')}`;
     });
 
@@ -1150,154 +1056,54 @@ export class ProjectsService {
       '',
       ...meta,
       '',
+      '## 摘要',
+      '',
+      project.summary?.trim() || '（暂无，需求或需求类文档更新后自动生成）',
+      '',
       '## 描述',
       '',
       project.description ?? '（暂无）',
       '',
-      `## 文档（${project.documents.length}）`,
+      `## 对应的迭代（${backlogRows.length}）`,
       '',
-      ...(documents.length > 0 ? documents : ['（暂无）']),
+      `全部迭代项（需求转入后生成，含已取消的历史记录）：`,
       '',
-      `## 资源（${project.projectResources.length}）`,
+      ...(backlogLines.length > 0 ? backlogLines : ['（暂未进入迭代）']),
       '',
-      ...(resourceLines.length > 0 ? resourceLines : ['（暂无）']),
+      `迭代清单：\`GET /api/iterations.md\`｜迭代详情：\`GET /api/iterations/{iterationId}.md\``,
       '',
-      `## 节点（${project.milestones.length}）`,
+      `## 文档资料（${documentRows.length}）`,
       '',
-      ...(milestoneLines.length > 0 ? milestoneLines : ['（暂无）']),
-      '',
-      `## 代码分支（${project.projectBranches.length}）`,
-      '',
-      ...(branchLines.length > 0
-        ? branchLines
-        : ['（暂无；登记 仓库+分支 后平台每分钟监听新提交/合并）']),
-      '',
-      `监听到的提交/合并记录：\`GET /api/code-events.md?projectId=${project.id}\``,
-      '',
-      `## 检查（${project.checks.length}）`,
-      '',
-      ...(checks.length > 0 ? checks : ['（暂无）']),
-      '',
-      `## 测试（${project.tests.length}）`,
-      '',
-      ...(tests.length > 0 ? tests : ['（暂无）']),
-      '',
-      `## 导出（${project.exports.length}）`,
-      '',
-      ...(exports.length > 0 ? exports : ['（暂无）']),
-      '',
-      `## 定时任务（${project.schedules.length}）`,
-      '',
-      ...(schedules.length > 0 ? schedules : ['（暂无）']),
-      '',
-      `## 提测记录（${project.projectReleases.length}）`,
-      '',
-      `全部提测记录（Markdown 清单）：\`GET /api/releases.md?projectId=${project.id}\``,
-      '',
-      ...(releaseLines.length > 0
-        ? releaseLines
-        : ['（暂无；点「提测」或调用下方提测命令生成，状态将流转「测试中」）']),
-      '',
-      `## 缺陷（${project.defects.length}）`,
-      '',
-      `全部缺陷（Markdown 清单）：\`GET /api/defects.md?projectId=${project.id}\``,
-      '',
-      ...(defects.length > 0 ? defects : ['（暂无）']),
+      ...(documentLines.length > 0 ? documentLines : ['（暂无）']),
       '',
       '## AI 操作',
       '',
-      '搜索项目：`GET /api/projects/search.md?q={名称关键词}`（匹配度 + 创建时间倒序，前 5）',
+      '搜索需求：`GET /api/requirements/search.md?q={名称关键词}`（匹配度 + 创建时间倒序，前 5）',
       '',
-      '运行检查/测试/导出/任务并流式获取结果（text/markdown，运行中逐行返回脚本输出，结束时附"结果"小节）：',
-      '',
-      '```bash',
-      'curl -N -X POST /api/checks/{checkId}/run.md',
-      'curl -N -X POST /api/tests/{testId}/run.md',
-      'curl -N -X POST /api/exports/{exportId}/run.md',
-      'curl -N -X POST /api/schedules/{scheduleId}/run.md',
-      '```',
-      '',
-      '运行详情（Markdown 视图）与系统设置：',
+      '修改需求配置（仅本地字段：脚本目录 / 描述 / 人员，空串清除）：',
       '',
       '```bash',
-      'curl /api/checks/runs/{runId}.md   # 检查/任务运行的详情（Test 同理：/api/tests/runs/{runId}.md）',
-      'curl /api/exports/runs/{runId}.md  # 导出运行的详情（含产物文件下载链接）',
-      'curl /api/settings.md              # 平台设置（环境、目录、域名、agent 状态等）',
-      'curl -N -X POST /api/settings/scripts/pull.md  # 更新脚本仓库（流式返回 git 输出与结果）',
+      `curl -X POST /api/requirements/${project.id}/update.md -H 'Content-Type: application/json' -d '{"scriptsPath": "projects/xxx", "resources": {"frontend": "张三", "backend": "李四", "qa": "王五", "product": "钱七", "client": "赵六"}}'`,
       '```',
       '',
-      '同步脚本到项目（向 scripts 仓库提交代码后：可先执行上方 scripts/pull.md 更新平台侧仓库，再导入；未指定项目或项目未配置脚本目录时返回引导，按提示操作即可）：',
-      '',
-      '```bash',
-      `curl -X POST /api/scripts/import.md -H 'Content-Type: application/json' -d '{"projectId": ${project.id}}'  # 扫描项目脚本目录，未登记的 .check.ts/.test.ts/.export.ts 一次导入为 检查/用例/导出（按脚本路径判重，编号由文件名生成）`,
-      '```',
-      '',
-      '修改项目配置（仅本地字段：脚本目录 / 描述 / 人员，空串清除；脚本目录即上方导入扫描的子目录，相对脚本根目录）：',
-      '',
-      '```bash',
-      `curl -X POST /api/projects/${project.id}/update.md -H 'Content-Type: application/json' -d '{"scriptsPath": "projects/xxx", "resources": {"frontend": "张三", "backend": "李四", "qa": "王五", "product": "钱七", "client": "赵六"}}'`,
-      '```',
-      '',
-      '写入/更新项目文档（按 projectId + fileName 判重 upsert：fileName 是稳定唯一标识，重复调用更新同一文档；title/type/description 选填，type 可选 需求/功能/测试/技术/接口/配置，缺省"技术"）：',
+      '写入/更新需求文档（按 projectId + fileName 判重 upsert；type 可选 需求/功能/测试/技术/接口/配置，缺省"技术"）：',
       '',
       '```bash',
       `curl -X POST /api/documents/upsert.md -H 'Content-Type: application/json' -d '{"projectId": ${project.id}, "fileName": "xxx.md", "title": "标题", "content": "# 正文 Markdown"}'`,
       '```',
       '',
-      '建议每个项目沉淀以下文档（fileName 固定，便于重复 upsert；正文为 Markdown，脚本类内容用对应代码块包裹）：',
-      '',
-      '| 文档 | fileName | type |',
-      '| --- | --- | --- |',
-      '| 技术设计文档 | `TECHNICAL_DESIGN.md` | 技术 |',
-      '| 接口文档 | `API.md` 或 `SWAGGER.json` | 接口 |',
-      '| 配置脚本（Yaml/Json） | `xxxxx-xxxx.yaml`（按项目命名） | 配置 |',
-      '| SQL脚本 | `init.sql` | 技术 |',
-      '',
-      '缺陷（仅平台内维护，经接口/人工创建）：',
+      '把需求转入迭代（仅管理员；负责人为机器人时自动创建交付任务）：',
       '',
       '```bash',
-      `curl '/api/defects.md?projectId=${project.id}'  # 缺陷清单（Markdown，可按 releaseId/status/priority/q 过滤）`,
-      `curl -X POST /api/defects/create.md -H 'Content-Type: application/json' -d '{"projectId": ${project.id}, "expected": "登录按钮点击后正常进入首页", "actual": "点击无响应", "platform": "前端", "priority": "高", "releaseId": 45}'  # 新建（预期与实际必填；priority 高/中/低；images 传 /images/... 数组；testScript/releaseId 可选）`,
-      'curl /api/defects/{defectId}.md  # 缺陷详情（含预期/实际/图片/变更记录）',
-      'curl -X POST /api/defects/{defectId}/status.md -H \'Content-Type: application/json\' -d \'{"status": "修复", "remark": "备注"}\'  # 状态变更（开放/修复/关闭；置"修复"表示研发已修复，脚本回归通过后自动关闭）',
-      'curl -X POST /api/defects/{defectId}/delete.md  # 删除（仅本地）',
+      `curl -X POST /api/iterations/{iterationId}/backlogs -H 'Content-Type: application/json' -d '{"items": [{"projectId": ${project.id}, "ownerWorkerId": 1001}]}'`,
       '```',
       '',
-      '机器人提测后的新缺陷：平台先取项目最新一条提测，仅当它处于 待冒烟 / 进行中 / 未通过 且由机器人发起时，自动创建缺陷处理任务并指派原提测机器人（最新提测已通过或人工提测时不回退到更早记录）；任务与提测记录写入缺陷详情（`releaseId` / `followupTaskId`），派单失败原因写入变更记录。新建/更新缺陷可显式传 `releaseId` 关联指定提测（须同项目；显式传 `null` 表示不关联），显式关联时平台不自动派单。',
-      '',
-      '节点（某个时间点需完成的事项；状态由 达成+实际达成日期+日期 推导：准备中/提前达成/达成/延期/取消）：',
-      '',
-      '```bash',
-      `curl '/api/milestones?projectId=${project.id}'  # 节点列表（按日期升序，附推导状态）`,
-      `curl -X POST /api/milestones -H 'Content-Type: application/json' -d '{"projectId": ${project.id}, "date": "2026-10-01", "content": "完成联调", "deliverer": "张三", "acceptor": "李四"}'  # 新建（deliverer/acceptor 可空）`,
-      'curl -X PATCH /api/milestones/{milestoneId} -H \'Content-Type: application/json\' -d \'{"achieved": "yes"}\'  # 研发验收后标记达成（自动记录北京时间当天为实际达成日期）；no 撤销、cancel 取消节点',
-      '```',
-      '',
-      '代码分支（项目涉及修改的 仓库+分支，归类 后端/H5/安卓/IOS/其它；登记后平台每分钟监听该分支的新提交/合并，仓库搜索：`GET /api/github/repos?q=`，分支联想：`GET /api/github/branches?repo=`）：',
-      '',
-      '```bash',
-      `curl '/api/code-branches?projectId=${project.id}'  # 分支登记列表`,
-      `curl -X POST /api/code-branches -H 'Content-Type: application/json' -d '{"projectId": ${project.id}, "repo": "LitaGroup/xxx", "branch": "test", "category": "后端"}'  # 登记（repo 支持仓库名/全名/URL；branch 常为 test/main/stable；同项目同仓库同分支唯一）`,
-      `curl '/api/code-events.md?projectId=${project.id}'  # 监听到的提交/合并记录（时间倒序）`,
-      '```',
-      '',
-      '项目提测（创建提测记录，状态流转「测试中」，并通知提测群「H5 Release | 提测上线」+ 项目人员私聊；仅 testers 必填——至少 1 人且须为用户系统内用户，content/urls/branches 可空）：',
-      '',
-      '```bash',
-      `curl -X POST /api/projects/${project.id}/release.md -H 'Content-Type: application/json' -d '{"testers": ["张三"], "content": "提测内容 Markdown", "urls": ["https://..."], "branches": [{"repo": "LitaGroup/xxx", "branch": "test"}], "taskId": 123}'  # 机器人可显式传 taskId，缺省自动关联当前执行中的任务`,
-      `curl '/api/releases.md?projectId=${project.id}'  # 提测记录清单（时间倒序，含状态/判定人/判定时间）`,
-      '```',
-      '',
-      '推进提测状态（由测试同学操作；新提测默认「待冒烟」，开始测试后改为「进行中」，仅「已通过」/「未通过」记录判定人/判定时间，切回「待冒烟」/「进行中」会清空）：',
-      '',
-      '```bash',
-      `curl -X POST /api/releases/{releaseId}/status.md -H 'Content-Type: application/json' -d '{"status": "已通过"}'`,
-      '```',
+      '研发操作（检查/测试/导出/提测/缺陷/节点/代码分支等）见所在任务的任务定义说明与 `lita-work` MCP 工具。',
       '',
     ].join('\n');
   }
 
-  /** 更新项目可编辑字段：类型/优先级/迭代周期/预期发布时间 + 脚本目录（scriptsPath）、描述（description）、人员（resources），空串清除。状态为推导值不可手改。注意：飞书同步项目的同步字段（类型/优先级/迭代/预期发布/人员）会在下次同步时被飞书侧覆盖 */
+  /** 更新项目可编辑字段：类型/优先级/迭代周期/预期发布时间 + 脚本目录（scriptsPath）、描述（description）、人员（resources）、摘要（summary），空串清除。状态为推导值不可手改。注意：飞书同步项目的同步字段（类型/优先级/迭代/预期发布/人员）会在下次同步时被飞书侧覆盖 */
   async update(
     id: number,
     input: {
@@ -1307,6 +1113,7 @@ export class ProjectsService {
       expectedReleaseAt?: string;
       scriptsPath?: string;
       description?: string;
+      summary?: string;
       resources?: {
         frontend?: string;
         backend?: string;
@@ -1345,6 +1152,15 @@ export class ProjectsService {
     }
     if (input.description !== undefined) {
       project.description = input.description.trim() || null;
+    }
+    if (input.summary !== undefined) {
+      const summary = input.summary.trim();
+      if (summary.length > SUMMARY_MAX_CHARS) {
+        throw new BadRequestException(
+          `需求摘要不能超过 ${SUMMARY_MAX_CHARS} 字（当前 ${summary.length} 字）`,
+        );
+      }
+      project.summary = summary || null;
     }
     if (input.resources !== undefined) {
       const members = this.normalizeMembers(input.resources);
@@ -1413,13 +1229,13 @@ export class ProjectsService {
     return [
       mdFrontmatter({
         update: project.updatedAt,
-        title: `项目更新 - ${project.name}`,
+        title: `需求更新 - ${project.name}`,
       }),
-      '# 项目已更新',
+      '# 需求已更新',
       '',
-      `- 项目：${project.name}（#${project.id}）`,
+      `- 需求：${project.name}（#${project.id}）`,
       ...lines,
-      `- 阅读地址：GET /api/projects/${project.id}.md`,
+      `- 阅读地址：GET /api/requirements/${project.id}.md`,
       '',
     ].join('\n');
   }

@@ -59,7 +59,7 @@ import { useAuth } from '../context/AuthContext'
 
 /**
  * 需求（需求池）：汇集大家要做的事情。
- * 数据来源即现有项目实体（飞书需求池单向同步 + 平台内新建），详情沿用 /projects/:id。
+ * 数据来源即现有项目实体（飞书需求池单向同步 + 平台内新建），详情页为 /requirements/:id。
  * 快捷 tab：未排期（未进入迭代且创建不超过 30 天）、已排期（已进入迭代）、已过期（未进入迭代且创建超过 30 天）、全部。
  * 「是否进入迭代」以存在未取消迭代项判定，与计划周（iterationCycle）字段无关。
  */
@@ -336,7 +336,7 @@ export function RequirementsPage() {
             <TableRow key={p.id}>
               <TableCell>{p.id}</TableCell>
               <TableCell className="max-w-md truncate" title={p.name}>
-                <Link to={`/projects/${p.id}`} className="underline">
+                <Link to={`/requirements/${p.id}`} className="underline">
                   {p.name}
                 </Link>
               </TableCell>
@@ -376,7 +376,7 @@ export function RequirementsPage() {
               <TableCell className="text-center">
                 <div className="flex justify-center gap-2">
                   <Link
-                    to={`/projects/${p.id}`}
+                    to={`/requirements/${p.id}`}
                     className={buttonVariants({ variant: 'outline', size: 'sm' })}
                   >
                     详情

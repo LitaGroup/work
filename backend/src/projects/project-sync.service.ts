@@ -7,6 +7,7 @@ import { DocumentType, ProjectType } from '../common/enums';
 import { DocumentsService } from '../documents/documents.service';
 import { BitableRecord, FeishuService } from '../feishu/feishu.service';
 import { Project } from './project.entity';
+import { ProjectSummaryService } from './project-summary.service';
 import { SyncState } from './sync-state.entity';
 
 const SYNC_KEY = 'projects:feishu';
@@ -199,6 +200,7 @@ export class ProjectSyncService {
     private readonly projects: Repository<Project>,
     @InjectRepository(SyncState)
     private readonly syncStates: Repository<SyncState>,
+    private readonly projectSummary: ProjectSummaryService,
   ) {}
 
   /** 需求池 → 平台单向同步，每 1 小时自动增量一次；失败仅告警不中断 */
@@ -362,6 +364,8 @@ export class ProjectSyncService {
     project.iterationCycle = toIterationCycle(f['w']);
     await this.projects.save(project);
     await this.syncRequirementDocuments(project.id, f['需求'], fullText);
+    // 同步后触发需求摘要（摘要非空即 no-op；小时级同步天然形成生成失败的重试机会）
+    this.projectSummary.maybeGenerateSummary(project.id);
   }
 
   /**

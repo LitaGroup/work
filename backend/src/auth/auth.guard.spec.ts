@@ -99,9 +99,13 @@ describe('AuthGuard（网页接口强制登录）', () => {
   it('AI 机器人令牌只挂载 req.worker', async () => {
     const worker = { id: 1001, name: '前端工程师', humanUserId: null };
     findByAgentToken.mockResolvedValue(worker);
-    const { context, req } = createContext('/api/projects/1.md', undefined, {
-      'x-worker-token': 'ai-worker-token',
-    });
+    const { context, req } = createContext(
+      '/api/requirements/1.md',
+      undefined,
+      {
+        'x-worker-token': 'ai-worker-token',
+      },
+    );
     await expect(guard.canActivate(context)).resolves.toBe(true);
     expect((req as AuthedRequest).worker).toBe(worker);
     expect((req as AuthedRequest).user).toBeUndefined();
@@ -110,7 +114,7 @@ describe('AuthGuard（网页接口强制登录）', () => {
 
   it('任意 .md 端点机器人 token 无效 401（不回退会话）', async () => {
     findByAgentToken.mockResolvedValue(null);
-    const { context } = createContext('/api/projects/1.md', undefined, {
+    const { context } = createContext('/api/requirements/1.md', undefined, {
       'x-worker-token': 'stale-worker-token',
     });
     await expect(guard.canActivate(context)).rejects.toThrow(
@@ -123,9 +127,13 @@ describe('AuthGuard（网页接口强制登录）', () => {
     const worker = { id: 1001, name: '前端工程师', humanUserId: null };
     getPublicAgentByToken.mockReturnValue(null);
     findByAgentToken.mockResolvedValue(worker);
-    const { context, req } = createContext('/api/projects/1.md', undefined, {
-      'x-agent-token': 'worker-token-in-env',
-    });
+    const { context, req } = createContext(
+      '/api/requirements/1.md',
+      undefined,
+      {
+        'x-agent-token': 'worker-token-in-env',
+      },
+    );
     await expect(guard.canActivate(context)).resolves.toBe(true);
     expect((req as AuthedRequest).worker).toBe(worker);
     expect((req as AuthedRequest).user).toBeUndefined();
@@ -170,7 +178,7 @@ describe('AuthGuard（网页接口强制登录）', () => {
     const user = { id: 1, name: '张三', enabled: true };
     getUserByToken.mockResolvedValue(user);
     const { context, req } = createContext(
-      '/api/projects/1.md',
+      '/api/requirements/1.md',
       `${AUTH_COOKIE}=session-token`,
     );
     await expect(guard.canActivate(context)).resolves.toBe(true);

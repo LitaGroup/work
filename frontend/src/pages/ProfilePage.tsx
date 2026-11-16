@@ -187,7 +187,7 @@ export LITA_PROJECT_TOKEN=${tokenValue}`
               </AlertDialog>
             </div>
             <pre className="overflow-auto rounded-[var(--radius-md)] bg-background-muted p-3 text-sm break-all whitespace-pre-wrap">
-              {`curl -H "X-Agent-Token: ${token ?? '<令牌>'}" ${apiUrl}/projects/search.md?q=项目名`}
+              {`curl -H "X-Agent-Token: ${token ?? '<令牌>'}" ${apiUrl}/requirements/search.md?q=需求名`}
             </pre>
             <div className="flex flex-col gap-2">
               <p className="text-sm font-medium">一键设置令牌（Shell）</p>

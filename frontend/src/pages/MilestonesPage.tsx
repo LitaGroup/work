@@ -150,7 +150,7 @@ export function MilestonesPage() {
               </TableCell>
               <TableCell className="max-w-64 truncate">
                 <Link
-                  to={`/projects/${m.projectId}`}
+                  to={`/requirements/${m.projectId}`}
                   className="text-foreground-intense underline"
                 >
                   {projectName.get(m.projectId) ?? `#${m.projectId}`}

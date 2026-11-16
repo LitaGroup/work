@@ -7,6 +7,7 @@ import { BacklogDocument } from '../iterations/backlog-document.entity';
 import { Document } from './document.entity';
 import { DocumentsController } from './documents.controller';
 import { DocumentsService } from './documents.service';
+import { ProjectSummaryModule } from '../projects/project-summary.module';
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import { DocumentsService } from './documents.service';
     FeishuModule,
     ApipostModule,
     KnowledgeModule,
+    ProjectSummaryModule,
   ],
   controllers: [DocumentsController],
   providers: [DocumentsService],

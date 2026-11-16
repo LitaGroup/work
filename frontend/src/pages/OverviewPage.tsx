@@ -8,12 +8,12 @@ interface InfoCard {
 
 const usageCards: InfoCard[] = [
   {
-    title: '搜索项目 → 项目详情',
+    title: '搜索需求 → 需求详情',
     description:
-      '典型流程：先按名称搜索拿到项目 id，再读项目详情（含文档/检查/用例/任务清单与可执行命令），最后决定运行什么。',
+      '典型流程：先按名称搜索拿到需求 id，再读需求详情（基本信息 / 对应迭代 / 文档资料），最后决定运行什么。',
     points: [
-      'GET /api/projects/search.md?q={名称关键词}（模糊匹配，前 5 条，含详情链接）',
-      'GET /api/projects/{id}.md（项目信息 + 文档/检查/用例/任务清单 + 最近运行结果 + 末尾 AI 操作小节）',
+      'GET /api/requirements/search.md?q={名称关键词}（模糊匹配，前 5 条，含详情链接）',
+      'GET /api/requirements/{id}.md（需求信息 + 对应迭代 + 文档资料 + 末尾 AI 操作小节）',
       'GET /api/documents/{docId}.md（文档元信息 + Markdown 正文全文）',
       '原则：用户没给 id 时先搜索，不要猜 id',
     ],
@@ -50,7 +50,7 @@ const usageCards: InfoCard[] = [
       'GET /api/settings.md（环境 / 脚本目录 / 访问域名 / agent 在线状态）',
       'curl -N -X POST {BASE}/api/settings/scripts/pull.md（脚本仓库 git pull，流式返回）',
       'POST /api/scripts/import.md（提交 scripts 代码后同步：新脚本一次导入为 检查/用例/导出，需指定项目）',
-      'POST /api/projects/{id}/update.md（AI 改项目配置：脚本目录 / 飞书通知群 / 描述 / 人员）',
+      'POST /api/requirements/{id}/update.md（AI 改需求配置：脚本目录 / 描述 / 人员）',
     ],
   },
 ]

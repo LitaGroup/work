@@ -63,6 +63,10 @@ export class Project {
   @Column({ type: 'text', nullable: true })
   description: string | null;
 
+  /** 需求摘要：模型根据需求描述与「需求」类文档生成，≤200 字；人工可改（清空后重新满足自动生成条件） */
+  @Column({ type: 'text', nullable: true })
+  summary: string | null;
+
   /** 脚本目录：相对 CHECK_SCRIPTS_DIR 的路径，登记检查时只在该子目录下扫描 .check.ts */
   @Column({ type: 'varchar', length: 500, nullable: true })
   scriptsPath: string | null;

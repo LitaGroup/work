@@ -4,9 +4,9 @@ describe('deriveTaskTitle', () => {
   it('推导标题时还原 URL 的冒号转义（不出现 http\\://）', () => {
     expect(
       deriveTaskTitle(
-        'http\\://project.cinta.team/api/projects/131.md 后端部分开发',
+        'http\\://project.cinta.team/api/requirements/131.md 后端部分开发',
       ),
-    ).toBe('http://project.cinta.team/api/projects/131.md 后端部分开发');
+    ).toBe('http://project.cinta.team/api/requirements/131.md 后端部分开发');
   });
 
   it('第一个有效行作为标题，跳过空行与分割线', () => {

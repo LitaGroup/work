@@ -43,6 +43,8 @@ interface NewDefectPreset {
   testScript?: string
   expected?: string
   actual?: string
+  /** 关联迭代项（从迭代项详情页新建时传入）：锁定项目并默认不关联提测 */
+  backlogId?: number
 }
 
 /**
@@ -75,6 +77,9 @@ export function NewDefectDialog({
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
 
+  // 迭代项场景默认不关联项目级提测，避免误关联与误触发缺陷处理派单
+  const defaultReleaseSelection = preset?.backlogId !== undefined ? 'none' : 'auto'
+
   const handleOpenChange = (next: boolean) => {
     setOpen(next)
     if (next) {
@@ -85,7 +90,7 @@ export function NewDefectDialog({
       setActual(preset?.actual ?? '')
       setImages([])
       setTestScript(preset?.testScript ?? '')
-      setReleaseSelection('auto')
+      setReleaseSelection(defaultReleaseSelection)
       setError(null)
     }
   }
@@ -97,7 +102,7 @@ export function NewDefectDialog({
       setReleases([])
       return
     }
-    setReleaseSelection('auto')
+    setReleaseSelection(defaultReleaseSelection)
     api
       .listTests(projectId)
       .then(setTests)
@@ -106,7 +111,7 @@ export function NewDefectDialog({
       .listReleases(projectId)
       .then(setReleases)
       .catch(() => setReleases([]))
-  }, [open, projectId])
+  }, [open, projectId, defaultReleaseSelection])
 
   const submit = () => {
     if (projectId === null) {
@@ -132,6 +137,7 @@ export function NewDefectDialog({
         priority: priority as DefectPriority,
         images: images.length > 0 ? images : undefined,
         testScript,
+        backlogId: preset?.backlogId,
         releaseId:
           releaseSelection === 'auto'
             ? undefined

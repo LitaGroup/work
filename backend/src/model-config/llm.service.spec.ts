@@ -2,6 +2,7 @@ import { ModelThinkingLevel } from '../common/enums';
 import {
   extractContent,
   LlmService,
+  sanitizeSummary,
   sanitizeTitle,
   thinkingExtras,
 } from './llm.service';
@@ -183,6 +184,53 @@ describe('LlmService', () => {
 
   it('generateTitle 空素材直接返回 null', async () => {
     await expect(service.generateTitle('   ')).resolves.toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('清洗摘要：去 Markdown/引号、压缩空白、硬截断 200 字', () => {
+    expect(sanitizeSummary('## 摘要\n\n- 支持短信登录\n- 保留密码登录')).toBe(
+      '摘要 支持短信登录 保留密码登录',
+    );
+    expect(sanitizeSummary('**加粗** 与 `代码`')).toBe('加粗 与 代码');
+    expect(sanitizeSummary('「登录改造」')).toBe('登录改造');
+    expect(sanitizeSummary('   ')).toBeNull();
+    expect(sanitizeSummary('a'.repeat(300))).toHaveLength(200);
+  });
+
+  it('generateSummary 使用 requirement-summary 场景并清洗输出', async () => {
+    resolve.mockResolvedValue({
+      baseUrl: 'https://api.example.com/v1',
+      apiKey: null,
+      model: 'glm-4.6',
+      thinking: ModelThinkingLevel.LOW,
+    });
+    fetchMock.mockResolvedValue(
+      responseOf({
+        choices: [
+          {
+            message: {
+              content: '## 摘要\n\n- 支持短信登录\n- 保留密码登录',
+            },
+          },
+        ],
+      }),
+    );
+
+    await expect(service.generateSummary('需求：登录改造')).resolves.toBe(
+      '摘要 支持短信登录 保留密码登录',
+    );
+    expect(resolve).toHaveBeenCalledWith('requirement-summary');
+    const body = callBody(0) as {
+      messages: Array<{ role: string; content: string }>;
+      max_tokens: number;
+    };
+    expect(body.messages[0].content).toContain('200 字');
+    expect(body.messages[1].content).toContain('需求：登录改造');
+    expect(body.max_tokens).toBe(400);
+  });
+
+  it('generateSummary 空素材直接返回 null', async () => {
+    await expect(service.generateSummary('   ')).resolves.toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });

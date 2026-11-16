@@ -225,7 +225,7 @@ export function DefectsPage() {
               </TableCell>
               <TableCell className="max-w-64 truncate">
                 <Link
-                  to={`/projects/${d.projectId}`}
+                  to={`/requirements/${d.projectId}`}
                   className="text-foreground-intense underline"
                 >
                   {projectName.get(d.projectId) ?? `#${d.projectId}`}

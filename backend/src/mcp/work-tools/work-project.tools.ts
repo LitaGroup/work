@@ -45,16 +45,18 @@ export class WorkProjectTools implements WorkToolRegistrar {
     server.registerTool(
       'get_project',
       {
-        title: '项目详情',
+        title: '需求详情',
         description:
-          '获取项目完整详情：元信息、描述、文档/资源/节点/检查/用例/导出/定时任务/提测记录/缺陷清单与最近运行结果，末尾附全部 AI 操作端点。',
+          '获取需求基本详情：元信息、描述、对应的迭代（含已取消历史迭代项）与文档资料清单，末尾附需求级 AI 操作端点。研发操作请使用脚本运行、缺陷、提测等对应工具。',
         inputSchema: {
           projectId: z.number().int().positive().describe('项目 ID'),
         },
       },
       async (args) =>
         executeTool(this.logger, 'get_project', principal, async () =>
-          markdownResult(await this.projects.findOneMarkdown(args.projectId)),
+          markdownResult(
+            await this.projects.findOneRequirementMarkdown(args.projectId),
+          ),
         ),
     );
 

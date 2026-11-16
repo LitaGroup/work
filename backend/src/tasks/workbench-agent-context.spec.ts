@@ -53,14 +53,14 @@ describe('normalizeAgentPageContext', () => {
         type: 'project',
         id: 'project:3708',
         title: ' 项目详情  ',
-        readUrl: '/api/projects/3708.md',
+        readUrl: '/api/requirements/3708.md',
       }),
     ).toEqual({
       type: 'project',
       id: 'project:3708',
       title: '项目详情',
       summary: undefined,
-      readUrl: '/api/projects/3708.md',
+      readUrl: '/api/requirements/3708.md',
     });
   });
 

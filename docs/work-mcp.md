@@ -82,7 +82,7 @@ claude mcp add --transport http lita-work http://your-host:3100/api/mcp/work \
 | 工具 | 主要入参 | 说明 |
 |---|---|---|
 | `search_projects` | `query` | 按名称模糊搜索项目，返回前 5 个 |
-| `get_project` | `projectId` | 项目完整详情（文档/资源/节点/检查/用例/导出/定时任务/提测/缺陷与最近运行结果） |
+| `get_project` | `projectId` | 需求基本信息（描述 / 对应的迭代 / 文档资料清单与需求级 AI 操作入口） |
 | `update_project` | `projectId`、`scriptsPath?`、`description?`、`resources?` | 仅更新平台本地字段（脚本目录/描述/人员） |
 | `read_document` | `documentId` | 文档元信息 + Markdown 正文 |
 | `upsert_document` | `projectId`、`fileName`、`content`、`title?`、`type?`、`description?` | 按 `(projectId, fileName)` upsert |
@@ -156,7 +156,7 @@ claude mcp add --transport http lita-work http://your-host:3100/api/mcp/work \
 | `delete_idea` | `ideaId` | 删除灵感：管理员可删任意，创建人仅能撤销「构思」中的灵感 |
 | `change_idea_status` | `ideaId`、`status`、`createProject?`、`projectId?`、`projectType?` | 流转状态（仅管理员）：采纳时新建或关联需求池需求 |
 
-> 「我的 AI」可通过 `create_idea` 创建灵感、`update_idea` 完善当前灵感正文、`delete_idea` 删除当前灵感；采纳后灵感与需求池项目建立软关联（`projectId`），可经 `GET /api/projects/{id}.md` 继续推进。
+> 「我的 AI」可通过 `create_idea` 创建灵感、`update_idea` 完善当前灵感正文、`delete_idea` 删除当前灵感；采纳后灵感与需求池项目建立软关联（`projectId`），可经 `GET /api/requirements/{id}.md` 继续推进。
 
 ### GitHub / 文件
 

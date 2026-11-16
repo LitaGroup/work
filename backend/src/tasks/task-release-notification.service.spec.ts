@@ -141,7 +141,7 @@ describe('TaskReleaseNotificationService 提测状态通知', () => {
         ? String(input.prompt)
         : '';
     expect(prompt).toContain('状态变化：待冒烟 → 已通过');
-    expect(prompt).toContain('GET http://api.example/api/projects/2.md');
+    expect(prompt).toContain('GET http://api.example/api/requirements/2.md');
     expect(prompt).toContain(
       'GET http://api.example/api/defects.md?projectId=2&releaseId=5',
     );

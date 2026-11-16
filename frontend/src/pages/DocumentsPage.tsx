@@ -177,7 +177,7 @@ export function DocumentsPage() {
                   '—'
                 ) : (
                   <Link
-                    to={`/projects/${d.projectId}`}
+                    to={`/requirements/${d.projectId}`}
                     className="text-foreground-intense underline"
                   >
                     {projectName.get(d.projectId) ?? `#${d.projectId}`}

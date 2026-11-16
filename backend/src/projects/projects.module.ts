@@ -18,8 +18,10 @@ import { Project } from './project.entity';
 import { Backlog } from '../iterations/backlog.entity';
 import { Iteration } from '../iterations/iteration.entity';
 import { ProjectSyncService } from './project-sync.service';
+import { ProjectSummaryModule } from './project-summary.module';
 import { ProjectsController } from './projects.controller';
 import { ProjectsService } from './projects.service';
+import { RequirementsController } from './requirements.controller';
 import { SyncState } from './sync-state.entity';
 
 @Module({
@@ -39,8 +41,9 @@ import { SyncState } from './sync-state.entity';
     ReleasesModule,
     TasksModule,
     FeishuBotModule,
+    ProjectSummaryModule,
   ],
-  controllers: [ProjectsController],
+  controllers: [ProjectsController, RequirementsController],
   providers: [ProjectsService, ProjectSyncService],
   exports: [ProjectsService],
 })

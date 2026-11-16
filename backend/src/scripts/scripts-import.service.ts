@@ -35,7 +35,7 @@ export class ScriptsImportService {
         '导入脚本必须指定项目：先按名称搜索项目拿到 id，再携带 `{"projectId": <id>}` 重试。',
         '',
         '```bash',
-        "curl '{BASE}/api/projects/search.md?q={项目名称关键词}'",
+        "curl '{BASE}/api/requirements/search.md?q={项目名称关键词}'",
         "curl -X POST {BASE}/api/scripts/import.md -H 'Content-Type: application/json' -d '{\"projectId\": <id>}'",
         '```',
       ]);
@@ -46,7 +46,7 @@ export class ScriptsImportService {
         '先按名称搜索项目确认 id 后重试：',
         '',
         '```bash',
-        "curl '{BASE}/api/projects/search.md?q={项目名称关键词}'",
+        "curl '{BASE}/api/requirements/search.md?q={项目名称关键词}'",
         '```',
       ]);
     }
@@ -55,7 +55,7 @@ export class ScriptsImportService {
         '未配置 scriptsPath 时无法定位要导入的脚本（脚本目录是相对脚本根目录的子目录，即提交代码所在的目录；脚本根目录见 `GET /api/settings.md`）。请先配置后重试：',
         '',
         '```bash',
-        `curl -X POST {BASE}/api/projects/${project.id}/update.md -H 'Content-Type: application/json' -d '{"scriptsPath": "projects/xxx"}'`,
+        `curl -X POST {BASE}/api/requirements/${project.id}/update.md -H 'Content-Type: application/json' -d '{"scriptsPath": "projects/xxx"}'`,
         "curl -X POST {BASE}/api/scripts/import.md -H 'Content-Type: application/json' -d '{\"projectId\": " +
           project.id +
           "}'",

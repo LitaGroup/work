@@ -14,12 +14,21 @@ export interface ModelScenarioDefinition {
 /** 工单与任务标题命名场景（「T-{id}」标题异步生成） */
 export const MODEL_SCENARIO_TITLE_NAMING = 'title-naming';
 
+/** 需求摘要场景（需求创建/同步或需求类文档更新后，摘要为空时自动生成 ≤200 字摘要） */
+export const MODEL_SCENARIO_REQUIREMENT_SUMMARY = 'requirement-summary';
+
 export const MODEL_SCENARIOS: ModelScenarioDefinition[] = [
   {
     scenario: MODEL_SCENARIO_TITLE_NAMING,
     name: '工单和任务标题命名',
     description:
       '创建工单或根任务后，异步调用模型生成简洁标题，统一为「T-{id}」+ 生成内容；失败不影响创建与流程流转。',
+  },
+  {
+    scenario: MODEL_SCENARIO_REQUIREMENT_SUMMARY,
+    name: '需求摘要',
+    description:
+      '需求创建/同步或「需求」类文档新增/更新后，摘要为空时自动生成 200 字以内的需求摘要；未配置时跳过，失败不影响主流程。',
   },
 ];
 

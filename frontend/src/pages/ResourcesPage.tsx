@@ -194,7 +194,7 @@ export function ResourcesPage() {
               </TableCell>
               <TableCell className="max-w-64 truncate">
                 <Link
-                  to={`/projects/${r.projectId}`}
+                  to={`/requirements/${r.projectId}`}
                   className="text-foreground-intense underline"
                 >
                   {projectName.get(r.projectId) ?? `#${r.projectId}`}

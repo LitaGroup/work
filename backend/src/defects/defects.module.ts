@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { User } from '../auth/user.entity';
+import { Backlog } from '../iterations/backlog.entity';
 import { Project } from '../projects/project.entity';
 import { ProjectRelease } from '../releases/project-release.entity';
 import { Task } from '../tasks/task.entity';
@@ -25,6 +26,7 @@ import { DefectsService } from './defects.service';
       Worker,
       User,
       Task,
+      Backlog,
     ]),
     TestsModule,
     TasksModule,

@@ -61,7 +61,7 @@ describe('ModelConfigService', () => {
 
   it('列表按固定场景返回未配置视图，不回显 apiKey', async () => {
     const views = await service.list();
-    expect(views).toHaveLength(1);
+    expect(views).toHaveLength(2);
     expect(views[0]).toMatchObject({
       scenario: 'title-naming',
       name: '工单和任务标题命名',
@@ -70,6 +70,11 @@ describe('ModelConfigService', () => {
       model: null,
       thinking: ModelThinkingLevel.LOW,
       hasApiKey: false,
+    });
+    expect(views[1]).toMatchObject({
+      scenario: 'requirement-summary',
+      name: '需求摘要',
+      configured: false,
     });
     expect(JSON.stringify(views)).not.toContain('apiKey');
   });

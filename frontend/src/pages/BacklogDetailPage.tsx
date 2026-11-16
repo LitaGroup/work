@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Link, Navigate, useParams } from 'react-router-dom'
+import { Link, Navigate, useNavigate, useParams } from 'react-router-dom'
 import { Badge } from '@appica/ui-react/badge'
-import { Button, buttonVariants } from '@appica/ui-react/button'
+import { Button } from '@appica/ui-react/button'
 import {
   Card,
   CardHeader,
@@ -51,25 +51,37 @@ import { Textarea } from '@appica/ui-react/textarea'
 import {
   api,
   BACKLOG_MEMBER_ROLES,
+  DEFECT_PLATFORMS,
+  DEFECT_PRIORITIES,
+  DEFECT_STATUSES,
   documentSourceLabel,
   type BacklogDetail,
   type BacklogDocumentSummary,
   type BacklogEvent,
   type BacklogMemberRole,
   type BacklogTaskSummary,
+  type Defect,
   type IterationSummary,
   type PlatformUser,
+  type Project,
   type ProjectDocument,
+  type TaskTemplate,
   type Worker,
 } from '../lib/api'
+import { MarkdownViewer } from '../components/MarkdownViewer'
 import { PageBreadcrumb } from '../components/PageBreadcrumb'
 import { BacklogStatusDialog } from '../components/BacklogStatusDialog'
 import { CreateDocumentDialog, ImportDocumentDialog } from '../components/DocumentDialogs'
-import { BacklogStatusBadge } from '../components/StatusBadge'
 import {
-  TaskStatusBadge,
+  BacklogStatusBadge,
+  DefectPriorityBadge,
+  DefectStatusBadge,
+} from '../components/StatusBadge'
+import {
   TicketStatusBadge,
 } from '../components/StatusBadge'
+import { NewDefectDialog } from '../components/NewDefectDialog'
+import { TaskTreePanel } from '../components/task-detail/TaskTreePanel'
 import { DetailPageLayout } from '../components/detail/DetailPageLayout'
 import { DetailAgentPanel } from '../components/detail/DetailAgentPanel'
 import { useAuth } from '../context/AuthContext'
@@ -147,17 +159,18 @@ function eventSummary(event: BacklogEvent): string {
   return parts.join(' · ')
 }
 
-/** 内容分区：信息 / 文档 / 任务 / 事件 / 成员 */
-type BacklogDetailTab = 'info' | 'docs' | 'tasks' | 'events' | 'members'
+/** 内容分区：信息 / 文档 / 任务 / 缺陷 / 事件 / 成员 */
+type BacklogDetailTab = 'info' | 'docs' | 'tasks' | 'defects' | 'events' | 'members'
 
 /**
  * 迭代项详情：基本信息（预期上线时间）、阶段时间、文档（转入时自需求迁入）、
- * 任务与工单面板（交付任务树 + 关联工单）、事件流与成员；
+ * 任务树与关联工单、缺陷（按迭代项关联，可页内新建）、事件流与成员；
  * 成员或管理员可推进状态（弹窗 + 备注）、发起提测（创建提测工单），管理员可编辑成员/移动迭代。
  */
 export function BacklogDetailPage() {
   const { backlogId } = useParams<{ backlogId: string }>()
   const id = Number(backlogId)
+  const navigate = useNavigate()
   const { user } = useAuth()
   const isAdmin = user?.role === '管理员'
 
@@ -191,6 +204,10 @@ export function BacklogDetailPage() {
   const [linkTarget, setLinkTarget] = useState<string | undefined>(undefined)
   const [linkSaving, setLinkSaving] = useState(false)
 
+  // 原始需求（信息分区展示需求内容）
+  const [project, setProject] = useState<Project | null>(null)
+  const [projectError, setProjectError] = useState<string | null>(null)
+
   // 事件流
   const [events, setEvents] = useState<BacklogEvent[] | null>(null)
 
@@ -199,6 +216,23 @@ export function BacklogDetailPage() {
     tasks: BacklogTaskSummary[]
     tickets: Awaited<ReturnType<typeof api.listBacklogTasks>>['tickets']
   } | null>(null)
+
+  // 新建任务（已有交付任务建子任务；无交付任务时按负责人建交付任务）
+  const [taskOpen, setTaskOpen] = useState(false)
+  const [taskTitle, setTaskTitle] = useState('')
+  const [taskDescription, setTaskDescription] = useState('')
+  const [taskTemplateId, setTaskTemplateId] = useState<string | undefined>(undefined)
+  const [taskAgentId, setTaskAgentId] = useState<string | undefined>(undefined)
+  const [taskTemplates, setTaskTemplates] = useState<TaskTemplate[] | null>(null)
+  const [taskWorkers, setTaskWorkers] = useState<Worker[] | null>(null)
+  const [savingTask, setSavingTask] = useState(false)
+
+  // 缺陷（按迭代项 backlogId 关联）
+  const [defects, setDefects] = useState<Defect[] | null>(null)
+  const [defectKeyword, setDefectKeyword] = useState('')
+  const [defectPlatform, setDefectPlatform] = useState('all')
+  const [defectStatus, setDefectStatus] = useState('all')
+  const [defectPriority, setDefectPriority] = useState('all')
 
   // 提测
   const [releaseOpen, setReleaseOpen] = useState(false)
@@ -256,6 +290,10 @@ export function BacklogDetailPage() {
       .listBacklogTasks(backlogId)
       .then(setRelated)
       .catch(() => setRelated({ tasks: [], tickets: [] }))
+    api
+      .listDefects(undefined, undefined, backlogId)
+      .then(setDefects)
+      .catch(() => setDefects([]))
   }, [])
 
   const load = useCallback(() => {
@@ -266,29 +304,31 @@ export function BacklogDetailPage() {
         setBacklog(row)
         setError(null)
         loadSidepanels(row.id)
+        return api
+          .getProject(row.projectId)
+          .then((projectRow) => {
+            setProject(projectRow)
+            setProjectError(null)
+          })
+          .catch((e: Error) => {
+            setProject(null)
+            setProjectError(e.message)
+          })
       })
       .catch((e: Error) => setError(e.message))
   }, [id, loadSidepanels])
 
   useEffect(load, [load])
 
-  // 任务树：按 parentId 计算缩进层级（放在早退分支前，保证 Hooks 顺序稳定）
-  const taskDepthById = useMemo(() => {
-    const depth = new Map<number, number>()
-    const byId = new Map((related?.tasks ?? []).map((t) => [t.id, t]))
-    const resolve = (task: BacklogTaskSummary, seen: Set<number>): number => {
-      if (depth.has(task.id)) return depth.get(task.id)!
-      if (!task.parentId || !byId.has(task.parentId) || seen.has(task.parentId)) {
-        depth.set(task.id, 0)
-        return 0
-      }
-      const parentDepth = resolve(byId.get(task.parentId)!, seen)
-      depth.set(task.id, parentDepth + 1)
-      return parentDepth + 1
-    }
-    for (const task of related?.tasks ?? []) resolve(task, new Set([task.id]))
-    return depth
-  }, [related])
+  // 任务树：交付任务 + 全部子任务，交给 TaskTreePanel 组装父子关系
+  const taskStages = useMemo(
+    () =>
+      (related?.tasks ?? []).map((task) => ({
+        task,
+        agent: task.agentName ? { name: task.agentName } : null,
+      })),
+    [related],
+  )
 
   const userItems = useMemo(
     () => Object.fromEntries((users ?? []).map((u) => [String(u.id), u.name])),
@@ -298,6 +338,19 @@ export function BacklogDetailPage() {
   const workerItems = useMemo(
     () => Object.fromEntries((workers ?? []).map((w) => [String(w.id), w.name])),
     [workers],
+  )
+
+  const taskTemplateItems = useMemo(
+    () =>
+      Object.fromEntries(
+        (taskTemplates ?? []).map((template) => [String(template.id), template.name]),
+      ),
+    [taskTemplates],
+  )
+
+  const taskWorkerItems = useMemo(
+    () => Object.fromEntries((taskWorkers ?? []).map((w) => [String(w.id), w.name])),
+    [taskWorkers],
   )
 
   if (!Number.isInteger(id) || id <= 0) {
@@ -318,10 +371,42 @@ export function BacklogDetailPage() {
 
   if (!backlog) return <p className="text-sm text-foreground-muted">加载中…</p>
 
+  // 缺陷筛选（与项目缺陷页一致：关键词 + 端/状态/优先级，前端过滤）
+  const defectQuery = defectKeyword.trim().toLowerCase()
+  const filteredDefects = (defects ?? []).filter(
+    (d) =>
+      (!defectQuery ||
+        d.expected.toLowerCase().includes(defectQuery) ||
+        d.actual.toLowerCase().includes(defectQuery)) &&
+      (defectPlatform === 'all' || d.platform === defectPlatform) &&
+      (defectStatus === 'all' || d.status === defectStatus) &&
+      (defectPriority === 'all' || d.priority === defectPriority),
+  )
+  // Appica Select：value 与展示文案不一致时必须传 items 映射
+  const defectPlatformItems = Object.fromEntries(
+    ['all', ...DEFECT_PLATFORMS].map((p) => [p, p === 'all' ? '不限端' : p]),
+  )
+  const defectStatusItems = Object.fromEntries(
+    ['all', ...DEFECT_STATUSES].map((s) => [s, s === 'all' ? '不限状态' : s]),
+  )
+  const defectPriorityItems = Object.fromEntries(
+    ['all', ...DEFECT_PRIORITIES].map((p) => [p, p === 'all' ? '不限优先级' : p]),
+  )
+
   const terminal = backlog.status === '完成' || backlog.status === '取消'
   const isMember = (backlog.members ?? []).some((m) => m.userId === user?.id)
   const canOperate = isAdmin || isMember
   const releaseWorkflowReady = backlog.releaseWorkflow?.enabled ?? false
+  // 新建任务：无交付任务时仅管理员可创建；已有交付任务时成员或管理员可建子任务
+  const taskCreateDisabledReason = !backlog.taskId
+    ? terminal
+      ? '迭代项已结束，不可创建交付任务'
+      : !isAdmin
+        ? '尚无交付任务，仅管理员可创建交付任务'
+        : null
+    : !canOperate
+      ? '仅迭代项成员或管理员可新建任务'
+      : null
 
   const userMap = new Map((users ?? []).map((u) => [u.id, u.name]))
 
@@ -342,6 +427,66 @@ export function BacklogDetailPage() {
       })),
     )
     setMemberOpen(true)
+  }
+
+  const openCreateTask = () => {
+    setTaskTitle('')
+    setTaskDescription('')
+    setTaskTemplateId(undefined)
+    // 已有交付任务时执行机器人可空；无交付任务时该机器人即负责人，默认带出当前负责人
+    setTaskAgentId(backlog.ownerWorkerId ? String(backlog.ownerWorkerId) : undefined)
+    if (!taskTemplates) {
+      api
+        .listTaskTemplates()
+        .then(setTaskTemplates)
+        .catch(() => setTaskTemplates([]))
+    }
+    if (!taskWorkers) {
+      api
+        .listWorkers({ role: '工作者' })
+        .then((rows) =>
+          setTaskWorkers(
+            rows.filter((worker) => worker.enabled && !worker.personalAgentUserId),
+          ),
+        )
+        .catch(() => setTaskWorkers([]))
+    }
+    setTaskOpen(true)
+  }
+
+  const submitTask = () => {
+    if (savingTask) return
+    if (!taskDescription.trim()) {
+      showFeedback({ kind: 'failure', message: '请填写任务描述' }, FAILURE_STAY_MS)
+      return
+    }
+    if (!backlog.taskId && !taskAgentId) {
+      showFeedback({ kind: 'failure', message: '请选择负责人机器人' }, FAILURE_STAY_MS)
+      return
+    }
+    setSavingTask(true)
+    api
+      .createBacklogTask(id, {
+        title: taskTitle.trim() || undefined,
+        description: taskDescription.trim(),
+        templateId: taskTemplateId ? Number(taskTemplateId) : null,
+        agentId: taskAgentId ? Number(taskAgentId) : null,
+      })
+      .then(() => {
+        setTaskOpen(false)
+        showFeedback(
+          { kind: 'success', message: backlog.taskId ? '子任务已创建' : '交付任务已创建' },
+          SUCCESS_STAY_MS,
+        )
+        load()
+      })
+      .catch((e: Error) =>
+        showFeedback(
+          { kind: 'failure', message: e.message || '创建失败' },
+          FAILURE_STAY_MS,
+        ),
+      )
+      .finally(() => setSavingTask(false))
   }
 
   const addMember = () => {
@@ -639,7 +784,7 @@ export function BacklogDetailPage() {
             </h1>
             <p className="mt-1 text-sm text-foreground-muted">
               原始需求{' '}
-              <Link to={`/projects/${backlog.projectId}`} className="underline">
+              <Link to={`/requirements/${backlog.projectId}`} className="underline">
                 #{backlog.projectId}
               </Link>
               {' · '}负责人 {backlog.ownerName ?? '未指定'}
@@ -864,194 +1009,219 @@ export function BacklogDetailPage() {
             <TabsTrigger value="info">信息</TabsTrigger>
             <TabsTrigger value="docs">文档 {docs?.length ?? 0}</TabsTrigger>
             <TabsTrigger value="tasks">任务 {(related?.tasks ?? []).length}</TabsTrigger>
+            <TabsTrigger value="defects">缺陷 {defects?.length ?? 0}</TabsTrigger>
             <TabsTrigger value="events">事件</TabsTrigger>
             <TabsTrigger value="members">成员 {backlog.members?.length ?? 0}</TabsTrigger>
           </TabsList>
 
-          <TabsContent value="info" keepMounted className="flex flex-col gap-4 pt-4">
-            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-              <Card>
-                <CardHeader>
-                  <CardTitle>基本信息</CardTitle>
-                </CardHeader>
-                <div className="flex flex-col gap-2 px-4 pb-4 text-sm">
-                  <InfoRow label="所属迭代">
-                    <Link to={`/iterations/${backlog.iterationId}`} className="underline">
-                      #{backlog.iterationId}
-                    </Link>
-                  </InfoRow>
-                  <InfoRow label="原始需求">
-                    <Link to={`/projects/${backlog.projectId}`} className="underline">
-                      #{backlog.projectId}
-                    </Link>
-                  </InfoRow>
-                  <InfoRow label="负责人">
-                    <span className="inline-flex items-center gap-2">
-                      {backlog.ownerName ?? '—'}
-                      {isAdmin && !terminal && (
-                        <button
-                          type="button"
-                          className="text-foreground-muted underline"
-                          onClick={openOwnerEdit}
-                        >
-                          {backlog.ownerName ? '改派' : '指定'}
-                        </button>
-                      )}
-                    </span>
-                  </InfoRow>
-                  <InfoRow label="预期上线">
-                    <span className="inline-flex items-center gap-2">
-                      {formatHour(backlog.expectedOnlineAt)}
-                      {canOperate && (
-                        <button
-                          type="button"
-                          className="text-foreground-muted underline"
-                          onClick={openTimeEdit}
-                        >
-                          编辑
-                        </button>
-                      )}
-                    </span>
-                  </InfoRow>
-                  <InfoRow label="交付任务">
-                    {backlog.taskId ? (
-                      <Link to={`/tasks/${backlog.taskId}`} className="underline">
-                        #{backlog.taskId}
+          <TabsContent value="info" keepMounted className="pt-4">
+            {/* 信息：与文档/缺陷分区一致的单卡结构；需求内容与关联文档在此汇总 */}
+            <Card>
+              <CardHeader>
+                <CardTitle>信息</CardTitle>
+                <CardDescription>
+                  迭代项属性、阶段时间、原始需求内容与关联文档
+                </CardDescription>
+              </CardHeader>
+              <div className="flex flex-col gap-6 px-4 pb-4">
+                <div className="grid grid-cols-1 gap-x-8 gap-y-5 lg:grid-cols-2">
+                  <section className="flex flex-col gap-2 text-sm">
+                    <h3 className="text-sm font-medium text-foreground-intense">基本信息</h3>
+                    <InfoRow label="所属迭代">
+                      <Link to={`/iterations/${backlog.iterationId}`} className="underline">
+                        #{backlog.iterationId}
                       </Link>
-                    ) : (
-                      '—'
-                    )}
-                  </InfoRow>
-                  <InfoRow label="状态操作人">{backlog.statusBy ?? '—'}</InfoRow>
-                </div>
-              </Card>
+                    </InfoRow>
+                    <InfoRow label="原始需求">
+                      <Link to={`/requirements/${backlog.projectId}`} className="underline">
+                        #{backlog.projectId}
+                      </Link>
+                    </InfoRow>
+                    <InfoRow label="负责人">
+                      <span className="inline-flex items-center gap-2">
+                        {backlog.ownerName ?? '—'}
+                        {isAdmin && !terminal && (
+                          <button
+                            type="button"
+                            className="text-foreground-muted underline"
+                            onClick={openOwnerEdit}
+                          >
+                            {backlog.ownerName ? '改派' : '指定'}
+                          </button>
+                        )}
+                      </span>
+                    </InfoRow>
+                    <InfoRow label="预期上线">
+                      <span className="inline-flex items-center gap-2">
+                        {formatHour(backlog.expectedOnlineAt)}
+                        {canOperate && (
+                          <button
+                            type="button"
+                            className="text-foreground-muted underline"
+                            onClick={openTimeEdit}
+                          >
+                            编辑
+                          </button>
+                        )}
+                      </span>
+                    </InfoRow>
+                    <InfoRow label="交付任务">
+                      {backlog.taskId ? (
+                        <Link to={`/tasks/${backlog.taskId}`} className="underline">
+                          #{backlog.taskId}
+                        </Link>
+                      ) : (
+                        '—'
+                      )}
+                    </InfoRow>
+                    <InfoRow label="状态操作人">{backlog.statusBy ?? '—'}</InfoRow>
+                  </section>
 
-              <Card>
-                <CardHeader>
-                  <CardTitle>阶段时间</CardTitle>
-                </CardHeader>
-                <div className="flex flex-col gap-2 px-4 pb-4 text-sm">
-                  <InfoRow label="开始执行">{formatTime(backlog.startedAt)}</InfoRow>
-                  <InfoRow label="进入测试">{formatTime(backlog.testingAt)}</InfoRow>
-                  <InfoRow label="进入发布">{formatTime(backlog.releasingAt)}</InfoRow>
-                  <InfoRow label="完成">{formatTime(backlog.completedAt)}</InfoRow>
-                  <InfoRow label="取消">{formatTime(backlog.canceledAt)}</InfoRow>
+                  <section className="flex flex-col gap-2 text-sm">
+                    <h3 className="text-sm font-medium text-foreground-intense">阶段时间</h3>
+                    <InfoRow label="开始执行">{formatTime(backlog.startedAt)}</InfoRow>
+                    <InfoRow label="进入测试">{formatTime(backlog.testingAt)}</InfoRow>
+                    <InfoRow label="进入发布">{formatTime(backlog.releasingAt)}</InfoRow>
+                    <InfoRow label="完成">{formatTime(backlog.completedAt)}</InfoRow>
+                    <InfoRow label="取消">{formatTime(backlog.canceledAt)}</InfoRow>
+                  </section>
                 </div>
-              </Card>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <Link
-                to={`/iterations/${backlog.iterationId}`}
-                className={buttonVariants({ variant: 'outline', size: 'sm' })}
-              >
-                返回迭代
-              </Link>
-              <Link
-                to={`/projects/${backlog.projectId}`}
-                className={buttonVariants({ variant: 'outline', size: 'sm' })}
-              >
-                查看原始需求
-              </Link>
-              {backlog.taskId && (
-                <Link
-                  to={`/tasks/${backlog.taskId}`}
-                  className={buttonVariants({ variant: 'outline', size: 'sm' })}
-                >
-                  查看交付任务
-                </Link>
-              )}
-            </div>
+
+                <section className="flex flex-col gap-2 border-t border-border pt-4">
+                  <h3 className="text-sm font-medium text-foreground-intense">需求内容</h3>
+                  {projectError ? (
+                    <p className="text-sm text-foreground-muted">
+                      需求内容加载失败：{projectError}
+                    </p>
+                  ) : project === null ? (
+                    <p className="text-sm text-foreground-muted">加载中…</p>
+                  ) : project.description?.trim() ? (
+                    <div className="text-sm">
+                      <MarkdownViewer text={project.description} />
+                    </div>
+                  ) : (
+                    <p className="text-sm text-foreground-muted">暂无描述</p>
+                  )}
+                </section>
+
+                <section className="flex flex-col gap-2 border-t border-border pt-4">
+                  <h3 className="text-sm font-medium text-foreground-intense">相关文档</h3>
+                  {(docs ?? []).length === 0 ? (
+                    <p className="text-sm text-foreground-muted">
+                      {docs === null ? '加载中…' : '暂无文档'}
+                    </p>
+                  ) : (
+                    <ul className="flex flex-col gap-1.5 text-sm">
+                      {(docs ?? []).map((doc) => (
+                        <li key={doc.id} className="flex flex-wrap items-baseline gap-2">
+                          <Link to={`/documents/${doc.id}`} className="underline">
+                            {doc.title}
+                          </Link>
+                          <span className="text-xs text-foreground-muted">
+                            {doc.type} · {documentSourceLabel(doc.source)}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </section>
+              </div>
+            </Card>
           </TabsContent>
 
           <TabsContent value="docs" keepMounted className="pt-4">
             {/* 文档：转入时自需求迁入，可继续创建 / 导入 / 关联 */}
             <Card>
               <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  文档
-                  <Badge variant="soft">{docs?.length ?? 0}</Badge>
-                </CardTitle>
-                <CardDescription>
-                  转入迭代时已迁移原始需求的文档；可继续创建、导入或关联需求下的其他文档
-                </CardDescription>
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="flex flex-col gap-1">
+                    <CardTitle className="flex items-center gap-2">
+                      文档
+                      <Badge variant="soft">{docs?.length ?? 0}</Badge>
+                    </CardTitle>
+                    <CardDescription>
+                      转入迭代时已迁移原始需求的文档；可继续创建、导入或关联需求下的其他文档
+                    </CardDescription>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <CreateDocumentDialog
+                      projectId={backlog.projectId}
+                      onCreated={(documentId) => {
+                        if (documentId) {
+                          api
+                            .addBacklogDocument(id, documentId)
+                            .catch(() => undefined)
+                            .finally(() => {
+                              api.listBacklogDocuments(id).then(setDocs).catch(() => undefined)
+                            })
+                        } else {
+                          api.listBacklogDocuments(id).then(setDocs).catch(() => undefined)
+                        }
+                        showFeedback({ kind: 'success', message: '文档已创建并关联' }, SUCCESS_STAY_MS)
+                      }}
+                    />
+                    <ImportDocumentDialog
+                      projectId={backlog.projectId}
+                      onImported={(documentId) => {
+                        if (documentId) {
+                          api
+                            .addBacklogDocument(id, documentId)
+                            .catch(() => undefined)
+                            .finally(() => {
+                              api.listBacklogDocuments(id).then(setDocs).catch(() => undefined)
+                            })
+                        } else {
+                          api.listBacklogDocuments(id).then(setDocs).catch(() => undefined)
+                        }
+                        showFeedback({ kind: 'success', message: '文档已导入并关联' }, SUCCESS_STAY_MS)
+                      }}
+                    />
+                    {canOperate && (
+                      <Dialog open={linkOpen} onOpenChange={(open) => (open ? openLinkDialog() : setLinkOpen(false))}>
+                        <DialogTrigger render={<Button variant="outline" size="sm" />}>
+                          关联已有文档
+                        </DialogTrigger>
+                        <DialogContent className="max-w-md">
+                          <DialogHeader>
+                            <DialogTitle>关联需求下的已有文档</DialogTitle>
+                          </DialogHeader>
+                          <DialogBody>
+                            <label className="flex flex-col gap-1 text-sm">
+                              文档（仅列出原始需求下尚未关联的文档）
+                              <Select
+                                value={linkTarget}
+                                onValueChange={(v) => setLinkTarget(v as string)}
+                                items={linkableItems}
+                              >
+                                <SelectTrigger>
+                                  <SelectValue placeholder="选择文档" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {(projectDocs ?? [])
+                                    .filter((doc) => !(docs ?? []).some((linked) => linked.id === doc.id))
+                                    .map((doc) => (
+                                      <SelectItem key={doc.id} value={String(doc.id)}>
+                                        {doc.title}
+                                      </SelectItem>
+                                    ))}
+                                </SelectContent>
+                              </Select>
+                            </label>
+                          </DialogBody>
+                          <DialogFooter>
+                            <DialogClose>
+                              <Button variant="outline" size="sm">取消</Button>
+                            </DialogClose>
+                            <Button size="sm" onClick={() => linkDocument()} disabled={linkSaving || !linkTarget}>
+                              {linkSaving ? '关联中…' : '确认关联'}
+                            </Button>
+                          </DialogFooter>
+                        </DialogContent>
+                      </Dialog>
+                    )}
+                  </div>
+                </div>
               </CardHeader>
-              <div className="flex flex-wrap gap-2 px-4 pb-2">
-                <CreateDocumentDialog
-                  projectId={backlog.projectId}
-                  onCreated={(documentId) => {
-                    if (documentId) {
-                      api
-                        .addBacklogDocument(id, documentId)
-                        .catch(() => undefined)
-                        .finally(() => {
-                          api.listBacklogDocuments(id).then(setDocs).catch(() => undefined)
-                        })
-                    } else {
-                      api.listBacklogDocuments(id).then(setDocs).catch(() => undefined)
-                    }
-                    showFeedback({ kind: 'success', message: '文档已创建并关联' }, SUCCESS_STAY_MS)
-                  }}
-                />
-                <ImportDocumentDialog
-                  projectId={backlog.projectId}
-                  onImported={(documentId) => {
-                    if (documentId) {
-                      api
-                        .addBacklogDocument(id, documentId)
-                        .catch(() => undefined)
-                        .finally(() => {
-                          api.listBacklogDocuments(id).then(setDocs).catch(() => undefined)
-                        })
-                    } else {
-                      api.listBacklogDocuments(id).then(setDocs).catch(() => undefined)
-                    }
-                    showFeedback({ kind: 'success', message: '文档已导入并关联' }, SUCCESS_STAY_MS)
-                  }}
-                />
-                {canOperate && (
-                  <Dialog open={linkOpen} onOpenChange={(open) => (open ? openLinkDialog() : setLinkOpen(false))}>
-                    <DialogTrigger render={<Button variant="outline" size="sm" />}>
-                      关联已有文档
-                    </DialogTrigger>
-                    <DialogContent className="max-w-md">
-                      <DialogHeader>
-                        <DialogTitle>关联需求下的已有文档</DialogTitle>
-                      </DialogHeader>
-                      <DialogBody>
-                        <label className="flex flex-col gap-1 text-sm">
-                          文档（仅列出原始需求下尚未关联的文档）
-                          <Select
-                            value={linkTarget}
-                            onValueChange={(v) => setLinkTarget(v as string)}
-                            items={linkableItems}
-                          >
-                            <SelectTrigger>
-                              <SelectValue placeholder="选择文档" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {(projectDocs ?? [])
-                                .filter((doc) => !(docs ?? []).some((linked) => linked.id === doc.id))
-                                .map((doc) => (
-                                  <SelectItem key={doc.id} value={String(doc.id)}>
-                                    {doc.title}
-                                  </SelectItem>
-                                ))}
-                            </SelectContent>
-                          </Select>
-                        </label>
-                      </DialogBody>
-                      <DialogFooter>
-                        <DialogClose>
-                          <Button variant="outline" size="sm">取消</Button>
-                        </DialogClose>
-                        <Button size="sm" onClick={() => linkDocument()} disabled={linkSaving || !linkTarget}>
-                          {linkSaving ? '关联中…' : '确认关联'}
-                        </Button>
-                      </DialogFooter>
-                    </DialogContent>
-                  </Dialog>
-                )}
-              </div>
               <Table hoverableRows>
                 <TableHeader>
                   <TableRow>
@@ -1101,87 +1271,229 @@ export function BacklogDetailPage() {
           </TabsContent>
 
           <TabsContent value="tasks" keepMounted className="pt-4">
-            {/* 任务与工单：交付任务树 + 相关工单 */}
+            {/* 任务：与信息/文档/缺陷一致的单卡结构，内含任务树与相关工单 */}
             <Card>
               <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  任务与工单
-                  <Badge variant="soft">{(related?.tasks ?? []).length}</Badge>
-                  <Badge variant="soft">{(related?.tickets ?? []).length} 工单</Badge>
-                </CardTitle>
-                <CardDescription>
-                  交付任务及其全部子任务，以及直接关联（提测工单等）与任务关联的工单
-                </CardDescription>
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="flex flex-col gap-1">
+                    <CardTitle className="flex items-center gap-2">
+                      任务
+                      <Badge variant="soft">{(related?.tasks ?? []).length}</Badge>
+                    </CardTitle>
+                    <CardDescription>
+                      交付任务及其全部子任务，以及直接关联（提测工单等）与任务关联的工单
+                    </CardDescription>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={openCreateTask}
+                    disabled={taskCreateDisabledReason !== null}
+                    title={
+                      taskCreateDisabledReason ??
+                      (backlog.taskId
+                        ? '在交付任务下新建子任务'
+                        : '按负责人创建交付任务')
+                    }
+                  >
+                    新建任务
+                  </Button>
+                </div>
               </CardHeader>
-              {(related?.tickets ?? []).length > 0 && (
-                <Table hoverableRows>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className="w-24">工单</TableHead>
-                      <TableHead>标题</TableHead>
-                      <TableHead className="w-28 text-center">状态</TableHead>
-                      <TableHead className="w-36 text-center">当前节点</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {(related?.tickets ?? []).map((ticket) => (
-                      <TableRow key={ticket.id}>
-                        <TableCell className="font-mono text-sm">
-                          <Link to={`/tickets/${ticket.id}`} className="underline">
-                            {ticket.code}
-                          </Link>
-                        </TableCell>
-                        <TableCell className="max-w-md truncate" title={ticket.title}>
-                          {ticket.title}
-                        </TableCell>
-                        <TableCell className="text-center">
-                          <TicketStatusBadge status={ticket.workflowStatus ?? '处理中'} />
-                        </TableCell>
-                        <TableCell className="text-center">
-                          {ticket.currentNodeName ?? '—'}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+              {related === null ? (
+                <p className="px-4 pb-4 text-sm text-foreground-muted">加载中…</p>
+              ) : (
+                <div className="flex flex-col">
+                  <div className="px-4 pb-4">
+                    <TaskTreePanel
+                      pipeline={taskStages}
+                      onOpenTask={(taskId) => navigate(`/tasks/${taskId}`)}
+                      showTemplate
+                      embedded
+                    />
+                  </div>
+                  {(related.tickets ?? []).length > 0 && (
+                    <div className="border-t border-border">
+                      <div className="flex items-center gap-2 px-4 py-3">
+                        <h3 className="text-sm font-medium text-foreground-intense">
+                          相关工单
+                        </h3>
+                        <Badge variant="soft">{(related.tickets ?? []).length}</Badge>
+                      </div>
+                      <Table hoverableRows>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead className="w-24">工单</TableHead>
+                            <TableHead>标题</TableHead>
+                            <TableHead className="w-28 text-center">状态</TableHead>
+                            <TableHead className="w-36 text-center">当前节点</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {(related.tickets ?? []).map((ticket) => (
+                            <TableRow key={ticket.id}>
+                              <TableCell className="font-mono text-sm">
+                                <Link to={`/tickets/${ticket.id}`} className="underline">
+                                  {ticket.code}
+                                </Link>
+                              </TableCell>
+                              <TableCell className="max-w-md truncate" title={ticket.title}>
+                                {ticket.title}
+                              </TableCell>
+                              <TableCell className="text-center">
+                                <TicketStatusBadge status={ticket.workflowStatus ?? '处理中'} />
+                              </TableCell>
+                              <TableCell className="text-center">
+                                {ticket.currentNodeName ?? '—'}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  )}
+                </div>
               )}
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="defects" keepMounted className="pt-4">
+            {/* 缺陷：按迭代项关联，支持页内新建 */}
+            <Card>
+              <CardHeader>
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="flex flex-col gap-1">
+                    <CardTitle className="flex items-center gap-2">
+                      缺陷
+                      <Badge variant="soft">{defects?.length ?? 0}</Badge>
+                    </CardTitle>
+                    <CardDescription>
+                      本迭代项关联的缺陷；页内新建会自动关联当前迭代项
+                    </CardDescription>
+                  </div>
+                  <NewDefectDialog
+                    projects={[
+                      {
+                        id: backlog.projectId,
+                        name: `需求 #${backlog.projectId}`,
+                      },
+                    ]}
+                    preset={{ projectId: backlog.projectId, backlogId: backlog.id }}
+                    onCreated={(defect) =>
+                      setDefects((rows) => [
+                        defect,
+                        ...(rows ?? []).filter((item) => item.id !== defect.id),
+                      ])
+                    }
+                  />
+                </div>
+              </CardHeader>
+              <div className="flex flex-wrap items-center gap-2 px-4 pb-4">
+                <Input
+                  className="w-64"
+                  placeholder="搜索预期或实际描述…"
+                  clearable
+                  value={defectKeyword}
+                  onChange={(e) => setDefectKeyword(e.target.value)}
+                  onClear={() => setDefectKeyword('')}
+                  aria-label="搜索预期或实际描述"
+                />
+                <Select
+                  value={defectPlatform}
+                  onValueChange={(v) => setDefectPlatform(v as string)}
+                  items={defectPlatformItems}
+                >
+                  <SelectTrigger className="w-32" aria-label="按端筛选">
+                    <SelectValue placeholder="端" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {Object.keys(defectPlatformItems).map((p) => (
+                      <SelectItem key={p} value={p}>
+                        {defectPlatformItems[p]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Select
+                  value={defectStatus}
+                  onValueChange={(v) => setDefectStatus(v as string)}
+                  items={defectStatusItems}
+                >
+                  <SelectTrigger className="w-32" aria-label="按状态筛选">
+                    <SelectValue placeholder="状态" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {Object.keys(defectStatusItems).map((s) => (
+                      <SelectItem key={s} value={s}>
+                        {defectStatusItems[s]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Select
+                  value={defectPriority}
+                  onValueChange={(v) => setDefectPriority(v as string)}
+                  items={defectPriorityItems}
+                >
+                  <SelectTrigger className="w-32" aria-label="按优先级筛选">
+                    <SelectValue placeholder="优先级" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {Object.keys(defectPriorityItems).map((p) => (
+                      <SelectItem key={p} value={p}>
+                        {defectPriorityItems[p]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
               <Table hoverableRows>
                 <TableHeader>
                   <TableRow>
-                    <TableHead className="w-24">编号</TableHead>
-                    <TableHead>标题</TableHead>
-                    <TableHead className="w-32 text-center">状态</TableHead>
-                    <TableHead className="w-36 text-center">任务定义</TableHead>
-                    <TableHead className="w-44 text-center">更新时间</TableHead>
+                    <TableHead>预期功能描述</TableHead>
+                    <TableHead className="w-24 text-center">提测 ID</TableHead>
+                    <TableHead className="w-24 text-center">端</TableHead>
+                    <TableHead className="w-24 text-center">优先级</TableHead>
+                    <TableHead className="w-24 text-center">状态</TableHead>
+                    <TableHead className="w-40 text-center">更新时间</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {(related?.tasks ?? []).map((task) => (
-                    <TableRow key={task.id}>
-                      <TableCell className="font-mono text-sm">
-                        <Link to={`/tasks/${task.id}`} className="underline">
-                          {task.code}
+                  {filteredDefects.map((defect) => (
+                    <TableRow key={defect.id}>
+                      <TableCell className="max-w-xl truncate" title={defect.expected}>
+                        <Link
+                          to={`/projects/${backlog.projectId}/defects/${defect.id}`}
+                          className="text-foreground-intense underline"
+                        >
+                          {defect.expected}
                         </Link>
                       </TableCell>
-                      <TableCell className="max-w-md truncate" title={task.title}>
-                        <span style={{ paddingLeft: (taskDepthById.get(task.id) ?? 0) * 16 }}>
-                          {task.parentId && (
-                            <span className="mr-1 text-foreground-muted">└</span>
-                          )}
-                          {task.title}
-                        </span>
+                      <TableCell className="text-center">
+                        {defect.releaseId ? `#${defect.releaseId}` : '—'}
                       </TableCell>
                       <TableCell className="text-center">
-                        <TaskStatusBadge status={task.status} subStatus={task.subStatus} />
+                        {defect.platform ?? '—'}
                       </TableCell>
-                      <TableCell className="text-center">{task.templateName ?? '—'}</TableCell>
-                      <TableCell className="text-center">{formatTime(task.updatedAt)}</TableCell>
+                      <TableCell className="text-center">
+                        <DefectPriorityBadge priority={defect.priority} />
+                      </TableCell>
+                      <TableCell className="text-center">
+                        <DefectStatusBadge status={defect.status} />
+                      </TableCell>
+                      <TableCell className="text-center">
+                        {formatTime(defect.updatedAt)}
+                      </TableCell>
                     </TableRow>
                   ))}
-                  {(related?.tasks ?? []).length === 0 && (
+                  {(defects === null || filteredDefects.length === 0) && (
                     <TableRow>
-                      <TableCell colSpan={5}>
-                        {related === null ? '加载中…' : '暂无交付任务'}
+                      <TableCell colSpan={6}>
+                        {defects === null
+                          ? '加载中…'
+                          : (defects.length === 0
+                            ? '本迭代项暂无缺陷，点击「新建缺陷」创建'
+                            : '无符合筛选条件的缺陷')}
                       </TableCell>
                     </TableRow>
                   )}
@@ -1355,6 +1667,105 @@ export function BacklogDetailPage() {
             </DialogClose>
             <Button size="sm" onClick={submitRelease} disabled={releasing}>
               {releasing ? '创建中…' : '创建提测工单'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 新建任务：已有交付任务建子任务；无交付任务时按负责人创建交付任务 */}
+      <Dialog open={taskOpen} onOpenChange={setTaskOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>
+              {backlog.taskId ? '新建子任务' : '新建交付任务'}
+            </DialogTitle>
+          </DialogHeader>
+          <DialogBody>
+            <div className="flex flex-col gap-4">
+              <p className="text-xs text-foreground-muted">
+                {backlog.taskId
+                  ? '将作为交付任务的子任务创建，出现在「任务」分区任务树中。'
+                  : '当前迭代项还没有交付任务；保存后按所选执行机器人创建交付任务（模板「迭代-Backlog交付」），并登记为迭代项负责人。'}
+              </p>
+              <label className="flex flex-col gap-1 text-sm">
+                标题（可空）
+                <Input
+                  value={taskTitle}
+                  onChange={(e) => setTaskTitle(e.target.value)}
+                  placeholder="留空按任务描述首行生成"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-sm">
+                任务描述（Markdown）
+                <Textarea
+                  value={taskDescription}
+                  onChange={(e) => setTaskDescription(e.target.value)}
+                  placeholder="任务目标、背景与期望产出…"
+                  rows={6}
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-sm">
+                任务定义（可空）
+                <Select
+                  value={taskTemplateId}
+                  onValueChange={(v) => setTaskTemplateId(v as string)}
+                  items={taskTemplateItems}
+                >
+                  <SelectTrigger>
+                    <SelectValue
+                      placeholder={
+                        backlog.taskId
+                          ? '选择任务定义（可留空）'
+                          : '默认「迭代-Backlog交付」'
+                      }
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(taskTemplates ?? []).map((template) => (
+                      <SelectItem key={template.id} value={String(template.id)}>
+                        {template.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </label>
+              <label className="flex flex-col gap-1 text-sm">
+                {backlog.taskId ? '执行机器人（可空）' : '负责人机器人'}
+                <Select
+                  value={taskAgentId}
+                  onValueChange={(v) => setTaskAgentId(v as string)}
+                  items={taskWorkerItems}
+                >
+                  <SelectTrigger>
+                    <SelectValue
+                      placeholder={
+                        backlog.taskId ? '留空由平台自动分配' : '选择负责人（AI 或真人）'
+                      }
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(taskWorkers ?? []).map((worker) => (
+                      <SelectItem key={worker.id} value={String(worker.id)}>
+                        {worker.name}
+                        {worker.runtime === 'human' ? '（真人）' : ''}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </label>
+              <p className="text-xs text-foreground-muted">
+                {backlog.taskId
+                  ? '执行机器人留空时由平台按任务定义自动分配；无法匹配时归入「未知任务」'
+                  : '交付任务与负责人绑定，创建后可在「信息」改派'}
+              </p>
+            </div>
+          </DialogBody>
+          <DialogFooter>
+            <DialogClose>
+              <Button variant="outline" size="sm">取消</Button>
+            </DialogClose>
+            <Button size="sm" onClick={submitTask} disabled={savingTask}>
+              {savingTask ? '创建中…' : '创建任务'}
             </Button>
           </DialogFooter>
         </DialogContent>

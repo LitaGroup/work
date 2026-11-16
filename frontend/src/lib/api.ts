@@ -699,6 +699,8 @@ export interface Project {
   /** 飞书同步的项目有 record_id，可据此判断来源 */
   feishuRecordId?: string | null
   description?: string | null
+  /** 需求摘要：模型根据需求描述与「需求」类文档生成（≤200 字），人工可编辑 */
+  summary?: string | null
   /** 脚本目录：相对脚本根目录的路径，登记检查时只在该子目录下扫描 */
   scriptsPath?: string | null
   documents?: ProjectDocument[]
@@ -779,7 +781,11 @@ export interface BacklogSummary {
   status: BacklogStatus
   ownerWorkerId: number | null
   ownerName: string | null
+  /** 预期上线时间（到小时，北京时间展示；可空） */
+  expectedOnlineAt: string | null
   updatedAt: string
+  /** 所属迭代引用（需求详情「对应的迭代」展示用） */
+  iteration: { id: number; code: string; type: IterationType } | null
 }
 
 /** 迭代项（Backlog）：从需求转入，指定负责人机器人后自动创建交付任务 */
@@ -847,6 +853,8 @@ export interface BacklogTaskSummary {
   rootId: number
   projectId: number | null
   agentId: number | null
+  /** 处理机器人名称 */
+  agentName: string | null
   templateName: string | null
   sortOrder: number
   createdAt: string
@@ -895,6 +903,8 @@ export interface Defect {
   verifiedAt: string | null
   /** 来源提测记录（机器人提测后的新缺陷自动关联） */
   releaseId: number | null
+  /** 关联迭代项（backlogs.id，可为空） */
+  backlogId: number | null
   /** 自动创建的缺陷处理任务 */
   followupTaskId: number | null
   createdAt: string
@@ -2567,16 +2577,18 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ items }),
     }),
-  /** 迭代项轻量列表（默认仅未取消）：选择器过滤已进入迭代的需求 */
+  /** 迭代项轻量列表（默认仅未取消）：选择器过滤已进入迭代的需求；includeCanceled 用于需求详情查看全部历史 */
   listBacklogs: (params?: {
     iterationId?: number
     projectId?: number
     status?: BacklogStatus
+    includeCanceled?: boolean
   }) => {
     const qs = new URLSearchParams()
     if (params?.iterationId) qs.set('iterationId', String(params.iterationId))
     if (params?.projectId) qs.set('projectId', String(params.projectId))
     if (params?.status) qs.set('status', params.status)
+    if (params?.includeCanceled) qs.set('includeCanceled', 'true')
     const q = qs.toString()
     return request<BacklogSummary[]>(`/backlogs${q ? `?${q}` : ''}`)
   },
@@ -2618,6 +2630,26 @@ export const api = {
   listBacklogTasks: (id: number) =>
     request<{ tasks: BacklogTaskSummary[]; tickets: BacklogTicketSummary[] }>(
       `/backlogs/${id}/tasks`,
+    ),
+  /**
+   * 新建任务：已有交付任务时创建其子任务；
+   * 无交付任务时按执行机器人创建交付任务并登记负责人（仅管理员）。
+   */
+  createBacklogTask: (
+    id: number,
+    input: {
+      title?: string;
+      description?: string | null;
+      templateId?: number | null;
+      agentId?: number | null;
+    },
+  ) =>
+    request<{ id: number; code: string; title: string }>(
+      `/backlogs/${id}/tasks`,
+      {
+        method: 'POST',
+        body: JSON.stringify(input),
+      },
     ),
   /** 发起提测（创建提测工单，自动填入迭代项上下文） */
   createBacklogReleaseTicket: (
@@ -2666,6 +2698,8 @@ export const api = {
       scriptsPath?: string
       /** 项目描述（Markdown），空串清除 */
       description?: string
+      /** 需求摘要（≤200 字），空串清除 */
+      summary?: string
     },
   ) =>
     request<Project>(`/projects/${id}`, {
@@ -3023,10 +3057,11 @@ export const api = {
       body: JSON.stringify({ packageId, platform }),
     }),
   /** 缺陷列表：可按项目 / 提测 ID 过滤，不传返回全部。不含大字段 */
-  listDefects: (projectId?: number, releaseId?: number) => {
+  listDefects: (projectId?: number, releaseId?: number, backlogId?: number) => {
     const query = [
       projectId !== undefined && `projectId=${projectId}`,
       releaseId !== undefined && `releaseId=${releaseId}`,
+      backlogId !== undefined && `backlogId=${backlogId}`,
     ]
       .filter(Boolean)
       .join('&')
@@ -3053,6 +3088,8 @@ export const api = {
     testScript?: string
     /** 关联提测 ID；不传走自动关联，null 表示明确不关联 */
     releaseId?: number | null
+    /** 关联迭代项（backlogs.id） */
+    backlogId?: number | null
   }) =>
     request<Defect>('/defects', {
       method: 'POST',
@@ -3071,6 +3108,8 @@ export const api = {
       testScript: string
       /** 关联提测 ID；null 清除关联 */
       releaseId: number | null
+      /** 关联迭代项（backlogs.id）；null 清除关联 */
+      backlogId: number | null
       /** 变更内容：状态变更时并入状态记录，否则单独记一条内容变更记录 */
       changeContent: string
       /** 本次变更的备注信息（写入变更记录） */

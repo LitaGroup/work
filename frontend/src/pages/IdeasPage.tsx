@@ -240,7 +240,7 @@ export function IdeasPage() {
               <TableCell className="text-center">
                 {idea.projectId ? (
                   <Link
-                    to={`/projects/${idea.projectId}`}
+                    to={`/requirements/${idea.projectId}`}
                     className="underline"
                     title="已采纳进入需求池"
                   >

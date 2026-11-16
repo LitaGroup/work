@@ -69,6 +69,11 @@ export class Defect {
   @Column({ type: 'int', nullable: true })
   followupTaskId: number | null;
 
+  /** 关联迭代项（backlogs.id；应用层软引用，无物理外键，可为空） */
+  @Index('IDX_defects_backlogId')
+  @Column({ type: 'int', nullable: true })
+  backlogId: number | null;
+
   // 测试库账号无 REFERENCES 权限，暂不建物理外键；获得授权后可移除该选项
   @ManyToOne(() => Project, (project) => project.defects, {
     createForeignKeyConstraints: false,

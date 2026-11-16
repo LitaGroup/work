@@ -1,7 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { ModelThinkingLevel } from '../common/enums';
 import { ModelConfigService } from './model-config.service';
-import { MODEL_SCENARIO_TITLE_NAMING } from './model-scenarios';
+import {
+  MODEL_SCENARIO_TITLE_NAMING,
+  MODEL_SCENARIO_REQUIREMENT_SUMMARY,
+} from './model-scenarios';
 
 /** 单次请求超时（毫秒） */
 const REQUEST_TIMEOUT_MS = 20_000;
@@ -13,6 +16,16 @@ const TITLE_MAX_CHARS = 60;
 const TITLE_SYSTEM_PROMPT =
   '你是标题生成助手。只输出一个简洁、准确的中文标题，不超过 30 个字；' +
   '不要输出解释、引号、书名号、编号或 Markdown 标记。';
+
+/** 需求摘要最大字数（需求摘要场景硬上限） */
+export const SUMMARY_MAX_CHARS = 200;
+
+/** 需求摘要素材最大字符数（需求描述 + 需求类文档合计，控制在单次请求超时内） */
+const SUMMARY_MATERIAL_LIMIT = 12_000;
+
+const SUMMARY_SYSTEM_PROMPT =
+  '你是需求摘要助手。根据需求信息和需求文档，输出一段不超过 200 字的中文摘要，' +
+  '概括需求的目标、范围与关键点；不要输出标题、列表标记、Markdown 格式或任何解释。';
 
 export interface LlmAskInput {
   /** 系统提示词 */
@@ -97,6 +110,35 @@ export function sanitizeTitle(raw: string): string | null {
   return text.slice(0, TITLE_MAX_CHARS);
 }
 
+/** 清洗模型输出为单段摘要：去 Markdown 标记、压缩空白、硬截断到 200 字 */
+export function sanitizeSummary(raw: string): string | null {
+  let text = raw
+    .replace(/```[\s\S]*?```/g, ' ')
+    .split(/\r?\n/)
+    .map((line) =>
+      line
+        .replace(/^#{1,6}\s*/, '')
+        .replace(/^[-*•]\s+/, '')
+        .replace(/^>\s?/, '')
+        .trim(),
+    )
+    .filter(Boolean)
+    .join(' ')
+    .replace(/\*\*|__|`/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  for (let i = 0; i < 3; i += 1) {
+    const next = text
+      .replace(/^[「『"'“”‘’《〈（(]+/, '')
+      .replace(/[」』"'“”‘’》〉）)]+$/, '')
+      .trim();
+    if (next === text) break;
+    text = next;
+  }
+  if (!text) return null;
+  return text.slice(0, SUMMARY_MAX_CHARS);
+}
+
 /**
  * 通用单次大模型调用：按管理区「模型配置」的场景取连接信息，
  * 非流式、带超时与全局并发上限。未配置返回 null；请求失败抛错，
@@ -159,6 +201,23 @@ export class LlmService {
     });
     if (!content) return null;
     return sanitizeTitle(content);
+  }
+
+  /**
+   * 生成需求摘要（200 字以内）：素材为需求名称 + 描述 + 需求类文档正文，超长截断。
+   * 使用 requirement-summary 场景；场景未配置或素材为空返回 null。
+   */
+  async generateSummary(material: string): Promise<string | null> {
+    const trimmed = material.trim();
+    if (!trimmed) return null;
+    const content = await this.ask(MODEL_SCENARIO_REQUIREMENT_SUMMARY, {
+      system: SUMMARY_SYSTEM_PROMPT,
+      prompt: `根据下面的需求信息与文档，写一份 200 字以内的需求摘要。只输出摘要正文。\n\n${trimmed.slice(0, SUMMARY_MATERIAL_LIMIT)}`,
+      maxTokens: 400,
+      temperature: 0.3,
+    });
+    if (!content) return null;
+    return sanitizeSummary(content);
   }
 
   private post(

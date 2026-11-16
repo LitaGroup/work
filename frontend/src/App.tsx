@@ -39,8 +39,10 @@ const FeedbackPage = lazy(() =>
 const FeedbackDetailPage = lazy(() =>
   import('./pages/FeedbackDetailPage').then((m) => ({ default: m.FeedbackDetailPage })),
 )
-const ProjectDetailPage = lazy(() =>
-  import('./pages/ProjectDetailPage').then((m) => ({ default: m.ProjectDetailPage })),
+const RequirementDetailPage = lazy(() =>
+  import('./pages/RequirementDetailPage').then((m) => ({
+    default: m.RequirementDetailPage,
+  })),
 )
 const DocumentDetailPage = lazy(() =>
   import('./pages/DocumentDetailPage').then((m) => ({ default: m.DocumentDetailPage })),
@@ -281,6 +283,7 @@ function App() {
             <Route path="/" element={<Navigate to="/requirements" replace />} />
             <Route path="/overview" element={<OverviewPage />} />
             <Route path="/requirements" element={<RequirementsPage />} />
+            <Route path="/requirements/:id" element={<RequirementDetailPage />} />
             <Route path="/iterations" element={<IterationsPage />} />
             <Route path="/iterations/new" element={<IterationEditPage />} />
             <Route path="/iterations/:iterationId" element={<IterationDetailPage />} />
@@ -295,9 +298,8 @@ function App() {
             <Route path="/workbench/tasks/:taskId" element={<WorkbenchPage />} />
             <Route path="/robots" element={<RobotChatPage />} />
             <Route path="/robots/:workerId" element={<RobotChatPage />} />
-            {/* 旧「项目」列表路由兼容：统一并入需求池 */}
+            {/* 旧「项目」列表路由兼容：统一并入需求池；需求详情改挂 /requirements/:id */}
             <Route path="/projects" element={<Navigate to="/requirements" replace />} />
-            <Route path="/projects/:id" element={<ProjectDetailPage />} />
             <Route
               path="/projects/:id/checks/:checkId"
               element={<CheckRunPage />}

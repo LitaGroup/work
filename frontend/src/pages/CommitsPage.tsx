@@ -199,7 +199,7 @@ export function CommitsPage() {
                     {e.projects.slice(0, 2).map((p) => (
                       <Link
                         key={p.id}
-                        to={`/projects/${p.id}`}
+                        to={`/requirements/${p.id}`}
                         className="text-foreground-intense underline"
                         title={e.projects.map((x) => x.name).join('、')}
                       >

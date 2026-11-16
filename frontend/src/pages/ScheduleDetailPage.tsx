@@ -14,7 +14,7 @@ import {
   RunDetailView,
   type RunHistoryItem,
 } from '../components/detail/RunDetailView'
-import { DeleteScheduleButton, ScheduleFormDialog } from './ProjectDetailPage'
+import { DeleteScheduleButton, ScheduleFormDialog } from '../components/ScheduleDialogs'
 import { Terminal } from '../components/Terminal'
 
 const runStatusMeta: Record<
@@ -188,7 +188,7 @@ export function ScheduleDetailPage() {
       }
       breadcrumb={[
         { label: '定时任务', to: '/schedules' },
-        { label: projectName ?? '…', to: `/projects/${projectId}` },
+        { label: projectName ?? '…', to: `/requirements/${projectId}` },
         { label: schedule?.title ?? '…' },
       ]}
       title={`定时任务：${schedule?.title ?? '…'}`}
@@ -271,7 +271,7 @@ export function ScheduleDetailPage() {
                   onDeleted={() =>
                     api
                       .deleteSchedule(schedule.id)
-                      .then(() => navigate(`/projects/${projectId}`))
+                      .then(() => navigate(`/schedules?projectId=${projectId}`))
                       .catch((e: Error) => setError(e.message))
                   }
                 />

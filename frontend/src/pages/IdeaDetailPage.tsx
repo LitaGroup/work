@@ -227,7 +227,7 @@ export function IdeaDetailPage() {
                 <dd>
                   {idea.projectId ? (
                     <Link
-                      to={`/projects/${idea.projectId}`}
+                      to={`/requirements/${idea.projectId}`}
                       className="underline"
                     >
                       需求 #{idea.projectId}

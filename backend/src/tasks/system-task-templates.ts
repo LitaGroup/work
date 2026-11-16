@@ -19,19 +19,56 @@ export const SYSTEM_UNKNOWN_TASK_TEMPLATE_DESCRIPTION =
 /** 项目详情「交给项目机器人」使用的系统任务定义固定 ID */
 export const SYSTEM_PROJECT_DELIVERY_TASK_TEMPLATE_ID = 7;
 
+/**
+ * 研发操作指南：需求详情 .md 只保留基本信息/迭代/文档，
+ * 研发类操作（脚本运行、节点、分支、提测、缺陷）随任务定义说明下发给执行机器人。
+ */
+export const DEVELOPMENT_OPERATION_GUIDE = [
+  '## 研发操作指南',
+  '',
+  '- 需求上下文：`GET /api/requirements/{projectId}.md`（基本信息 + 对应迭代 + 文档资料）。',
+  '- 需求配置：`POST /api/requirements/{projectId}/update.md`（脚本目录 / 描述 / 人员，空串清除）。',
+  '- 文档：写入 `POST /api/documents/upsert.md`（按 projectId + fileName 判重）；阅读 `GET /api/documents/{id}.md`。',
+  '',
+  '### 脚本与运行',
+  '',
+  '- 导入脚本：`POST /api/scripts/import.md`，body `{"projectId": {projectId}}`（扫描项目脚本目录，按脚本路径判重）。',
+  '- 运行检查 / 测试 / 导出 / 定时任务：`POST /api/checks/{id}/run.md`、`POST /api/tests/{id}/run.md`、`POST /api/exports/{id}/run.md`、`POST /api/schedules/{id}/run.md`（text/markdown，流式返回脚本输出）。',
+  '- 运行详情：`GET /api/checks/runs/{runId}.md`、`GET /api/tests/runs/{runId}.md`、`GET /api/exports/runs/{runId}.md`。',
+  '- 脚本目录配置：`PATCH /api/projects/{projectId}`，body `{"scriptsPath": "projects/xxx"}`（也可用需求 update.md）。',
+  '',
+  '### 节点与代码分支',
+  '',
+  '- 节点：`GET /api/milestones?projectId={projectId}`；新建 `POST /api/milestones`；达成 `PATCH /api/milestones/{id}`（body `{"achieved":"yes"}`，自动记录实际达成日期）。',
+  '- 代码分支：`GET /api/code-branches?projectId={projectId}`；登记 `POST /api/code-branches`；提交记录 `GET /api/code-events.md?projectId={projectId}`。',
+  '',
+  '### 提测与缺陷',
+  '',
+  '- 提测：`POST /api/projects/{projectId}/release.md`，body `{"testers": ["张三"], "content": "提测内容 Markdown", "urls": ["https://..."], "branches": [{"repo": "LitaGroup/xxx", "branch": "test"}], "taskId": 123}`（仅 testers 必填且须为用户系统内用户；taskId 可省略，缺省自动关联当前执行中的任务）。',
+  '- 提测记录与状态：`GET /api/releases.md?projectId={projectId}`；`POST /api/releases/{id}/status.md`，body `{"status": "已通过"}`。',
+  '- 缺陷：`GET /api/defects.md?projectId={projectId}`；新建 `POST /api/defects/create.md`；详情 `GET /api/defects/{id}.md`；状态变更 `POST /api/defects/{id}/status.md`。',
+  '',
+  '### 其他',
+  '',
+  '- 平台设置：`GET /api/settings.md`；脚本仓库更新：`POST /api/settings/scripts/pull.md`。',
+  '- `lita-work` MCP 工具可直接执行上述大部分操作（需求详情、文档读写、脚本运行、缺陷、提测等）。',
+].join('\n');
+
 export const SYSTEM_PROJECT_DELIVERY_TASK_TEMPLATE_NAME = '技术-项目开发交付';
 export const SYSTEM_PROJECT_DELIVERY_TASK_TEMPLATE_DESCRIPTION = [
   '承接项目详情页发起的项目实施与开发交付。',
   '',
   '## 任务范围',
   '',
-  '- 读取项目 Markdown 上下文（`GET /api/projects/{projectId}.md`），确认项目目标、范围、资料和代码分支。',
+  '- 读取需求 Markdown 上下文（`GET /api/requirements/{projectId}.md`），确认需求目标、范围、对应迭代与文档资料。',
   '- 梳理实施计划，完成开发、配置和必要的技术文档交付。',
   '- 按任务流程更新 HANDOFF，并在完成后申请验收。',
   '',
   '## 默认处理机器人',
   '',
-  '由系统机器人「技术-项目经理」作为首位处理机器人，负责读取项目上下文、拆分并分派子任务、验收交付和整合结果；管理员可追加其它机器人作为兜底。',
+  '由系统机器人「技术-项目经理」作为首位处理机器人，负责读取需求上下文、拆分并分派子任务、验收交付和整合结果；管理员可追加其它机器人作为兜底。',
+  '',
+  DEVELOPMENT_OPERATION_GUIDE,
 ].join('\n');
 
 /** 飞书反馈群收录新反馈后自动派单使用的系统任务定义固定 ID */
@@ -63,13 +100,15 @@ export const SYSTEM_BACKLOG_DELIVERY_TASK_TEMPLATE_DESCRIPTION = [
   '',
   '## 任务范围',
   '',
-  '- 读取原始需求的 Markdown 上下文（任务描述中包含需求地址），确认目标、范围与资料。',
+  '- 读取原始需求的 Markdown 上下文（任务描述中包含需求地址，`GET /api/requirements/{projectId}.md`），确认目标、范围与资料。',
   '- 按需求完成开发、配置和必要的技术文档交付，并在 HANDOFF 中记录实施过程。',
   '- 完成后显式申请验收；验收通过后交付内容供迭代项流转到「测试/发布/完成」参考。',
   '',
   '## 负责人',
   '',
   '任务创建时已明确指派给该迭代项的负责人机器人（AI 或真人），无需再经任务定义默认机器人分配。',
+  '',
+  DEVELOPMENT_OPERATION_GUIDE,
 ].join('\n');
 
 /** 迭代级整体交付使用的系统任务定义固定 ID（10-15 为已退役工单调度定义，跳过不复用） */

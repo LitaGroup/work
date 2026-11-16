@@ -107,7 +107,7 @@ export function TestsPage() {
                   '—'
                 ) : (
                   <Link
-                    to={`/projects/${t.projectId}`}
+                    to={`/requirements/${t.projectId}`}
                     className="text-foreground-intense underline"
                   >
                     {projectName.get(t.projectId) ?? `#${t.projectId}`}

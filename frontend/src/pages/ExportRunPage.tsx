@@ -163,7 +163,7 @@ export function ExportRunPage() {
       }
       breadcrumb={[
         { label: '导出', to: '/exports' },
-        { label: projectName ?? '…', to: `/projects/${projectId}` },
+        { label: projectName ?? '…', to: `/requirements/${projectId}` },
         { label: exportItem?.code ?? '…' },
       ]}
       title={`导出：${exportItem?.code ?? '…'}`}

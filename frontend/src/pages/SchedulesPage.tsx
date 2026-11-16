@@ -129,7 +129,7 @@ export function SchedulesPage() {
                 </TableCell>
                 <TableCell className="max-w-64 truncate">
                   <Link
-                    to={`/projects/${s.projectId}`}
+                    to={`/requirements/${s.projectId}`}
                     className="text-foreground-intense underline"
                   >
                     {projectName.get(s.projectId) ?? `#${s.projectId}`}

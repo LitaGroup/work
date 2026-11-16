@@ -21,6 +21,7 @@ import {
   WorkerRole,
 } from '../common/enums';
 import { beijingTime, mdFrontmatter } from '../common/frontmatter';
+import { Backlog } from '../iterations/backlog.entity';
 import { Project } from '../projects/project.entity';
 import {
   ACTIVE_RELEASE_STATUSES,
@@ -55,6 +56,7 @@ export const DEFECT_LIST_SELECT: FindOptionsSelect<Defect> = {
   verifiedAt: true,
   releaseId: true,
   followupTaskId: true,
+  backlogId: true,
   createdAt: true,
   updatedAt: true,
 };
@@ -75,6 +77,8 @@ export interface CreateDefectInput {
   testScript?: string;
   /** 关联提测 ID；不传时沿用自动关联最新有效提测，null 表示明确不关联 */
   releaseId?: number | null;
+  /** 关联迭代项（backlogs.id）；不传表示不关联 */
+  backlogId?: number | null;
 }
 
 /** 变更记录来源：录入（前端表单）/ AI（.md 接口）/ 自动（测试运行、提测缺陷派单等） */
@@ -91,6 +95,8 @@ export interface UpdateDefectInput {
   testScript?: string;
   /** 关联提测 ID；null 清除关联，不传保持不变 */
   releaseId?: number | null;
+  /** 关联迭代项（backlogs.id）；null 清除关联，不传保持不变 */
+  backlogId?: number | null;
   /** 变更内容：状态变更并入状态记录，否则单独记一条内容变更记录（可空） */
   changeContent?: string;
   /** 本次变更的备注信息 */
@@ -157,6 +163,8 @@ export class DefectsService implements OnModuleInit {
     private readonly releases: Repository<ProjectRelease>,
     @InjectRepository(Worker)
     private readonly workers: Repository<Worker>,
+    @InjectRepository(Backlog)
+    private readonly backlogs: Repository<Backlog>,
     @InjectRepository(User)
     private readonly users: Repository<User>,
     @InjectRepository(Task)
@@ -173,18 +181,23 @@ export class DefectsService implements OnModuleInit {
   }
 
   /**
-   * 按项目 / 提测 ID 列出缺陷；均不传时返回全部（全局列表页用）。不含大字段。
-   * releaseId 精确匹配，可与 projectId 组合。
+   * 按项目 / 提测 / 迭代项 ID 列出缺陷；均不传时返回全部（全局列表页用）。不含大字段。
+   * releaseId / backlogId 精确匹配，可与 projectId 组合。
    */
   async findByProject(
     projectId?: number,
     releaseId?: number,
+    backlogId?: number,
   ): Promise<Defect[]> {
     const where: FindOptionsWhere<Defect> = {};
     if (projectId !== undefined) where.projectId = projectId;
     if (releaseId !== undefined) {
       this.assertReleaseId(releaseId);
       where.releaseId = releaseId;
+    }
+    if (backlogId !== undefined) {
+      this.assertBacklogId(backlogId);
+      where.backlogId = backlogId;
     }
     return this.defects.find({
       where,
@@ -322,7 +335,7 @@ export class DefectsService implements OnModuleInit {
   /** Markdown 视图（GET /api/defects/:id.md）：元信息 + 预期/实际/图片 + 变更记录 + AI 操作 */
   async findOneMarkdown(id: number): Promise<string> {
     const defect = await this.findOne(id);
-    const [project, followupTask] = await Promise.all([
+    const [project, followupTask, backlog] = await Promise.all([
       this.projects.findOne({
         where: { id: defect.projectId },
         select: { id: true, name: true },
@@ -333,12 +346,21 @@ export class DefectsService implements OnModuleInit {
             select: { id: true, code: true },
           })
         : Promise.resolve(null),
+      defect.backlogId
+        ? this.backlogs.findOne({
+            where: { id: defect.backlogId },
+            select: { id: true, code: true, title: true },
+          })
+        : Promise.resolve(null),
     ]);
     const meta = [
       `- ID：${defect.id}`,
       `- 项目：${project ? `${project.name}（${defect.projectId}）` : defect.projectId}`,
       `- 状态：${defect.status}`,
       `- 提测 ID：${defect.releaseId ? `#${defect.releaseId}` : '—'}`,
+      defect.backlogId
+        ? `- 迭代项：${backlog ? `${backlog.code} ${backlog.title}（#${defect.backlogId}）` : `#${defect.backlogId}`}`
+        : null,
       defect.followupTaskId
         ? `- 处理任务：${followupTask?.code ?? `#${defect.followupTaskId}`}（\`GET /api/tasks/${defect.followupTaskId}.md\`）`
         : null,
@@ -406,11 +428,16 @@ export class DefectsService implements OnModuleInit {
   async listMarkdown(filter: {
     projectId?: number;
     releaseId?: number;
+    backlogId?: number;
     status?: string;
     priority?: string;
     q?: string;
   }): Promise<string> {
-    const all = await this.findByProject(filter.projectId, filter.releaseId);
+    const all = await this.findByProject(
+      filter.projectId,
+      filter.releaseId,
+      filter.backlogId,
+    );
     const q = filter.q?.trim().toLowerCase();
     const rows = all.filter(
       (d) =>
@@ -424,6 +451,7 @@ export class DefectsService implements OnModuleInit {
     const scope = [
       filter.projectId ? `项目 ${filter.projectId}` : null,
       filter.releaseId ? `提测 #${filter.releaseId}` : null,
+      filter.backlogId ? `迭代项 #${filter.backlogId}` : null,
     ]
       .filter((v): v is string => v !== null)
       .join('，');
@@ -517,6 +545,7 @@ export class DefectsService implements OnModuleInit {
       `- 状态：${defect.status}`,
       `- 项目：${defect.projectId}`,
       `- 提测 ID：${defect.releaseId ? `#${defect.releaseId}` : '—'}`,
+      defect.backlogId ? `- 迭代项：#${defect.backlogId}` : null,
       defect.followupTaskId
         ? `- 处理任务：#${defect.followupTaskId}（GET /api/tasks/${defect.followupTaskId}.md）`
         : null,
@@ -586,6 +615,10 @@ export class DefectsService implements OnModuleInit {
             ? this.normalizeTestScript(input.testScript)
             : null,
         releaseId,
+        backlogId:
+          input.backlogId !== undefined
+            ? await this.resolveBacklogId(input.backlogId, input.projectId)
+            : null,
         followupTaskId: null,
       }),
     );
@@ -654,6 +687,12 @@ export class DefectsService implements OnModuleInit {
     if (input.releaseId !== undefined) {
       defect.releaseId = await this.resolveReleaseId(
         input.releaseId,
+        defect.projectId,
+      );
+    }
+    if (input.backlogId !== undefined) {
+      defect.backlogId = await this.resolveBacklogId(
+        input.backlogId,
         defect.projectId,
       );
     }
@@ -732,6 +771,33 @@ export class DefectsService implements OnModuleInit {
       throw new BadRequestException(`提测记录 #${value} 不存在或不属于该项目`);
     }
     return release.id;
+  }
+
+  /** 迭代项 ID 必须是正整数（查询与写入共用）。 */
+  private assertBacklogId(value: number): void {
+    if (!Number.isInteger(value) || value <= 0) {
+      throw new BadRequestException('迭代项 ID 必须是正整数');
+    }
+  }
+
+  /** 校验迭代项存在且属于缺陷所在项目；null 表示明确清除关联。 */
+  private async resolveBacklogId(
+    value: number | null,
+    projectId: number,
+  ): Promise<number | null> {
+    if (value === null) return null;
+    this.assertBacklogId(value);
+    const backlog = await this.backlogs.findOne({
+      where: { id: value },
+      select: { id: true, projectId: true },
+    });
+    if (!backlog) {
+      throw new BadRequestException(`迭代项 #${value} 不存在`);
+    }
+    if (backlog.projectId !== projectId) {
+      throw new BadRequestException('迭代项不属于该缺陷所属项目');
+    }
+    return backlog.id;
   }
 
   /**

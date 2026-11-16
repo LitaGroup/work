@@ -250,7 +250,7 @@ export class ReleasesService {
       `- 提测内容：${release.content ? '已记录（见项目详情）' : '—'}`,
       `- 提测状态：**${releaseStatusOf(release.status)}**（待冒烟 / 进行中 / 已通过 / 未通过）`,
       `- 已通知：项目人员私聊（发送失败仅告警，不影响提测）`,
-      `- 阅读地址：GET /api/projects/${release.projectId}.md`,
+      `- 阅读地址：GET /api/requirements/${release.projectId}.md`,
       `- 提测记录：GET /api/releases.md?projectId=${release.projectId}`,
       release.workerId
         ? `- 后续缺陷派单：该提测处于 待冒烟 / 进行中 / 未通过 时，新缺陷会自动创建处理任务并指派给该机器人`
@@ -413,7 +413,7 @@ export class ReleasesService {
       lines.push(`**提测内容**：${oneLine(release.content, CONTENT_CARD_MAX)}`);
     }
     lines.push(
-      `**详情**：[查看项目](${this.appUrl.replace(/\/$/, '')}/projects/${project.id})`,
+      `**详情**：[查看需求](${this.appUrl.replace(/\/$/, '')}/requirements/${project.id})`,
     );
     // 卡片体：机器人 API（sendUserCard）直接发送该对象
     return {

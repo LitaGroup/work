@@ -19,14 +19,14 @@ function buildTools(): {
   tools: Map<string, Handler>;
   projects: {
     searchMarkdown: jest.Mock;
-    findOneMarkdown: jest.Mock;
+    findOneRequirementMarkdown: jest.Mock;
     updateMarkdown: jest.Mock;
   };
   milestones: { create: jest.Mock; update: jest.Mock; remove: jest.Mock };
 } {
   const projects = {
     searchMarkdown: jest.fn().mockResolvedValue('# 搜索结果'),
-    findOneMarkdown: jest.fn().mockResolvedValue('# 项目详情'),
+    findOneRequirementMarkdown: jest.fn().mockResolvedValue('# 需求详情'),
     updateMarkdown: jest.fn().mockResolvedValue('# 已更新'),
   };
   const documents = {

@@ -4,9 +4,9 @@ describe('unescapeMarkdownUrlColons', () => {
   it('还原 AI 生成 Markdown 时写的 URL 冒号转义', () => {
     expect(
       unescapeMarkdownUrlColons(
-        'http\\://project.cinta.team/api/projects/131.md 后端部分开发',
+        'http\\://project.cinta.team/api/requirements/131.md 后端部分开发',
       ),
-    ).toBe('http://project.cinta.team/api/projects/131.md 后端部分开发');
+    ).toBe('http://project.cinta.team/api/requirements/131.md 后端部分开发');
   });
 
   it('只处理 URL 协议形态的冒号转义', () => {

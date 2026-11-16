@@ -1,11 +1,29 @@
 import { useMemo, useState } from 'react'
 import { ChevronDown, ChevronRight } from '@appica/icons-react'
 import { Badge } from '@appica/ui-react/badge'
-import type { TaskPipelineStage } from '../../lib/api'
 import { TaskStatusBadge } from '../StatusBadge'
 
+/**
+ * 任务树展示所需的最小字段：任务详情 pipeline 的 TaskPipelineStage
+ * 与迭代项任务摘要均可直接适配，避免依赖完整 TaskPackage。
+ */
+export interface TaskTreeStage {
+  task: {
+    id: number
+    code: string
+    title: string
+    parentId: number | null
+    sortOrder: number
+    status: string
+    subStatus: string
+    templateName?: string | null
+  }
+  /** 处理机器人（只用于展示名称） */
+  agent?: { name: string } | null
+}
+
 interface TaskTreeNode {
-  stage: TaskPipelineStage
+  stage: TaskTreeStage
   children: TaskTreeNode[]
 }
 
@@ -18,7 +36,7 @@ function sortNodes(nodes: TaskTreeNode[]) {
 }
 
 /** 按 parentId 组装完整任务树；父节点缺失或自引用时作为根节点展示。 */
-function buildTaskTree(pipeline: TaskPipelineStage[]) {
+function buildTaskTree(pipeline: TaskTreeStage[]) {
   const nodes = new Map<number, TaskTreeNode>()
   for (const stage of pipeline) {
     nodes.set(stage.task.id, { stage, children: [] })
@@ -59,10 +77,17 @@ export function TaskTreePanel({
   pipeline,
   currentTaskId,
   onOpenTask,
+  showTemplate = false,
+  embedded = false,
 }: {
-  pipeline: TaskPipelineStage[]
-  currentTaskId: number
+  pipeline: TaskTreeStage[]
+  /** 高亮当前任务（不传则不高亮，用于迭代项等非任务上下文） */
+  currentTaskId?: number
   onOpenTask: (taskId: number) => void
+  /** 元信息行显示任务定义名称（迭代项任务树等需要补充信息的场景） */
+  showTemplate?: boolean
+  /** 嵌在其它 Card 内：省略自带页头与背景，只渲染任务树本体 */
+  embedded?: boolean
 }) {
   const roots = useMemo(() => buildTaskTree(pipeline), [pipeline])
   const [collapsed, setCollapsed] = useState<Set<number>>(() => new Set())
@@ -74,6 +99,38 @@ export function TaskTreePanel({
       else next.add(taskId)
       return next
     })
+  }
+
+  const list =
+    roots.length === 0 ? (
+      <p
+        className={
+          embedded
+            ? 'text-sm text-foreground-muted'
+            : 'px-1 py-2 text-sm text-foreground-muted'
+        }
+      >
+        暂无关联任务
+      </p>
+    ) : (
+      <ul className="flex flex-col gap-1">
+        {roots.map((root) => (
+          <TaskTreeRow
+            key={root.stage.task.id}
+            node={root}
+            currentTaskId={currentTaskId}
+            showTemplate={showTemplate}
+            collapsed={collapsed}
+            visited={new Set()}
+            onToggle={toggle}
+            onOpenTask={onOpenTask}
+          />
+        ))}
+      </ul>
+    )
+
+  if (embedded) {
+    return <div className="flex flex-col gap-1">{list}</div>
   }
 
   return (
@@ -92,27 +149,7 @@ export function TaskTreePanel({
         </span>
       </header>
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-3">
-        {roots.length === 0 ? (
-          <p className="px-1 py-2 text-sm text-foreground-muted">
-            暂无关联任务
-          </p>
-        ) : (
-          <ul className="flex flex-col gap-1">
-            {roots.map((root) => (
-              <TaskTreeRow
-                key={root.stage.task.id}
-                node={root}
-                currentTaskId={currentTaskId}
-                collapsed={collapsed}
-                visited={new Set()}
-                onToggle={toggle}
-                onOpenTask={onOpenTask}
-              />
-            ))}
-          </ul>
-        )}
-      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto p-3">{list}</div>
     </section>
   )
 }
@@ -120,13 +157,15 @@ export function TaskTreePanel({
 function TaskTreeRow({
   node,
   currentTaskId,
+  showTemplate,
   collapsed,
   visited,
   onToggle,
   onOpenTask,
 }: {
   node: TaskTreeNode
-  currentTaskId: number
+  currentTaskId?: number
+  showTemplate: boolean
   collapsed: Set<number>
   visited: Set<number>
   onToggle: (taskId: number) => void
@@ -136,7 +175,7 @@ function TaskTreeRow({
   if (visited.has(task.id)) return null
   const nextVisited = new Set(visited).add(task.id)
   const isCollapsed = collapsed.has(task.id)
-  const isCurrent = task.id === currentTaskId
+  const isCurrent = currentTaskId !== undefined && task.id === currentTaskId
   const hasChildren = node.children.length > 0
   const agentName = node.stage.agent?.name
 
@@ -200,6 +239,9 @@ function TaskTreeRow({
               showMain
             />
             <span>处理机器人 · {agentName ?? '未分配'}</span>
+            {showTemplate && task.templateName && (
+              <span>任务定义 · {task.templateName}</span>
+            )}
             {hasChildren && (
               <span>
                 {isCollapsed
@@ -218,6 +260,7 @@ function TaskTreeRow({
               key={child.stage.task.id}
               node={child}
               currentTaskId={currentTaskId}
+              showTemplate={showTemplate}
               collapsed={collapsed}
               visited={nextVisited}
               onToggle={onToggle}

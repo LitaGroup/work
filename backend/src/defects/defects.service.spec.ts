@@ -38,6 +38,7 @@ describe('DefectsService 机器人提测缺陷派单', () => {
   let recordsSave: jest.Mock;
   let releaseFindOne: jest.Mock;
   let workerFindOne: jest.Mock;
+  let backlogFindOne: jest.Mock;
   let userFindOne: jest.Mock;
   let taskFindOne: jest.Mock;
   let taskCreate: jest.Mock;
@@ -66,6 +67,7 @@ describe('DefectsService 机器人提测缺陷派单', () => {
       }),
     );
     releaseFindOne = jest.fn().mockResolvedValue(release);
+    backlogFindOne = jest.fn().mockResolvedValue({ id: 6, projectId: 3 });
     workerFindOne = jest.fn((args: { where?: Record<string, unknown> }) => {
       if (args?.where?.id === 7) return Promise.resolve(worker);
       return Promise.resolve(null);
@@ -104,6 +106,7 @@ describe('DefectsService 机器人提测缺陷派单', () => {
       } as never,
       { findOne: releaseFindOne } as never,
       { findOne: workerFindOne } as never,
+      { findOne: backlogFindOne } as never,
       { findOne: userFindOne } as never,
       { findOne: taskFindOne } as never,
       { onRunFinalized: jest.fn() } as never,
@@ -285,5 +288,72 @@ describe('DefectsService 机器人提测缺陷派单', () => {
 
     expect(defect.releaseId).toBeNull();
     expect(releaseFindOne).not.toHaveBeenCalled();
+  });
+
+  it('创建缺陷可关联迭代项', async () => {
+    const defect = await createDefect({ releaseId: null, backlogId: 6 });
+
+    expect(defect.backlogId).toBe(6);
+    expect(backlogFindOne).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 6 } }),
+    );
+  });
+
+  it('关联不属于该项目的迭代项时拒绝创建', async () => {
+    backlogFindOne.mockResolvedValue({ id: 6, projectId: 99 });
+
+    await expect(
+      createDefect({ releaseId: null, backlogId: 6 }),
+    ).rejects.toThrow('迭代项不属于该缺陷所属项目');
+    expect(defectsSave).not.toHaveBeenCalled();
+  });
+
+  it('关联不存在的迭代项时拒绝创建', async () => {
+    backlogFindOne.mockResolvedValue(null);
+
+    await expect(
+      createDefect({ releaseId: null, backlogId: 88 }),
+    ).rejects.toThrow('迭代项 #88 不存在');
+    expect(defectsSave).not.toHaveBeenCalled();
+  });
+
+  it('按迭代项 ID 查询缺陷', async () => {
+    await service.findByProject(undefined, undefined, 6);
+
+    expect(defectsFind).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { backlogId: 6 } }),
+    );
+  });
+
+  it('按非法迭代项 ID 查询时返回参数错误', async () => {
+    await expect(
+      service.findByProject(undefined, undefined, 0),
+    ).rejects.toThrow('迭代项 ID 必须是正整数');
+    expect(defectsFind).not.toHaveBeenCalled();
+  });
+
+  it('更新缺陷可清除迭代项关联', async () => {
+    defectsFindOne.mockResolvedValue({
+      id: 21,
+      projectId: 3,
+      releaseId: null,
+      backlogId: 6,
+      status: DefectStatus.OPEN,
+      platform: null,
+      priority: '中',
+      expected: '登录按钮点击后进入首页',
+      actual: '登录按钮无响应',
+      images: null,
+      testScript: null,
+    });
+
+    const defect = await service.update(
+      21,
+      { backlogId: null },
+      '录入',
+      '测试张三',
+    );
+
+    expect(defect.backlogId).toBeNull();
   });
 });

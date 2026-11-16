@@ -399,7 +399,7 @@ export function DefectDetailPage() {
         <PageBreadcrumb
           items={[
             { label: '缺陷', to: '/defects' },
-            { label: projectName ?? '…', to: `/projects/${projectId}` },
+            { label: projectName ?? '…', to: `/requirements/${projectId}` },
             { label: defect.expected.split('\n')[0] || `缺陷 ${defect.id}` },
           ]}
         />

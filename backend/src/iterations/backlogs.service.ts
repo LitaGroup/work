@@ -40,6 +40,7 @@ import {
   BacklogTaskSummary,
   BacklogTicketSummary,
   CreateBacklogItemInput,
+  CreateBacklogTaskInput,
   IterationActor,
 } from './iteration.types';
 
@@ -67,7 +68,30 @@ export interface BacklogListQuery {
   iterationId?: number;
   projectId?: number;
   status?: BacklogStatus;
+  /** true：包含已取消的迭代项（需求详情「对应的迭代」展示全部历史） */
+  includeCanceled?: boolean;
 }
+
+/** 轻量列表项：附带所属迭代引用，供需求详情展示对应的迭代 */
+export type BacklogListItem = Pick<
+  Backlog,
+  | 'id'
+  | 'code'
+  | 'projectId'
+  | 'iterationId'
+  | 'title'
+  | 'status'
+  | 'ownerWorkerId'
+  | 'ownerName'
+  | 'expectedOnlineAt'
+  | 'updatedAt'
+> & {
+  iteration: {
+    id: number;
+    code: string;
+    type: Iteration['type'];
+  } | null;
+};
 
 /** 轻量列表上限（选择器只关心未取消项） */
 const BACKLOG_LIST_LIMIT = 1000;
@@ -116,31 +140,16 @@ export class BacklogsService {
 
   /**
    * 迭代项轻量列表（默认仅未取消，含各迭代），供选择器过滤已进入迭代的需求。
+   * 传 includeCanceled=true 时返回全部历史（需求详情查看该需求的全部迭代项）。
    * 上限 1000 条：判重仍由转入接口兜底。
    */
-  async list(
-    query: BacklogListQuery,
-  ): Promise<
-    Array<
-      Pick<
-        Backlog,
-        | 'id'
-        | 'code'
-        | 'projectId'
-        | 'iterationId'
-        | 'title'
-        | 'status'
-        | 'ownerWorkerId'
-        | 'ownerName'
-        | 'updatedAt'
-      >
-    >
-  > {
+  async list(query: BacklogListQuery): Promise<BacklogListItem[]> {
     const where: FindOptionsWhere<Backlog> = {};
     if (query.iterationId) where.iterationId = query.iterationId;
     if (query.projectId) where.projectId = query.projectId;
-    where.status = query.status ?? Not(BacklogStatus.CANCELED);
-    return this.backlogs.find({
+    if (query.status) where.status = query.status;
+    else if (!query.includeCanceled) where.status = Not(BacklogStatus.CANCELED);
+    const rows = await this.backlogs.find({
       where,
       select: {
         id: true,
@@ -151,10 +160,25 @@ export class BacklogsService {
         status: true,
         ownerWorkerId: true,
         ownerName: true,
+        expectedOnlineAt: true,
         updatedAt: true,
       },
       order: { id: 'DESC' },
       take: BACKLOG_LIST_LIMIT,
+    });
+    const iterationIds = [...new Set(rows.map((row) => row.iterationId))];
+    const iterations = iterationIds.length
+      ? await this.iterations.find({ where: { id: In(iterationIds) } })
+      : [];
+    const iterationById = new Map(iterations.map((it) => [it.id, it]));
+    return rows.map((row) => {
+      const iteration = iterationById.get(row.iterationId);
+      return {
+        ...row,
+        iteration: iteration
+          ? { id: iteration.id, code: iteration.code, type: iteration.type }
+          : null,
+      };
     });
   }
 
@@ -302,7 +326,7 @@ export class BacklogsService {
               `迭代：${iteration.code}（${iteration.type}）`,
               `原始需求：${project.name}（#${project.id}）`,
               '',
-              `需求详情：GET /api/projects/${project.id}.md`,
+              `需求详情：GET /api/requirements/${project.id}.md`,
             ].join('\n'),
             input: `原始需求：${project.name}`,
             projectId: project.id,
@@ -589,7 +613,7 @@ export class BacklogsService {
         }`,
         `原始需求：${projectName}（#${backlog.projectId}）`,
         '',
-        `需求详情：GET /api/projects/${backlog.projectId}.md`,
+        `需求详情：GET /api/requirements/${backlog.projectId}.md`,
       ].join('\n'),
       input: `原始需求：${projectName}`,
       projectId: backlog.projectId,
@@ -770,6 +794,21 @@ export class BacklogsService {
         })
       : [];
     const taskIds = taskRows.map((task) => task.id);
+    const agentIds = [
+      ...new Set(
+        taskRows
+          .map((task) => task.agentId)
+          .filter((id): id is number => id !== null),
+      ),
+    ];
+    const agentNameById = new Map<number, string>();
+    if (agentIds.length > 0) {
+      const workers = await this.workers.find({
+        where: { id: In(agentIds) },
+        select: { id: true, name: true },
+      });
+      for (const worker of workers) agentNameById.set(worker.id, worker.name);
+    }
 
     const directTickets = await this.ticketRows.find({
       where: { backlogId: backlog.id },
@@ -815,6 +854,10 @@ export class BacklogsService {
         rootId: task.rootId,
         projectId: task.projectId,
         agentId: task.agentId,
+        agentName:
+          task.agentId !== null
+            ? (agentNameById.get(task.agentId) ?? null)
+            : null,
         templateName: task.templateName,
         sortOrder: task.sortOrder,
         createdAt: task.createdAt,
@@ -822,6 +865,106 @@ export class BacklogsService {
       })),
       tickets,
     };
+  }
+
+  /**
+   * 迭代项新建任务：
+   * - 已有交付任务（backlog.taskId）：作为该交付任务的子任务创建，出现在任务树；
+   * - 无交付任务：按所选执行机器人创建交付任务并登记为迭代项负责人（仅管理员）。
+   */
+  async createTask(
+    id: number,
+    input: CreateBacklogTaskInput,
+    actor: IterationActor,
+  ): Promise<Task> {
+    const backlog = await this.findOne(id);
+    const project = await this.projects.findOne({
+      where: { id: backlog.projectId },
+      select: { id: true, name: true },
+    });
+    const projectName = project?.name ?? backlog.title;
+    const description = input.description?.trim()
+      ? input.description.trim()
+      : null;
+
+    if (backlog.taskId) {
+      if (!actor.isAdmin && !this.isMember(backlog, actor.userId)) {
+        throw new ForbiddenException('仅迭代项成员或管理员可新建任务');
+      }
+      return this.tasks.create({
+        title: input.title,
+        description,
+        projectId: backlog.projectId,
+        templateId: input.templateId ?? null,
+        agentId: input.agentId ?? null,
+        parentId: backlog.taskId,
+        createdById: actor.userId,
+        operatorName: actor.userName,
+      });
+    }
+
+    // 无交付任务：按执行机器人创建交付任务（等价于指定负责人）
+    this.assertAdmin(actor, '仅管理员可创建迭代项交付任务');
+    if (
+      backlog.status === BacklogStatus.COMPLETED ||
+      backlog.status === BacklogStatus.CANCELED
+    ) {
+      throw new BadRequestException('迭代项已结束，不可创建交付任务');
+    }
+    const workerId = input.agentId ?? backlog.ownerWorkerId;
+    if (!workerId) {
+      throw new BadRequestException('请选择负责人机器人');
+    }
+    if (!Number.isInteger(workerId) || workerId <= 0) {
+      throw new BadRequestException('负责人机器人 ID 非法');
+    }
+    const worker = await this.workers.findOne({ where: { id: workerId } });
+    if (!worker) {
+      throw new BadRequestException(`负责人机器人 #${workerId} 不存在`);
+    }
+    this.assertAssignableWorker(worker, workerId);
+    const iteration = await this.iterations.findOne({
+      where: { id: backlog.iterationId },
+    });
+    const task = await this.tasks.create({
+      title: input.title?.trim() || `迭代任务-${projectName}`.slice(0, 200),
+      description:
+        description ??
+        [
+          `迭代：${
+            iteration
+              ? `${iteration.code}（${iteration.type}）`
+              : `#${backlog.iterationId}`
+          }`,
+          `原始需求：${projectName}（#${backlog.projectId}）`,
+          '',
+          `需求详情：GET /api/requirements/${backlog.projectId}.md`,
+        ].join('\n'),
+      input: `原始需求：${projectName}`,
+      projectId: backlog.projectId,
+      templateId: input.templateId ?? SYSTEM_BACKLOG_DELIVERY_TASK_TEMPLATE_ID,
+      agentId: worker.id,
+      createdById: actor.userId,
+      operatorName: actor.userName,
+      titleNaming: true,
+    });
+    const from = backlog.ownerName;
+    backlog.ownerWorkerId = worker.id;
+    backlog.ownerName = worker.name;
+    backlog.taskId = task.id;
+    await this.backlogs.save(backlog);
+    await this.recordEvent(
+      backlog.id,
+      'owner',
+      { from, to: worker.name, taskId: task.id, previousTaskId: null },
+      actor.userName,
+    );
+    this.chat.ensureForBacklog(backlog.id).catch((error: unknown) => {
+      this.logger.warn(
+        `迭代项 ${backlog.code} 沟通群同步失败：${(error as Error).message}`,
+      );
+    });
+    return task;
   }
 
   /**
@@ -901,7 +1044,7 @@ export class BacklogsService {
           ? `${iteration.code}（${iteration.type}）`
           : `#${backlog.iterationId}`
       }`,
-      `- 原始需求：${backlog.title}（#${backlog.projectId}）｜ \`GET /api/projects/${backlog.projectId}.md\``,
+      `- 原始需求：${backlog.title}（#${backlog.projectId}）｜ \`GET /api/requirements/${backlog.projectId}.md\``,
       `- 负责人：${backlog.ownerName ?? '未指定'}`,
       `- 预期上线：${
         backlog.expectedOnlineAt
@@ -949,7 +1092,7 @@ export class BacklogsService {
     const meta = [
       `- 迭代项 ID：${backlog.id}`,
       `- 编号：${backlog.code}`,
-      `- 原始需求：\`GET /api/projects/${backlog.projectId}.md\`（#${backlog.projectId}）`,
+      `- 原始需求：\`GET /api/requirements/${backlog.projectId}.md\`（#${backlog.projectId}）`,
       `- 所属迭代：${
         iteration
           ? `${iteration.code}（${iteration.type}）`

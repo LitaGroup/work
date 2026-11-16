@@ -70,7 +70,7 @@ export function ProjectTestsPage() {
       <PageBreadcrumb
         items={[
           { label: '需求', to: '/requirements' },
-          { label: project?.name ?? '…', to: `/projects/${projectId}` },
+          { label: project?.name ?? '…', to: `/requirements/${projectId}` },
           { label: '用例' },
         ]}
       />

@@ -26,6 +26,7 @@ import { IterationsService } from './iterations.service';
 import {
   BacklogMemberInput,
   CreateBacklogItemInput,
+  CreateBacklogTaskInput,
   CreateIterationInput,
   IterationActor,
   UpdateIterationInput,
@@ -101,6 +102,17 @@ class UpdateBacklogMembersDto {
 class AddBacklogDocumentDto {
   /** 已有文档（documents.id，须属于该迭代项的原始需求） */
   documentId: number;
+}
+
+class CreateBacklogTaskDto implements CreateBacklogTaskInput {
+  /** 标题（可空，缺省按描述首行生成；交付任务缺省用「迭代任务-{需求名}」） */
+  title?: string;
+  /** 任务描述（Markdown） */
+  description?: string | null;
+  /** 任务定义（可空；交付任务缺省用系统「迭代-Backlog交付」） */
+  templateId?: number | null;
+  /** 执行机器人（可空；无交付任务时作为负责人，必填） */
+  agentId?: number | null;
 }
 
 class CreateBacklogReleaseTicketDto {
@@ -194,13 +206,14 @@ export class BacklogsController {
 
   /**
    * 迭代项轻量列表：默认仅未取消（含各迭代），供选择器过滤已进入迭代的需求。
-   * 支持 iterationId / projectId / status 过滤，上限 1000 条。
+   * 支持 iterationId / projectId / status / includeCanceled 过滤，上限 1000 条。
    */
   @Get()
   list(
     @Query('iterationId') iterationId?: string,
     @Query('projectId') projectId?: string,
     @Query('status') status?: BacklogStatus,
+    @Query('includeCanceled') includeCanceled?: string,
   ): ReturnType<BacklogsService['list']> {
     const parseId = (value?: string): number | undefined => {
       if (value === undefined || value === '') return undefined;
@@ -220,6 +233,7 @@ export class BacklogsController {
       iterationId: parseId(iterationId),
       projectId: parseId(projectId),
       status,
+      includeCanceled: includeCanceled === 'true' || includeCanceled === '1',
     });
   }
 
@@ -313,6 +327,19 @@ export class BacklogsController {
     @Param('id', ParseIntPipe) id: number,
   ): ReturnType<BacklogsService['relatedRecords']> {
     return this.backlogsService.relatedRecords(id);
+  }
+
+  /**
+   * 新建任务：已有交付任务时创建其子任务（成员或管理员）；
+   * 无交付任务时按执行机器人创建交付任务并登记负责人（仅管理员）。
+   */
+  @Post(':id/tasks')
+  createTask(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: CreateBacklogTaskDto,
+    @Req() req: AuthedRequest,
+  ): ReturnType<BacklogsService['createTask']> {
+    return this.backlogsService.createTask(id, dto ?? {}, iterationActor(req));
   }
 
   /** 发起提测（创建提测工单，自动填入迭代项上下文）；成员或管理员 */

@@ -248,7 +248,7 @@ export function DocumentDetailPage() {
               ? [
                   {
                     label: projectName ?? '…',
-                    to: `/projects/${doc.projectId}`,
+                    to: `/requirements/${doc.projectId}`,
                   },
                 ]
               : []),
@@ -397,7 +397,7 @@ function DeleteDocumentButton({ doc }: { doc: ProjectDocument }) {
     api
       .deleteDocument(doc.id)
       .then(() =>
-        navigate(doc.projectId ? `/projects/${doc.projectId}` : '/requirements'),
+        navigate(doc.projectId ? `/requirements/${doc.projectId}` : '/requirements'),
       )
       .catch((e: Error) => setError(e.message))
       .finally(() => setDeleting(false))

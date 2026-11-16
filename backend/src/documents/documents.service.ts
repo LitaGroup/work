@@ -19,6 +19,7 @@ import {
 import { FeishuService } from '../feishu/feishu.service';
 import { KnowledgeService } from '../knowledge/knowledge.service';
 import { BacklogDocument } from '../iterations/backlog-document.entity';
+import { ProjectSummaryService } from '../projects/project-summary.service';
 import { Document } from './document.entity';
 
 /**
@@ -59,6 +60,7 @@ export class DocumentsService implements OnApplicationBootstrap {
     private readonly feishu: FeishuService,
     private readonly apipost: ApipostService,
     private readonly knowledge: KnowledgeService,
+    private readonly projectSummary: ProjectSummaryService,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -252,7 +254,9 @@ export class DocumentsService implements OnApplicationBootstrap {
         content: input.content ?? '',
       }),
     );
-    return this.hydrate(await this.syncKnowledge(doc));
+    const hydrated = await this.hydrate(await this.syncKnowledge(doc));
+    this.maybeTriggerSummary(hydrated);
+    return hydrated;
   }
 
   /**
@@ -281,9 +285,11 @@ export class DocumentsService implements OnApplicationBootstrap {
     if (input.description !== undefined) {
       entity.description = input.description || null;
     }
-    return this.hydrate(
+    const doc = await this.hydrate(
       await this.syncKnowledge(await this.documents.save(entity)),
     );
+    this.maybeTriggerSummary(doc);
+    return doc;
   }
 
   /**
@@ -311,9 +317,11 @@ export class DocumentsService implements OnApplicationBootstrap {
     if (input.description !== undefined) {
       entity.description = input.description || null;
     }
-    return this.hydrate(
+    const doc = await this.hydrate(
       await this.syncKnowledge(await this.documents.save(entity)),
     );
+    this.maybeTriggerSummary(doc);
+    return doc;
   }
 
   /**
@@ -355,10 +363,9 @@ export class DocumentsService implements OnApplicationBootstrap {
       }
       existing.content = input.content;
       const saved = await this.documents.save(existing);
-      return {
-        doc: await this.hydrate(await this.syncKnowledge(saved)),
-        created: false,
-      };
+      const doc = await this.hydrate(await this.syncKnowledge(saved));
+      this.maybeTriggerSummary(doc);
+      return { doc, created: false };
     }
     const doc = await this.documents.save(
       this.documents.create({
@@ -371,10 +378,9 @@ export class DocumentsService implements OnApplicationBootstrap {
         description: input.description || null,
       }),
     );
-    return {
-      doc: await this.hydrate(await this.syncKnowledge(doc)),
-      created: true,
-    };
+    const created = await this.hydrate(await this.syncKnowledge(doc));
+    this.maybeTriggerSummary(created);
+    return { doc: created, created: true };
   }
 
   /** AI 文档 upsert 的 Markdown 结果（`.md` 端点与 lita-work MCP 工具共用） */
@@ -415,7 +421,18 @@ export class DocumentsService implements OnApplicationBootstrap {
     }
     doc.content = content;
     const saved = await this.documents.save(doc);
-    return this.hydrate(await this.syncKnowledge(saved));
+    const hydrated = await this.hydrate(await this.syncKnowledge(saved));
+    this.maybeTriggerSummary(hydrated);
+    return hydrated;
+  }
+
+  /**
+   * 需求类文档新增/更新后触发需求摘要生成（摘要为空且无进行中生成时才会实际调用模型）。
+   * fire-and-forget，失败不影响文档写入主流程。
+   */
+  private maybeTriggerSummary(doc: Document): void {
+    if (doc.type !== DocumentType.REQUIREMENT) return;
+    this.projectSummary.maybeGenerateSummary(doc.projectId);
   }
 
   /** 备注（为后续 AI 阅读准备），任何来源都可编辑 */

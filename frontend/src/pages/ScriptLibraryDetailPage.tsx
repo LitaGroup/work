@@ -343,7 +343,7 @@ export function ScriptLibraryDetailPage() {
                     <span key={pid}>
                       {i > 0 && '、'}
                       <Link
-                        to={`/projects/${pid}`}
+                        to={`/requirements/${pid}`}
                         className="text-foreground-intense underline"
                       >
                         项目 #{pid}
