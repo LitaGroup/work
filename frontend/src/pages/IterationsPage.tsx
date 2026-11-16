@@ -114,7 +114,7 @@ export function IterationsPage() {
                     </span>
                   </CollapsibleTrigger>
                   <CollapsibleContent>
-                    <div className="divide-y divide-border border-t border-border">
+                    <div className="divide-y divide-border">
                       {group.items.map((iteration) => (
                         <IterationRow key={iteration.id} iteration={iteration} />
                       ))}
