@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, Navigate, useParams } from 'react-router-dom'
 import { Badge } from '@appica/ui-react/badge'
 import { Button, buttonVariants } from '@appica/ui-react/button'
@@ -57,7 +57,7 @@ function formatHour(value: string | null): string {
 
 /**
  * 迭代详情：展示迭代信息与迭代项看板/列表，支持手动推进迭代项状态、
- * 追加需求（转成 backlog）以及结束/重开 W1 迭代。
+ * 追加需求（转成 backlog）以及结束/重开非 T0 迭代。
  */
 export function IterationDetailPage() {
   const { iterationId } = useParams<{ iterationId: string }>()
@@ -120,11 +120,6 @@ export function IterationDetailPage() {
       .catch((e: Error) => setError(e.message))
   }, [projects, workers])
 
-  const missingOwnerCount = useMemo(
-    () => [...drafts.values()].filter((owner) => owner === null).length,
-    [drafts],
-  )
-
   if (!Number.isInteger(id) || id <= 0) {
     return <Navigate to="/iterations" replace />
   }
@@ -161,18 +156,12 @@ export function IterationDetailPage() {
 
   const submitAdd = () => {
     if (adding) return
-    const items = [...drafts.entries()]
-      .filter((entry): entry is [number, number] => entry[1] !== null)
-      .map(([projectId, ownerWorkerId]) => ({ projectId, ownerWorkerId }))
+    const items = [...drafts.entries()].map(([projectId, ownerWorkerId]) => ({
+      projectId,
+      ownerWorkerId,
+    }))
     if (items.length === 0) {
       showFeedback({ kind: 'failure', message: '请至少选择一个需求' }, FAILURE_STAY_MS)
-      return
-    }
-    if (missingOwnerCount > 0) {
-      showFeedback(
-        { kind: 'failure', message: '每条已选需求都要指定负责人' },
-        FAILURE_STAY_MS,
-      )
       return
     }
     setAdding(true)
@@ -205,16 +194,18 @@ export function IterationDetailPage() {
           />
           <h1 className="mt-2 flex items-center gap-3 text-2xl font-semibold">
             {detail.type === 'T0' ? (
-              <Badge variant="primary">T0</Badge>
+              <Badge variant="primary">T0 快速通道</Badge>
             ) : (
-              <span className="font-mono">{detail.code}</span>
+              <>
+                <Badge variant="soft">{detail.type}</Badge>
+                <span className="font-mono">{detail.code}</span>
+              </>
             )}
-            {detail.name}
             <IterationStatusBadge status={detail.status} />
             {detail.current && <Badge variant="soft">当前迭代</Badge>}
           </h1>
           <p className="mt-1 text-sm text-foreground-muted">
-            {detail.type === 'W1'
+            {detail.type !== 'T0'
               ? `${detail.startAt ?? '?'} ~ ${detail.endAt ?? '?'}`
               : '常驻快速通道'}
             {' · '}
@@ -233,7 +224,7 @@ export function IterationDetailPage() {
           </a>
           {isAdmin && (
             <>
-              {detail.type === 'W1' && (
+              {detail.type !== 'T0' && (
                 <Button variant="outline" size="sm" onClick={toggleIterationStatus}>
                   {detail.status === '进行中' ? '结束迭代' : '重开迭代'}
                 </Button>
@@ -250,7 +241,7 @@ export function IterationDetailPage() {
                 </DialogTrigger>
                 <DialogContent className="max-w-4xl">
                   <DialogHeader>
-                    <DialogTitle>向「{detail.name}」添加需求</DialogTitle>
+                    <DialogTitle>向「{detail.code}」添加需求</DialogTitle>
                   </DialogHeader>
                   <DialogBody>
                     {projects && workers ? (

@@ -7,7 +7,7 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { FindOptionsWhere, Repository } from 'typeorm';
+import { FindOptionsWhere, Like, Repository } from 'typeorm';
 import { BacklogStatus, IterationStatus, IterationType } from '../common/enums';
 import { beijingTime, mdFrontmatter } from '../common/frontmatter';
 import { Backlog } from './backlog.entity';
@@ -20,12 +20,14 @@ import {
   UpdateIterationInput,
 } from './iteration.types';
 
-/** T0 常驻快速通道固定标识与名称 */
+/** T0 常驻快速通道固定标识 */
 export const T0_ITERATION_CODE = 'T0';
-export const T0_ITERATION_NAME = 'T0 快速通道';
 
 /** 列表查询上限（迭代数量有限） */
 const LIST_LIMIT = 500;
+
+/** 一天的毫秒数（自然周计算使用 UTC 日差，避免时区与夏令时干扰） */
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 export interface IterationListQuery {
   type?: IterationType;
@@ -46,6 +48,27 @@ function todayBeijing(): string {
   return beijingTime(new Date()).slice(0, 10);
 }
 
+/** 解析 YYYY-MM-DD 为 UTC 时间戳（仅用于日差计算） */
+function parseDateUtc(value: string): number {
+  const [year, month, day] = value.split('-').map(Number);
+  return Date.UTC(year, month - 1, day);
+}
+
+/**
+ * T7 每周通道标识：`{yyyy}W{ww}`。
+ * 自然周计数：含 1 月 1 日的那一周为第 1 周（周一起始），按顺序数周；
+ * yyyy 固定取开始日期的日历年，ww 补足两位。
+ */
+export function iterationWeekCode(startAt: string): string {
+  const year = Number(startAt.slice(0, 4));
+  const jan1 = Date.UTC(year, 0, 1);
+  const jan1Weekday = new Date(jan1).getUTCDay(); // 0=周日
+  const week1Monday = jan1 - ((jan1Weekday + 6) % 7) * DAY_MS;
+  const week =
+    Math.floor((parseDateUtc(startAt) - week1Monday) / DAY_MS / 7) + 1;
+  return `${year}W${String(week).padStart(2, '0')}`;
+}
+
 /** 汇总 backlog 进度 */
 export function summarizeBacklogs(
   backlogs: Array<{ status: BacklogStatus }>,
@@ -64,7 +87,7 @@ export function summarizeBacklogs(
   };
 }
 
-/** W1 是否当前迭代（今天在起止区间内）；T0 恒为当前 */
+/** 是否当前迭代（今天在起止区间内）；T0 恒为当前 */
 export function isIterationCurrent(iteration: {
   type: IterationType;
   startAt: string | null;
@@ -77,7 +100,7 @@ export function isIterationCurrent(iteration: {
 }
 
 /**
- * 迭代：T0 常驻快速通道 + W1 周迭代。
+ * 迭代：T0 常驻快速通道 + T7 每周通道 + Tx 特殊通道。
  * 迭代只是 backlog 的分组容器；需求转入、状态流转、交付任务与飞书群见 BacklogsService。
  */
 @Injectable()
@@ -110,7 +133,6 @@ export class IterationsService implements OnModuleInit {
       this.iterations.create({
         code: T0_ITERATION_CODE,
         type: IterationType.T0,
-        name: T0_ITERATION_NAME,
         startAt: null,
         endAt: null,
         status: IterationStatus.ACTIVE,
@@ -142,7 +164,7 @@ export class IterationsService implements OnModuleInit {
     const views = rows.map((row) =>
       this.toSummary(row, byIteration.get(row.id) ?? []),
     );
-    // T0 常驻置顶；W1 按开始日期倒序（新迭代在前），无日期按 id 倒序
+    // T0 常驻置顶；T7/Tx 按开始日期倒序（新迭代在前），无日期按 id 倒序
     return views.sort((a, b) => {
       if (a.type === IterationType.T0) return -1;
       if (b.type === IterationType.T0) return 1;
@@ -169,38 +191,43 @@ export class IterationsService implements OnModuleInit {
     return iteration;
   }
 
-  /** 创建 W1 周迭代（仅管理员） */
+  /** 创建 T7 每周通道 / Tx 特殊通道（仅管理员）；标识由后端自动生成 */
   async create(
     input: CreateIterationInput,
     actor: IterationActor,
   ): Promise<Iteration> {
     this.assertAdmin(actor, '仅管理员可创建迭代');
-    const code = this.normalizeCode(input.code);
-    if (code === T0_ITERATION_CODE) {
-      throw new BadRequestException('T0 为平台常驻快速通道，不可重复创建');
-    }
-    const name = this.normalizeName(input.name);
+    const type = this.normalizeType(input.type);
     const startAt = this.normalizeDate(input.startAt, '开始日期');
     const endAt = this.normalizeDate(input.endAt, '结束日期');
     if (!startAt || !endAt) {
-      throw new BadRequestException('W1 迭代须填写开始日期与结束日期');
+      throw new BadRequestException('迭代须填写开始日期与结束日期');
     }
     this.assertDateOrder(startAt, endAt);
-    const exists = await this.iterations.findOne({ where: { code } });
-    if (exists) throw new BadRequestException(`迭代标识 ${code} 已存在`);
-    return this.iterations.save(
-      this.iterations.create({
-        code,
-        type: IterationType.W1,
-        name,
-        startAt,
-        endAt,
-        status: IterationStatus.ACTIVE,
-      }),
-    );
+    // 标识生成与保存存在并发竞争（唯一约束兜底），冲突时重新生成序号重试
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const code =
+        type === IterationType.T7
+          ? await this.nextT7Code(startAt)
+          : await this.nextTxCode(startAt);
+      try {
+        return await this.iterations.save(
+          this.iterations.create({
+            code,
+            type,
+            startAt,
+            endAt,
+            status: IterationStatus.ACTIVE,
+          }),
+        );
+      } catch (error) {
+        if (!this.isUniqueViolation(error) || attempt === 2) throw error;
+      }
+    }
+    throw new BadRequestException('迭代标识生成冲突，请稍后重试');
   }
 
-  /** 更新迭代（仅管理员）：名称 / 起止日期 / 结束或重开 */
+  /** 更新迭代（仅管理员）：起止日期 / 结束或重开；T7 改开始日期时重算周标识 */
   async update(
     id: number,
     input: UpdateIterationInput,
@@ -208,20 +235,29 @@ export class IterationsService implements OnModuleInit {
   ): Promise<Iteration> {
     this.assertAdmin(actor, '仅管理员可修改迭代');
     const iteration = await this.mustFind(id);
-    if (input.name !== undefined)
-      iteration.name = this.normalizeName(input.name);
-    if (input.startAt !== undefined) {
-      iteration.startAt = this.normalizeDate(input.startAt, '开始日期');
-    }
-    if (input.endAt !== undefined) {
-      iteration.endAt = this.normalizeDate(input.endAt, '结束日期');
-    }
-    if (iteration.type === IterationType.W1) {
-      if (!iteration.startAt || !iteration.endAt) {
-        throw new BadRequestException('W1 迭代须填写开始日期与结束日期');
+    const nextStart =
+      input.startAt !== undefined
+        ? this.normalizeDate(input.startAt, '开始日期')
+        : iteration.startAt;
+    const nextEnd =
+      input.endAt !== undefined
+        ? this.normalizeDate(input.endAt, '结束日期')
+        : iteration.endAt;
+    if (iteration.type !== IterationType.T0) {
+      if (!nextStart || !nextEnd) {
+        throw new BadRequestException('迭代须填写开始日期与结束日期');
       }
-      this.assertDateOrder(iteration.startAt, iteration.endAt);
+      this.assertDateOrder(nextStart, nextEnd);
     }
+    if (
+      iteration.type === IterationType.T7 &&
+      nextStart &&
+      nextStart !== iteration.startAt
+    ) {
+      iteration.code = await this.nextT7Code(nextStart, iteration.id);
+    }
+    iteration.startAt = nextStart;
+    iteration.endAt = nextEnd;
     if (input.status !== undefined) {
       if (!Object.values(IterationStatus).includes(input.status)) {
         throw new BadRequestException('迭代状态仅允许：进行中/已结束');
@@ -253,16 +289,17 @@ export class IterationsService implements OnModuleInit {
       lines.push('（暂无迭代）');
     } else {
       lines.push(
-        '| ID | 标识 | 类型 | 名称 | 起止 | 状态 | 迭代项 | 完成 | 详情 |',
-        '| --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+        '| ID | 标识 | 类型 | 起止 | 状态 | 迭代项 | 完成 | 详情 |',
+        '| --- | --- | --- | --- | --- | --- | --- | --- |',
       );
       for (const row of rows) {
         lines.push(
-          `| ${row.id} | ${escapeCell(row.code)} | ${row.type} | ${escapeCell(
-            row.name,
-          )} | ${this.dateRangeText(row.startAt, row.endAt)} | ${row.status} | ${
-            row.total
-          } | ${row.done} | /api/iterations/${row.id}.md |`,
+          `| ${row.id} | ${escapeCell(row.code)} | ${row.type} | ${this.dateRangeText(
+            row.startAt,
+            row.endAt,
+          )} | ${row.status} | ${row.total} | ${row.done} | /api/iterations/${
+            row.id
+          }.md |`,
         );
       }
     }
@@ -273,7 +310,7 @@ export class IterationsService implements OnModuleInit {
     const detail = await this.findOne(id);
     const head = mdFrontmatter({
       update: detail.updatedAt,
-      title: detail.name,
+      title: detail.code,
       code: detail.code,
       type: detail.type,
       status: detail.status,
@@ -310,6 +347,35 @@ export class IterationsService implements OnModuleInit {
     return `${head}${sections.join('\n')}\n`;
   }
 
+  /** T7 周标识：同周已有其它 T7 时拒绝，提示改用 Tx */
+  private async nextT7Code(startAt: string, selfId?: number): Promise<string> {
+    const code = iterationWeekCode(startAt);
+    const taken = await this.iterations.findOne({
+      where: { type: IterationType.T7, code },
+    });
+    if (taken && taken.id !== selfId) {
+      throw new BadRequestException(
+        `该周已有 T7 迭代 ${code}，同周追加请使用 Tx 特殊通道`,
+      );
+    }
+    return code;
+  }
+
+  /** Tx 特殊通道标识：`{yyyy}Tx{nn}`，nn 为开始日期当年内的递增序号 */
+  private async nextTxCode(startAt: string): Promise<string> {
+    const year = startAt.slice(0, 4);
+    const rows = await this.iterations.find({
+      where: { type: IterationType.Tx, code: Like(`${year}Tx%`) },
+      select: { code: true },
+    });
+    let max = 0;
+    for (const row of rows) {
+      const match = /^(\d{4})Tx(\d+)$/.exec(row.code);
+      if (match && match[1] === year) max = Math.max(max, Number(match[2]));
+    }
+    return `${year}Tx${String(max + 1).padStart(2, '0')}`;
+  }
+
   private toSummary(
     iteration: Iteration,
     backlogs: Pick<Backlog, 'id' | 'status'>[],
@@ -319,7 +385,6 @@ export class IterationsService implements OnModuleInit {
       id: iteration.id,
       code: iteration.code,
       type: iteration.type,
-      name: iteration.name,
       startAt: iteration.startAt,
       endAt: iteration.endAt,
       status: iteration.status,
@@ -339,23 +404,22 @@ export class IterationsService implements OnModuleInit {
     if (!actor.isAdmin) throw new ForbiddenException(message);
   }
 
-  private normalizeCode(code: string): string {
-    const trimmed = (code ?? '').trim();
-    if (!trimmed) throw new BadRequestException('迭代标识不能为空');
-    if (trimmed.length > 50)
-      throw new BadRequestException('迭代标识最长 50 字');
-    if (!/^[A-Za-z0-9_-]+$/.test(trimmed)) {
-      throw new BadRequestException('迭代标识仅允许字母、数字、下划线和短横线');
-    }
-    return trimmed;
+  /** PostgreSQL 唯一约束冲突（23505） */
+  private isUniqueViolation(error: unknown): boolean {
+    return (
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      (error as { code?: string }).code === '23505'
+    );
   }
 
-  private normalizeName(name: string): string {
-    const trimmed = (name ?? '').trim();
-    if (!trimmed) throw new BadRequestException('迭代名称不能为空');
-    if (trimmed.length > 200)
-      throw new BadRequestException('迭代名称最长 200 字');
-    return trimmed;
+  private normalizeType(type: IterationType | undefined): IterationType {
+    if (type === IterationType.T7) return IterationType.T7;
+    if (type === IterationType.Tx) return IterationType.Tx;
+    throw new BadRequestException(
+      'T0 为平台常驻快速通道，不可创建；迭代类型仅支持 T7 / Tx',
+    );
   }
 
   private normalizeDate(

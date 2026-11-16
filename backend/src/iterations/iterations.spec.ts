@@ -3,7 +3,13 @@ import { BacklogStatus, IterationType } from '../common/enums';
 import { backlogChatName } from '../feishu-bot/feishu-bot-backlog-chat.service';
 import { Backlog } from './backlog.entity';
 import { BacklogsService } from './backlogs.service';
-import { isIterationCurrent, summarizeBacklogs } from './iterations.service';
+import type { Iteration } from './iteration.entity';
+import {
+  iterationWeekCode,
+  IterationsService,
+  isIterationCurrent,
+  summarizeBacklogs,
+} from './iterations.service';
 import type { IterationActor } from './iteration.types';
 
 function actor(overrides?: Partial<IterationActor>): IterationActor {
@@ -101,21 +107,170 @@ describe('isIterationCurrent', () => {
     ).toBe(true);
   });
 
-  it('W1 今天落在起止区间内时为当前', () => {
+  it('T7 今天落在起止区间内时为当前', () => {
     expect(
       isIterationCurrent({
-        type: IterationType.W1,
+        type: IterationType.T7,
         startAt: '2000-01-01',
         endAt: '2999-12-31',
       }),
     ).toBe(true);
     expect(
       isIterationCurrent({
-        type: IterationType.W1,
+        type: IterationType.T7,
         startAt: '2000-01-01',
         endAt: '2000-01-02',
       }),
     ).toBe(false);
+  });
+});
+
+describe('iterationWeekCode（T7 自然周标识）', () => {
+  it('按开始日期所在自然周生成标识并补零', () => {
+    expect(iterationWeekCode('2026-11-17')).toBe('2026W47');
+    expect(iterationWeekCode('2026-01-06')).toBe('2026W02');
+  });
+
+  it('含 1 月 1 日的那周为第 1 周', () => {
+    expect(iterationWeekCode('2026-01-01')).toBe('2026W01');
+    // 2026-01-01 为周四，第 1 周自 2025-12-29（周一）起算
+    expect(iterationWeekCode('2026-01-04')).toBe('2026W01');
+  });
+
+  it('跨年按开始日期的日历年与自然周计数', () => {
+    expect(iterationWeekCode('2026-12-29')).toBe('2026W53');
+    expect(iterationWeekCode('2027-01-05')).toBe('2027W02');
+  });
+});
+
+function makeIterationsService(options?: {
+  taken?: Iteration | null;
+  rows?: Array<Pick<Iteration, 'code'>>;
+}) {
+  const iterations = {
+    findOne: jest.fn().mockResolvedValue(options?.taken ?? null),
+    find: jest.fn().mockResolvedValue(options?.rows ?? []),
+    create: jest.fn().mockImplementation((value: unknown) => value),
+    save: jest
+      .fn()
+      .mockImplementation((value: unknown) => Promise.resolve(value)),
+  };
+  const backlogs = { find: jest.fn().mockResolvedValue([]) };
+  const service = new IterationsService(iterations as never, backlogs as never);
+  return { service, iterations };
+}
+
+const adminActor: IterationActor = {
+  userId: 1,
+  userName: '管理员',
+  isAdmin: true,
+};
+
+describe('IterationsService.create', () => {
+  it('T7 按开始日期所在周自动生成标识', async () => {
+    const { service, iterations } = makeIterationsService();
+    await service.create(
+      {
+        type: IterationType.T7,
+        startAt: '2026-11-17',
+        endAt: '2026-11-23',
+      },
+      adminActor,
+    );
+    expect(iterations.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: '2026W47',
+        type: IterationType.T7,
+        startAt: '2026-11-17',
+        endAt: '2026-11-23',
+      }),
+    );
+  });
+
+  it('同周已有 T7 时拒绝创建并提示改用 Tx', async () => {
+    const { service } = makeIterationsService({
+      taken: { id: 9, code: '2026W47' } as Iteration,
+    });
+    await expect(
+      service.create(
+        {
+          type: IterationType.T7,
+          startAt: '2026-11-17',
+          endAt: '2026-11-23',
+        },
+        adminActor,
+      ),
+    ).rejects.toThrow(/已有 T7 迭代 2026W47.*Tx/);
+  });
+
+  it('Tx 按当年内递增序号生成标识', async () => {
+    const { service, iterations } = makeIterationsService({
+      rows: [{ code: '2026Tx01' }, { code: '2026Tx03' }, { code: '2025Tx09' }],
+    });
+    await service.create(
+      {
+        type: IterationType.Tx,
+        startAt: '2026-11-17',
+        endAt: '2026-11-23',
+      },
+      adminActor,
+    );
+    expect(iterations.save).toHaveBeenCalledWith(
+      expect.objectContaining({ code: '2026Tx04', type: IterationType.Tx }),
+    );
+  });
+
+  it('标识并发冲突时重新生成并重试', async () => {
+    const { service, iterations } = makeIterationsService();
+    iterations.save
+      .mockRejectedValueOnce(
+        Object.assign(new Error('duplicate key'), { code: '23505' }),
+      )
+      .mockImplementation((value: unknown) => Promise.resolve(value));
+    await service.create(
+      {
+        type: IterationType.Tx,
+        startAt: '2026-11-17',
+        endAt: '2026-11-23',
+      },
+      adminActor,
+    );
+    expect(iterations.save).toHaveBeenCalledTimes(2);
+  });
+
+  it('T0 为常驻单例，不可创建', async () => {
+    const { service } = makeIterationsService();
+    await expect(
+      service.create(
+        {
+          type: IterationType.T0,
+          startAt: '2026-11-17',
+          endAt: '2026-11-23',
+        },
+        adminActor,
+      ),
+    ).rejects.toThrow(BadRequestException);
+  });
+
+  it('缺少起止日期时拒绝创建', async () => {
+    const { service } = makeIterationsService();
+    await expect(
+      service.create({ type: IterationType.T7 }, adminActor),
+    ).rejects.toThrow(BadRequestException);
+  });
+
+  it('非管理员不可创建', async () => {
+    const { service } = makeIterationsService();
+    await expect(
+      service.create(
+        {
+          type: IterationType.T7,
+          startAt: '2026-11-17',
+          endAt: '2026-11-23',
+        },
+        { ...adminActor, isAdmin: false },
+      ),
+    ).rejects.toThrow(ForbiddenException);
   });
 });
 
@@ -291,5 +446,240 @@ describe('BacklogsService.updateBacklog', () => {
         actor(),
       ),
     ).rejects.toThrow(ForbiddenException);
+  });
+});
+
+/** 取 mock 首次调用的第一个参数（带类型，避免 any 访问） */
+function callArg<T>(mock: jest.Mock, index = 0): T {
+  const calls = mock.mock.calls as unknown[][];
+  return calls[index]?.[0] as T;
+}
+
+/** 负责人相关流程：可空负责人、补指定与改派重建交付任务 */
+function makeOwnerFixture(overrides?: {
+  row?: Backlog;
+  worker?: Record<string, unknown> | null;
+  project?: { id: number; name: string } | null;
+  iteration?: Record<string, unknown> | null;
+  projectRows?: Array<{ id: number; name: string; resources: null }>;
+}) {
+  let nextId = 501;
+  const save = jest
+    .fn()
+    .mockImplementation((value: Partial<Backlog>) =>
+      Promise.resolve({ ...value, id: value.id ?? nextId++ }),
+    );
+  const backlogs = {
+    findOne: jest.fn().mockResolvedValue(overrides?.row ?? null),
+    find: jest.fn().mockResolvedValue([]),
+    create: jest.fn().mockImplementation((value: unknown) => value),
+    save,
+  };
+  const iterations = {
+    findOne: jest.fn().mockResolvedValue(overrides?.iteration ?? null),
+  };
+  const projects = {
+    find: jest.fn().mockResolvedValue(overrides?.projectRows ?? []),
+    findOne: jest.fn().mockResolvedValue(overrides?.project ?? null),
+  };
+  const workers = {
+    find: jest
+      .fn()
+      .mockResolvedValue(overrides?.worker ? [overrides.worker] : []),
+    findOne: jest.fn().mockResolvedValue(overrides?.worker ?? null),
+  };
+  const events = {
+    create: jest.fn().mockImplementation((value: unknown) => value),
+    save: jest.fn().mockResolvedValue(undefined),
+  };
+  const tasks = {
+    create: jest.fn().mockResolvedValue({ id: 777 }),
+    cancel: jest.fn().mockResolvedValue(undefined),
+  };
+  const chat = {
+    ensureForBacklog: jest.fn().mockResolvedValue(undefined),
+    notifyBacklog: jest.fn().mockResolvedValue(undefined),
+  };
+  const service = new BacklogsService(
+    backlogs as never,
+    iterations as never,
+    projects as never,
+    workers as never,
+    { find: jest.fn().mockResolvedValue([]) } as never,
+    {} as never,
+    events as never,
+    { find: jest.fn().mockResolvedValue([]) } as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    tasks as never,
+    chat as never,
+    {} as never,
+  );
+  return { service, save, tasks, chat, events, backlogs };
+}
+
+const workerRow = {
+  id: 9,
+  name: '机器人 B',
+  enabled: true,
+  role: '工作者',
+};
+
+describe('BacklogsService 无负责人转入', () => {
+  it('未指定负责人时不创建交付任务', async () => {
+    const fixture = makeOwnerFixture({
+      projectRows: [{ id: 100, name: '需求 A', resources: null }],
+      iteration: { id: 10, code: '2026W47', type: 'T7', status: '进行中' },
+    });
+    const [created] = await fixture.service.createBatch(
+      10,
+      [{ projectId: 100 }],
+      { userId: 1, userName: '管理员', isAdmin: true },
+    );
+    expect(created.ownerWorkerId).toBeNull();
+    expect(created.ownerName).toBeNull();
+    expect(created.taskId).toBeNull();
+    expect(fixture.tasks.create).not.toHaveBeenCalled();
+  });
+
+  it('指定负责人时按负责人创建交付任务', async () => {
+    const fixture = makeOwnerFixture({
+      projectRows: [{ id: 100, name: '需求 A', resources: null }],
+      iteration: { id: 10, code: '2026W47', type: 'T7', status: '进行中' },
+      worker: workerRow,
+    });
+    const [created] = await fixture.service.createBatch(
+      10,
+      [{ projectId: 100, ownerWorkerId: 9 }],
+      { userId: 1, userName: '管理员', isAdmin: true },
+    );
+    expect(fixture.tasks.create).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: 9 }),
+    );
+    expect(created.ownerName).toBe('机器人 B');
+    expect(created.taskId).toBe(777);
+  });
+});
+
+describe('BacklogsService 指定/改派负责人', () => {
+  it('未指定时可补指定并补建交付任务', async () => {
+    const fixture = makeOwnerFixture({
+      row: backlogRow({ ownerWorkerId: null, ownerName: null, taskId: null }),
+      worker: workerRow,
+      project: { id: 100, name: '需求 A' },
+      iteration: { id: 10, code: '2026W47', type: 'T7' },
+    });
+    const updated = await fixture.service.updateBacklog(
+      1,
+      { ownerWorkerId: 9 },
+      { userId: 1, userName: '管理员', isAdmin: true },
+    );
+    expect(fixture.tasks.create).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: 9 }),
+    );
+    expect(fixture.tasks.cancel).not.toHaveBeenCalled();
+    expect(updated.ownerWorkerId).toBe(9);
+    expect(updated.ownerName).toBe('机器人 B');
+    expect(updated.taskId).toBe(777);
+    const event = callArg<{
+      backlogId: number;
+      type: string;
+      payload: { to?: string; taskId?: number };
+    }>(fixture.events.save);
+    expect(event.backlogId).toBe(1);
+    expect(event.type).toBe('owner');
+    expect(event.payload.to).toBe('机器人 B');
+    expect(event.payload.taskId).toBe(777);
+    expect(fixture.chat.ensureForBacklog).toHaveBeenCalledWith(1);
+  });
+
+  it('改派时取消旧交付任务并按新负责人重建', async () => {
+    const fixture = makeOwnerFixture({
+      row: backlogRow({
+        taskId: 500,
+        ownerWorkerId: 2,
+        ownerName: '机器人 A',
+      }),
+      worker: workerRow,
+      project: { id: 100, name: '需求 A' },
+      iteration: { id: 10, code: '2026W47', type: 'T7' },
+    });
+    const updated = await fixture.service.updateBacklog(
+      1,
+      { ownerWorkerId: 9 },
+      { userId: 1, userName: '管理员', isAdmin: true },
+    );
+    expect(fixture.tasks.cancel).toHaveBeenCalledWith(500, '管理员');
+    expect(fixture.tasks.create).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: 9 }),
+    );
+    expect(updated.taskId).toBe(777);
+  });
+
+  it('旧任务取消失败不阻断重建', async () => {
+    const fixture = makeOwnerFixture({
+      row: backlogRow({ taskId: 500 }),
+      worker: workerRow,
+      project: { id: 100, name: '需求 A' },
+      iteration: { id: 10, code: '2026W47', type: 'T7' },
+    });
+    fixture.tasks.cancel.mockRejectedValueOnce(new Error('already finished'));
+    const updated = await fixture.service.updateBacklog(
+      1,
+      { ownerWorkerId: 9 },
+      { userId: 1, userName: '管理员', isAdmin: true },
+    );
+    expect(updated.taskId).toBe(777);
+  });
+
+  it('不支持清空负责人', async () => {
+    const fixture = makeOwnerFixture({ row: backlogRow() });
+    await expect(
+      fixture.service.updateBacklog(
+        1,
+        { ownerWorkerId: null },
+        { userId: 1, userName: '管理员', isAdmin: true },
+      ),
+    ).rejects.toThrow(BadRequestException);
+  });
+
+  it('非管理员不可指定负责人', async () => {
+    const fixture = makeOwnerFixture({
+      row: backlogRow({
+        members: [{ role: '产品', userId: 7, name: '小明' }],
+      }),
+    });
+    await expect(
+      fixture.service.updateBacklog(1, { ownerWorkerId: 9 }, actor()),
+    ).rejects.toThrow(ForbiddenException);
+  });
+
+  it('已结束的迭代项不可改派', async () => {
+    const fixture = makeOwnerFixture({
+      row: backlogRow({ status: BacklogStatus.COMPLETED }),
+    });
+    await expect(
+      fixture.service.updateBacklog(
+        1,
+        { ownerWorkerId: 9 },
+        { userId: 1, userName: '管理员', isAdmin: true },
+      ),
+    ).rejects.toThrow(BadRequestException);
+  });
+});
+
+describe('BacklogsService.list', () => {
+  it('默认排除取消项并限制条数', async () => {
+    const fixture = makeOwnerFixture();
+    await fixture.service.list({});
+    const args = callArg<{
+      where: { status?: unknown };
+      take: number;
+    }>(fixture.backlogs.find);
+    expect(args.where.status).toBeDefined();
+    expect(args.take).toBe(1000);
   });
 });

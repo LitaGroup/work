@@ -773,7 +773,7 @@ export class ProjectsService {
       meta.push(`- 预期发布时间：${project.expectedReleaseAt}`);
     }
     if (project.iterationCycle) {
-      meta.push(`- 迭代周期：${project.iterationCycle}`);
+      meta.push(`- 计划周(w)：${project.iterationCycle}`);
     }
     if (project.resources) {
       const { frontend, backend, qa, product, client } = project.resources;
@@ -1110,7 +1110,7 @@ export class ProjectsService {
       project.iterationCycle = this.normalizeShortText(
         input.iterationCycle,
         50,
-        '迭代周期',
+        '计划周(w)',
       );
     }
     if (input.expectedReleaseAt !== undefined) {

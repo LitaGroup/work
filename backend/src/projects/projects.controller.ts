@@ -39,7 +39,7 @@ class UpdateProjectDto {
   status?: ProjectStatus;
   /** 优先级（如 S0/P0），空串清除 */
   priority?: string;
-  /** 迭代周期（如 "w281：08/19 - 08/25"），空串清除 */
+  /** 计划周(w)（如 "w281：08/19 - 08/25"，飞书 w 字段），空串清除 */
   iterationCycle?: string;
   /** 预期发布时间（YYYY-MM-DD），空串清除 */
   expectedReleaseAt?: string;

@@ -60,6 +60,7 @@ import {
   type IterationSummary,
   type PlatformUser,
   type ProjectDocument,
+  type Worker,
 } from '../lib/api'
 import { PageBreadcrumb } from '../components/PageBreadcrumb'
 import { BacklogStatusDialog } from '../components/BacklogStatusDialog'
@@ -90,6 +91,7 @@ const EVENT_LABELS: Record<string, string> = {
   status: '状态流转',
   moved: '移动迭代',
   'release-ticket': '发起提测',
+  owner: '负责人变更',
 }
 
 function formatTime(value: string | null): string {
@@ -127,6 +129,9 @@ function eventSummary(event: BacklogEvent): string {
   }
   if (event.type === 'moved' && payload.toIterationCode) {
     parts.push(`移至 ${payload.toIterationCode}`)
+  }
+  if (event.type === 'owner') {
+    parts.push(`${payload.from ?? '未指定'} → ${payload.to ?? '未指定'}`)
   }
   if (event.type === 'release-ticket' && payload.ticketCode) {
     parts.push(`工单 ${payload.ticketCode}`)
@@ -172,6 +177,12 @@ export function BacklogDetailPage() {
   const [timeOpen, setTimeOpen] = useState(false)
   const [timeDraft, setTimeDraft] = useState('')
   const [savingTime, setSavingTime] = useState(false)
+
+  // 负责人指定/改派（管理员）
+  const [workers, setWorkers] = useState<Worker[] | null>(null)
+  const [ownerOpen, setOwnerOpen] = useState(false)
+  const [ownerTarget, setOwnerTarget] = useState<string | undefined>(undefined)
+  const [savingOwner, setSavingOwner] = useState(false)
 
   // 文档
   const [docs, setDocs] = useState<BacklogDocumentSummary[] | null>(null)
@@ -284,6 +295,11 @@ export function BacklogDetailPage() {
     [users],
   )
 
+  const workerItems = useMemo(
+    () => Object.fromEntries((workers ?? []).map((w) => [String(w.id), w.name])),
+    [workers],
+  )
+
   if (!Number.isInteger(id) || id <= 0) {
     return <Navigate to="/iterations" replace />
   }
@@ -358,7 +374,10 @@ export function BacklogDetailPage() {
   const iterationItems = Object.fromEntries(
     (iterations ?? [])
       .filter((it) => it.id !== backlog.iterationId && it.status === '进行中')
-      .map((it) => [String(it.id), `${it.code} ${it.name}`]),
+      .map((it) => [
+        String(it.id),
+        it.type === 'T0' ? 'T0 快速通道' : `${it.code}（${it.type}）`,
+      ]),
   )
 
   const openMove = () => {
@@ -420,6 +439,53 @@ export function BacklogDetailPage() {
         ),
       )
       .finally(() => setSavingTime(false))
+  }
+
+  const openOwnerEdit = () => {
+    if (!workers) {
+      api
+        .listWorkers({ role: '工作者' })
+        .then((rows) =>
+          setWorkers(
+            rows.filter(
+              (worker) => worker.enabled && !worker.personalAgentUserId,
+            ),
+          ),
+        )
+        .catch((e: Error) => setError(e.message))
+    }
+    setOwnerTarget(
+      backlog.ownerWorkerId ? String(backlog.ownerWorkerId) : undefined,
+    )
+    setOwnerOpen(true)
+  }
+
+  const saveOwner = () => {
+    if (savingOwner) return
+    const target = Number(ownerTarget)
+    if (!Number.isInteger(target) || target <= 0) {
+      showFeedback({ kind: 'failure', message: '请选择负责人机器人' }, FAILURE_STAY_MS)
+      return
+    }
+    setSavingOwner(true)
+    api
+      .updateBacklog(id, { ownerWorkerId: target })
+      .then((row) => {
+        setBacklog({ ...backlog, ...row, releaseWorkflow: backlog.releaseWorkflow })
+        setOwnerOpen(false)
+        showFeedback(
+          { kind: 'success', message: '负责人已更新，交付任务已重建' },
+          SUCCESS_STAY_MS,
+        )
+        loadSidepanels(backlog.id)
+      })
+      .catch((e: Error) =>
+        showFeedback(
+          { kind: 'failure', message: e.message || '保存失败' },
+          FAILURE_STAY_MS,
+        ),
+      )
+      .finally(() => setSavingOwner(false))
   }
 
   const linkDocument = (documentId?: number) => {
@@ -739,7 +805,7 @@ export function BacklogDetailPage() {
                                 )
                                 .map((it) => (
                                   <SelectItem key={it.id} value={String(it.id)}>
-                                    {it.code} {it.name}
+                                    {iterationItems[String(it.id)] ?? it.code}
                                   </SelectItem>
                                 ))}
                             </SelectContent>
@@ -819,7 +885,20 @@ export function BacklogDetailPage() {
                       #{backlog.projectId}
                     </Link>
                   </InfoRow>
-                  <InfoRow label="负责人">{backlog.ownerName ?? '—'}</InfoRow>
+                  <InfoRow label="负责人">
+                    <span className="inline-flex items-center gap-2">
+                      {backlog.ownerName ?? '—'}
+                      {isAdmin && !terminal && (
+                        <button
+                          type="button"
+                          className="text-foreground-muted underline"
+                          onClick={openOwnerEdit}
+                        >
+                          {backlog.ownerName ? '改派' : '指定'}
+                        </button>
+                      )}
+                    </span>
+                  </InfoRow>
                   <InfoRow label="预期上线">
                     <span className="inline-flex items-center gap-2">
                       {formatHour(backlog.expectedOnlineAt)}
@@ -1191,6 +1270,50 @@ export function BacklogDetailPage() {
             </DialogClose>
             <Button size="sm" onClick={saveTime} disabled={savingTime}>
               {savingTime ? '保存中…' : '保存'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 负责人指定/改派弹窗（管理员）：改派会取消旧交付任务并重建 */}
+      <Dialog open={ownerOpen} onOpenChange={setOwnerOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>
+              {backlog.ownerName ? '改派负责人' : '指定负责人'}
+            </DialogTitle>
+          </DialogHeader>
+          <DialogBody>
+            <label className="flex flex-col gap-1 text-sm">
+              负责人机器人
+              <Select
+                value={ownerTarget}
+                onValueChange={(v) => setOwnerTarget(v as string)}
+                items={workerItems}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="选择负责人（AI 或真人）" />
+                </SelectTrigger>
+                <SelectContent>
+                  {(workers ?? []).map((worker) => (
+                    <SelectItem key={worker.id} value={String(worker.id)}>
+                      {worker.name}
+                      {worker.runtime === 'human' ? '（真人）' : ''}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </label>
+            <p className="mt-2 text-xs text-foreground-muted">
+              指定/改派后会取消原交付任务，并按新负责人重新创建交付任务
+            </p>
+          </DialogBody>
+          <DialogFooter>
+            <DialogClose>
+              <Button variant="outline" size="sm">取消</Button>
+            </DialogClose>
+            <Button size="sm" onClick={saveOwner} disabled={savingOwner}>
+              {savingOwner ? '保存中…' : '保存'}
             </Button>
           </DialogFooter>
         </DialogContent>

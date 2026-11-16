@@ -22,7 +22,7 @@ import { useAuth } from '../context/AuthContext'
 const SUCCESS_STAY_MS = 2_000
 
 /**
- * 需求详情「转入迭代」：选择一个进行中的迭代（T0 或 W1）与负责人机器人，
+ * 需求详情「转入迭代」：选择一个进行中的迭代（T0 / T7 / Tx）与负责人机器人，
  * 把当前需求转成该迭代的 backlog。仅管理员可见。
  */
 export function TransferToIterationButton({
@@ -69,7 +69,10 @@ export function TransferToIterationButton({
   if (!isAdmin) return null
 
   const iterationItems = Object.fromEntries(
-    (iterations ?? []).map((it) => [String(it.id), `${it.code} ${it.name}`]),
+    (iterations ?? []).map((it) => [
+      String(it.id),
+      it.type === 'T0' ? 'T0 快速通道' : `${it.code}（${it.type}）`,
+    ]),
   )
   const workerItems = Object.fromEntries(
     (workers ?? []).map((w) => [String(w.id), w.name]),
@@ -127,12 +130,14 @@ export function TransferToIterationButton({
                   items={iterationItems}
                 >
                   <SelectTrigger>
-                    <SelectValue placeholder="选择 T0 或 W1 迭代" />
+                    <SelectValue placeholder="选择迭代" />
                   </SelectTrigger>
                   <SelectContent>
                     {(iterations ?? []).map((it) => (
                       <SelectItem key={it.id} value={String(it.id)}>
-                        {it.code} {it.name}
+                        {it.type === 'T0'
+                          ? 'T0 快速通道'
+                          : `${it.code}（${it.type}）`}
                       </SelectItem>
                     ))}
                   </SelectContent>

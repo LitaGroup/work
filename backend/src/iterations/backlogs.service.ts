@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { randomBytes } from 'crypto';
-import { In, Repository } from 'typeorm';
+import { FindOptionsWhere, In, Not, Repository } from 'typeorm';
 import {
   BacklogMemberRole,
   BacklogStatus,
@@ -62,8 +62,18 @@ function autoMemberCandidates(
   return out;
 }
 
+/** 迭代项轻量列表查询 */
+export interface BacklogListQuery {
+  iterationId?: number;
+  projectId?: number;
+  status?: BacklogStatus;
+}
+
+/** 轻量列表上限（选择器只关心未取消项） */
+const BACKLOG_LIST_LIMIT = 1000;
+
 /**
- * 迭代项（Backlog）：从需求转入，指定负责人机器人（AI/真人）后自动创建交付任务；
+ * 迭代项（Backlog）：从需求转入，负责人可暂不指定（指定后自动创建交付任务）；
  * 创建后自动建立飞书沟通群；状态由成员/管理员手动流转。
  */
 @Injectable()
@@ -105,8 +115,52 @@ export class BacklogsService {
   ) {}
 
   /**
+   * 迭代项轻量列表（默认仅未取消，含各迭代），供选择器过滤已进入迭代的需求。
+   * 上限 1000 条：判重仍由转入接口兜底。
+   */
+  async list(
+    query: BacklogListQuery,
+  ): Promise<
+    Array<
+      Pick<
+        Backlog,
+        | 'id'
+        | 'code'
+        | 'projectId'
+        | 'iterationId'
+        | 'title'
+        | 'status'
+        | 'ownerWorkerId'
+        | 'ownerName'
+        | 'updatedAt'
+      >
+    >
+  > {
+    const where: FindOptionsWhere<Backlog> = {};
+    if (query.iterationId) where.iterationId = query.iterationId;
+    if (query.projectId) where.projectId = query.projectId;
+    where.status = query.status ?? Not(BacklogStatus.CANCELED);
+    return this.backlogs.find({
+      where,
+      select: {
+        id: true,
+        code: true,
+        projectId: true,
+        iterationId: true,
+        title: true,
+        status: true,
+        ownerWorkerId: true,
+        ownerName: true,
+        updatedAt: true,
+      },
+      order: { id: 'DESC' },
+      take: BACKLOG_LIST_LIMIT,
+    });
+  }
+
+  /**
    * 批量转入：把选中的需求转为指定迭代的 backlog。
-   * 每条需求必须指定负责人机器人；创建后自动建交付任务与飞书群（失败不阻断）。
+   * 负责人可暂不指定（不建交付任务，后续指定时补建）；创建后自动建飞书群（失败不阻断）。
    */
   async createBatch(
     iterationId: number,
@@ -128,7 +182,13 @@ export class BacklogsService {
     }
 
     const projectIds = items.map((item) => item.projectId);
-    const ownerIds = [...new Set(items.map((item) => item.ownerWorkerId))];
+    const ownerIds = [
+      ...new Set(
+        items
+          .map((item) => item.ownerWorkerId)
+          .filter((id): id is number => id !== null && id !== undefined),
+      ),
+    ];
     if (new Set(projectIds).size !== projectIds.length) {
       throw new BadRequestException('同一需求不能重复转入');
     }
@@ -170,7 +230,9 @@ export class BacklogsService {
       );
     }
 
-    const workers = await this.workers.find({ where: { id: In(ownerIds) } });
+    const workers = ownerIds.length
+      ? await this.workers.find({ where: { id: In(ownerIds) } })
+      : [];
     const workerMap = new Map(workers.map((worker) => [worker.id, worker]));
     for (const id of ownerIds) {
       this.assertAssignableWorker(workerMap.get(id), id);
@@ -198,7 +260,10 @@ export class BacklogsService {
     const created: Backlog[] = [];
     for (const item of items) {
       const project = projectMap.get(item.projectId)!;
-      const owner = workerMap.get(item.ownerWorkerId)!;
+      const owner =
+        item.ownerWorkerId !== null && item.ownerWorkerId !== undefined
+          ? (workerMap.get(item.ownerWorkerId) ?? null)
+          : null;
       const explicit = await this.normalizeMembers(item.members);
       const members = this.mergeMembers(
         explicit,
@@ -213,8 +278,8 @@ export class BacklogsService {
           projectId: project.id,
           title: project.name.slice(0, 200),
           status: BacklogStatus.WAITING,
-          ownerWorkerId: owner.id,
-          ownerName: owner.name,
+          ownerWorkerId: owner?.id ?? null,
+          ownerName: owner?.name ?? null,
           members: members.length ? members : null,
           taskId: null,
           statusBy: actor.userName,
@@ -228,13 +293,13 @@ export class BacklogsService {
       backlog.code = `BL-${String(backlog.id).padStart(4, '0')}`;
       backlog = await this.backlogs.save(backlog);
 
-      // 负责人存在真人登录身份时创建交付任务并直接指派给该机器人。
-      if (actor.userId !== null) {
+      // 负责人存在真人登录身份时创建交付任务并直接指派给该机器人；未指定负责人则暂不建任务。
+      if (owner && actor.userId !== null) {
         try {
           const task = await this.tasks.create({
             title: `迭代任务-${project.name}`.slice(0, 200),
             description: [
-              `迭代：${iteration.code}（${iteration.name}）`,
+              `迭代：${iteration.code}（${iteration.type}）`,
               `原始需求：${project.name}（#${project.id}）`,
               '',
               `需求详情：GET /api/projects/${project.id}.md`,
@@ -281,7 +346,7 @@ export class BacklogsService {
         backlog.id,
         'created',
         {
-          iteration: `${iteration.code} ${iteration.name}`,
+          iteration: `${iteration.code}（${iteration.type}）`,
           migratedDocuments,
           taskId: backlog.taskId ?? null,
         },
@@ -291,8 +356,8 @@ export class BacklogsService {
       // 异步生成迭代项自己的标题（title-naming 场景；失败保留需求名兜底）
       this.scheduleTitleNaming(backlog.id, backlog.title, {
         requirement: project.name,
-        iteration: `${iteration.code} ${iteration.name}`,
-        owner: owner.name,
+        iteration: `${iteration.code}（${iteration.type}）`,
+        owner: owner?.name ?? '未指定',
         description: `迭代交付任务：${project.name}`,
       });
 
@@ -301,7 +366,7 @@ export class BacklogsService {
     return created;
   }
 
-  /** 单条转入（T0 快速通道或指定 W1） */
+  /** 单条转入（T0 快速通道或指定 T7/Tx 迭代） */
   async createOne(
     iterationId: number,
     item: CreateBacklogItemInput,
@@ -417,16 +482,25 @@ export class BacklogsService {
     return saved;
   }
 
-  /** 更新迭代项属性（首期：预期上线时间）；成员或管理员 */
+  /**
+   * 更新迭代项属性：预期上线时间（成员或管理员）、负责人（仅管理员，改派重建交付任务）。
+   */
   async updateBacklog(
     id: number,
-    dto: { expectedOnlineAt?: string | Date | null },
+    dto: {
+      expectedOnlineAt?: string | Date | null;
+      ownerWorkerId?: number | null;
+    },
     actor: IterationActor,
   ): Promise<Backlog> {
     const backlog = await this.findOne(id);
     if (!actor.isAdmin && !this.isMember(backlog, actor.userId)) {
       throw new ForbiddenException('仅迭代项成员或管理员可编辑迭代项属性');
     }
+    const ownerChange =
+      dto.ownerWorkerId !== undefined
+        ? await this.assignOwner(backlog, dto.ownerWorkerId, actor)
+        : null;
     if (dto.expectedOnlineAt !== undefined) {
       if (dto.expectedOnlineAt === null || dto.expectedOnlineAt === '') {
         backlog.expectedOnlineAt = null;
@@ -441,7 +515,105 @@ export class BacklogsService {
         backlog.expectedOnlineAt = parsed;
       }
     }
-    return this.backlogs.save(backlog);
+    const saved = await this.backlogs.save(backlog);
+    if (ownerChange) {
+      await this.recordEvent(
+        saved.id,
+        'owner',
+        {
+          from: ownerChange.from,
+          to: ownerChange.to,
+          taskId: saved.taskId,
+          previousTaskId: ownerChange.previousTaskId,
+        },
+        actor.userName,
+      );
+      this.chat.ensureForBacklog(saved.id).catch((error: unknown) => {
+        this.logger.warn(
+          `迭代项 ${saved.code} 沟通群同步失败：${(error as Error).message}`,
+        );
+      });
+    }
+    return saved;
+  }
+
+  /**
+   * 指定/改派负责人（仅管理员）：先按新负责人重建交付任务，成功后再取消旧任务。
+   * 变更写入 backlog 字段但不在本方法内保存，由调用方统一保存。
+   */
+  private async assignOwner(
+    backlog: Backlog,
+    ownerWorkerId: number | null,
+    actor: IterationActor,
+  ): Promise<{
+    from: string | null;
+    to: string;
+    previousTaskId: number | null;
+  } | null> {
+    this.assertAdmin(actor, '仅管理员可指定/改派负责人');
+    if (ownerWorkerId === null) {
+      throw new BadRequestException('不支持清空负责人；请指定新的负责人机器人');
+    }
+    if (!Number.isInteger(ownerWorkerId) || ownerWorkerId <= 0) {
+      throw new BadRequestException('负责人机器人 ID 非法');
+    }
+    if (backlog.ownerWorkerId === ownerWorkerId) return null;
+    if (
+      backlog.status === BacklogStatus.COMPLETED ||
+      backlog.status === BacklogStatus.CANCELED
+    ) {
+      throw new BadRequestException('迭代项已结束，不可改派负责人');
+    }
+    const worker = await this.workers.findOne({
+      where: { id: ownerWorkerId },
+    });
+    if (!worker) {
+      throw new BadRequestException(`负责人机器人 #${ownerWorkerId} 不存在`);
+    }
+    this.assertAssignableWorker(worker, ownerWorkerId);
+    const [project, iteration] = await Promise.all([
+      this.projects.findOne({
+        where: { id: backlog.projectId },
+        select: { id: true, name: true },
+      }),
+      this.iterations.findOne({ where: { id: backlog.iterationId } }),
+    ]);
+    const projectName = project?.name ?? backlog.title;
+    const task = await this.tasks.create({
+      title: `迭代任务-${projectName}`.slice(0, 200),
+      description: [
+        `迭代：${
+          iteration
+            ? `${iteration.code}（${iteration.type}）`
+            : `#${backlog.iterationId}`
+        }`,
+        `原始需求：${projectName}（#${backlog.projectId}）`,
+        '',
+        `需求详情：GET /api/projects/${backlog.projectId}.md`,
+      ].join('\n'),
+      input: `原始需求：${projectName}`,
+      projectId: backlog.projectId,
+      templateId: SYSTEM_BACKLOG_DELIVERY_TASK_TEMPLATE_ID,
+      agentId: worker.id,
+      createdById: actor.userId,
+      operatorName: actor.userName,
+      titleNaming: true,
+    });
+    const previousTaskId = backlog.taskId;
+    if (previousTaskId) {
+      try {
+        await this.tasks.cancel(previousTaskId, actor.userName);
+      } catch (error) {
+        this.logger.warn(
+          `迭代项 ${backlog.code} 旧交付任务 #${previousTaskId} 取消失败：${(error as Error).message}`,
+        );
+      }
+    }
+    const from = backlog.ownerName;
+    backlog.ownerWorkerId = worker.id;
+    backlog.ownerName = worker.name;
+    backlog.taskId = task.id;
+    return { from, to: worker.name, previousTaskId };
   }
 
   /** 详情视图：迭代项 + 提测工单工作流可用性（供前端提测按钮置灰） */
@@ -726,7 +898,7 @@ export class BacklogsService {
       `- 迭代项：${backlog.code} ${backlog.title}（状态：${backlog.status}）`,
       `- 所属迭代：${
         iteration
-          ? `${iteration.code} ${iteration.name}`
+          ? `${iteration.code}（${iteration.type}）`
           : `#${backlog.iterationId}`
       }`,
       `- 原始需求：${backlog.title}（#${backlog.projectId}）｜ \`GET /api/projects/${backlog.projectId}.md\``,
@@ -780,7 +952,7 @@ export class BacklogsService {
       `- 原始需求：\`GET /api/projects/${backlog.projectId}.md\`（#${backlog.projectId}）`,
       `- 所属迭代：${
         iteration
-          ? `${iteration.code} ${iteration.name}`
+          ? `${iteration.code}（${iteration.type}）`
           : `#${backlog.iterationId}`
       }`,
       `- 状态：${backlog.status}`,

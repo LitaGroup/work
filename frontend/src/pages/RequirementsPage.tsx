@@ -191,20 +191,20 @@ export function RequirementsPage() {
               setPage(1)
             }}
             items={{
-              all: '不限迭代',
+              all: '不限计划周',
               ...Object.fromEntries(iterations.map((it) => [it, it])),
             }}
           >
             <ToolbarButton
               className="w-48"
               render={
-                <SelectTrigger aria-label="按迭代筛选">
-                  <SelectValue placeholder="迭代" />
+                <SelectTrigger aria-label="按计划周筛选">
+                  <SelectValue placeholder="计划周(w)" />
                 </SelectTrigger>
               }
             />
             <SelectContent>
-              <SelectItem value="all">不限迭代</SelectItem>
+              <SelectItem value="all">不限计划周</SelectItem>
               {iterations.map((it) => (
                 <SelectItem key={it} value={it}>
                   {it}
@@ -309,7 +309,7 @@ export function RequirementsPage() {
             <TableHead className="text-center">类型</TableHead>
             <TableHead className="text-center">优先级</TableHead>
             <TableHead className="text-center whitespace-nowrap">预期</TableHead>
-            <TableHead className="text-center">迭代</TableHead>
+            <TableHead className="text-center whitespace-nowrap">计划周(w)</TableHead>
             <TableHead className="text-center">状态</TableHead>
             <TableHead className="w-48 text-center">操作</TableHead>
           </TableRow>

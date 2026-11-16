@@ -376,7 +376,7 @@ export function ProjectDetailPage() {
                 </dd>
               </div>
               <div className="flex items-center justify-between">
-                <dt>迭代</dt>
+                <dt>计划周(w)</dt>
                 <dd>
                   <ProjectDictSelect
                     project={project}

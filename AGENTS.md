@@ -59,7 +59,7 @@
 - `backend/src/auth/`：飞书 OAuth、会话、用户同步、Agent 令牌和全局鉴权。
 - `backend/src/sso/`：单点登录（OAuth2 授权码 IdP）：管理区「SSO 应用」登记接入方，authorize / token / userinfo 供其它网站接入平台登录。
 - `backend/src/projects/`、`documents/`、`resources/`、`milestones/`：项目及项目资料。
-- `backend/src/iterations/`：迭代（T0 / W1）与迭代项（Backlog）；转入时指定负责人机器人并自动创建交付任务，迭代沟通群由 `feishu-bot/` 维护。
+- `backend/src/iterations/`：迭代（T0 / T7 / Tx）与迭代项（Backlog）；转入时负责人可暂不指定，指定/改派时创建或重建交付任务，迭代沟通群由 `feishu-bot/` 维护。
 - `backend/src/checks/`、`tests/`、`exports/`、`schedules/`、`scripts/`：脚本登记、导入、运行、历史与调度。
 - `backend/src/tasks/`：任务状态机、任务定义、派发、协同、文档、工作台和实时流。
 - `backend/src/tickets/`、`workflows/`：工单、工作流定义、发布版本和运行时流转。
@@ -138,25 +138,27 @@
 
 - 顶级分区「业务」（原「项目」）左侧只保留五个业务栏目：需求 `/requirements`、迭代 `/iterations`、灵感 `/ideas`、调研（占位，未启用）、反馈 `/feedback`；落地页 `/` 重定向到需求池，概览页仅保留 `/overview` 路由不挂导航。
 - 需求池复用项目实体（飞书需求池单向同步 + 平台内新建），详情与 `/api/projects*`、`.md` Agent 视图全部不变；`/projects` 重定向到 `/requirements`，项目子路由（`/projects/:id/...`）保留。
-- 迭代独立建模（`iterations` + `backlogs`，见「迭代与 Backlog」）；`projects.iterationCycle` 仅保留为飞书同步的参考字段与需求筛选值，旧分组接口 `GET /api/projects/iterations` 不再作为迭代页数据源。
+- 迭代独立建模（`iterations` + `backlogs`，见「迭代与 Backlog」）；`projects.iterationCycle` 仅保留为飞书同步的参考字段与需求筛选值（界面统一展示为「计划周(w)」，字段名不变），旧分组接口 `GET /api/projects/iterations` 不再作为迭代页数据源。
 - 原全局工具页（缺陷/用例/检查/导出/定时任务/文档/资源/节点/提交/APP/设置）不再提供导航入口：管理分区「研发工具」仅保留「系统设置」（`/settings`），其余工具页路由与访问权限不变，仅可经深链或其它页面跳转进入；`TOOL_PATHS` 仍用于把这些路径的导航归属判定为管理分区。
 
 ### 迭代与 Backlog
 
-- 迭代分两类：**T0 常驻快速通道**（单例，`code=T0`，无起止日期；需求确认可开发即进入、开发完成即可上线）与 **W1 周迭代**（由管理员手动创建，唯一标识 + 起止日期）。
+- 迭代分三类：**T0 常驻快速通道**（单例，`code=T0`，无起止日期；需求确认可开发即进入、开发完成即可上线；不可创建、不可结束）、**T7 每周通道**（默认，由管理员创建，标识 `{yyyy}W{ww}` 按开始日期所在自然周生成——含 1 月 1 日的那周为第 1 周、周一起始，同一年内按序数周；同一周只允许一个 T7）与 **Tx 特殊通道**（用于同周追加或特殊情况，标识 `{yyyy}Tx{nn}`，nn 为开始日期当年内的递增序号）。T7/Tx 均须有起止日期。
+- 新建迭代只填类型与起止日期，标识由后端自动生成（前端只读预览）；T7 改开始日期时重算标识，目标周已被其它 T7 占用则拒绝。允许**创建空迭代**（不选需求）后再从迭代详情页「添加需求」。新建页默认预填下一个区间：最新 T7 结束日 +1 天为开始、+6 天为结束（周二 → 下周一），无 T7 时取最近的周二。
 - 迭代由 **Backlog** 组成，独立于需求池：`backlogs.projectId` 记录原始需求（`projects.id`，应用层软引用）。一个需求同时只允许一个未取消的 backlog；取消后可再次转入。
-- 转入/追加必须指定**负责人机器人**（AI 或真人）：创建交付任务时显式 `agentId=负责人`，使用系统任务定义 **ID=9「迭代-Backlog交付」**，AI 与真人均走任务中心派发。
+- 转入/追加的**负责人机器人**（AI 或真人）可暂不指定（不创建交付任务）；指定/改派由管理员操作，指定后按负责人创建交付任务（显式 `agentId=负责人`，系统任务定义 **ID=9「迭代-Backlog交付」**），改派先取消旧交付任务再重建。已完成的交付任务取消失败只告警，不阻断改派。
+- 需求选择器（新建迭代 / 追加需求）默认过滤已进入迭代的需求（存在未取消迭代项），支持名称/类型/计划周(w) 过滤；转入接口仍兜底判重（未取消即拒绝）。
 - 成员角色：产品 / 业务 / 项目 / 前端 / 后端 / 测试 / 客户端；产品与技术从需求 `resources` 按姓名自动带入，项目与业务由管理员手动选择。
 - 状态：等待 → 执行 → 测试 → 发布 → 完成，允许回退与取消；由成员或管理员手动流转，记录操作人与各阶段时间；取消时联动取消未结束的交付任务。状态与任务/需求状态解耦。推进走弹窗（选状态 + 备注可空，备注写入事件流），网页两处（迭代表格/迭代项详情）共用同一弹窗组件，不再使用行内下拉。
 - 迭代项有自己的标题：转入后异步用 `title-naming` 场景生成 `「BL-{id}」+ 模型标题`（乐观条件更新，失败保留需求名快照兜底，不覆盖人工修改）；迭代表格展示迭代项标题并链接 `/backlogs/{id}`（需求仅保留 `#id` 提示）。
 - 属性：预期上线时间到小时（`backlogs.expectedOnlineAt`，timestamptz，北京时间展示），成员或管理员可改（`PATCH /api/backlogs/{id}`）。
 - 文档：转入迭代时把原始需求的文档关联迁入 `backlog_documents`（需求 → 迭代单向搬运），此后可新建/导入（复用 documents 接口，挂需求名下）/关联/取消关联，删除文档时应用层清理关联；文档本体始终归属需求。
-- 事件流：`backlog_events` append-only 记录 created / status（from/to/remark）/ moved / release-ticket（提测工单）等，`GET /api/backlogs/{id}/events`；`.md` 视图附文档清单与最近事件。
+- 事件流：`backlog_events` append-only 记录 created / status（from/to/remark）/ moved / owner（负责人 from/to/taskId）/ release-ticket（提测工单）等，`GET /api/backlogs/{id}/events`；`.md` 视图附文档清单与最近事件。
 - 任务与工单面板：`GET /api/backlogs/{id}/tasks` 返回交付任务为根的任务树（含全部子任务）与相关工单（`tickets.backlogId` ∪ `tickets.taskId` ∪ `ticket_workflow_runs.taskId` 去重）。
 - 提测：迭代项详情页「提测」按钮按系统工作流 `release-ticket`（代码预置 + 迁移预置并发布 v1）创建工单，描述自动填入迭代项上下文、人工可补充；`tickets.backlogId` 记录关联，创建成功写 `release-ticket` 事件。提测不与迭代项/迭代状态绑定，同一迭代项可多次发起提测工单（完成、取消后仍可提测）。
 - 迭代项详情页为标准双栏布局 + 右下角可收起 AI 面板（⌥A）；AI 页面上下文类型 `backlog`（`agent:page:backlog:*`），`contextReadUrl` 固定 `/api/backlogs/{id}.md`。
-- 支持向已有迭代追加需求、移动 backlog 到其它迭代（移动不重建交付任务与沟通群）；W1 到期未完成的 backlog 留在原迭代，由管理员手动结转到新迭代。
-- 每个 backlog 创建后自动建立飞书沟通群（`LitaWork-迭代-{标题} 沟通群`），拉入成员真人与负责人机器人绑定的飞书应用；完成/取消后保留 7 天自动解散，建群失败不阻断、定时对账重试。
+- 支持向已有迭代追加需求、移动 backlog 到其它迭代（移动不重建交付任务与沟通群）；周迭代到期未完成的 backlog 留在原迭代，由管理员手动结转到新迭代。
+- 每个 backlog 创建后自动建立飞书沟通群（`LitaWork-迭代-{标题} 沟通群`），拉入成员真人与负责人机器人绑定的飞书应用（无负责人时先建群，指定后由对账补拉机器人）；完成/取消后保留 7 天自动解散，建群失败不阻断、定时对账重试。
 - Agent 视图：`GET /api/iterations.md`、`GET /api/iterations/{id}.md`、`GET /api/backlogs/{id}.md`。
 
 ### 项目、文档与项目资料

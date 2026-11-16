@@ -13,8 +13,8 @@ import { IterationStatusBadge } from '../components/StatusBadge'
 import { useAuth } from '../context/AuthContext'
 
 /**
- * 迭代：T0 快速通道 + W1 周迭代，由 backlog 组成。
- * T0 常驻、需求确认即开发、开发完成即可上线；W1 按周进行，有唯一标识与起止日期。
+ * 迭代：T0 快速通道 + T7 每周通道 + Tx 特殊通道，由 backlog 组成。
+ * T0 常驻、需求确认即开发、开发完成即可上线；T7 按周进行，标识为「年 + W + 周数」；Tx 用于特殊情况。
  */
 export function IterationsPage() {
   const { user } = useAuth()
@@ -41,11 +41,11 @@ export function IterationsPage() {
 
   const summary = useMemo(() => {
     if (!items) return null
-    const w1 = items.filter((item) => item.type === 'W1')
-    const current = w1.find((item) => item.current)
+    const t7 = items.filter((item) => item.type === 'T7')
+    const current = t7.find((item) => item.current)
     return {
       total: items.length,
-      w1: w1.length,
+      t7: t7.length,
       current: current?.code ?? '未命中',
       backlogTotal: items.reduce((sum, item) => sum + item.total, 0),
       done: items.reduce((sum, item) => sum + item.done, 0),
@@ -58,7 +58,7 @@ export function IterationsPage() {
         <div>
           <h1 className="text-2xl font-semibold">迭代</h1>
           <p className="mt-1 text-sm">
-            T0 快速通道 + W1 周迭代；迭代由 backlog 组成，需求转入时指定负责人
+            T0 快速通道 + T7 每周通道 + Tx 特殊通道；迭代由 backlog 组成，需求转入时指定负责人
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -73,7 +73,7 @@ export function IterationsPage() {
           </a>
           {isAdmin && (
             <Link to="/iterations/new" className={buttonVariants()}>
-              新建 W1 迭代
+              新建迭代
             </Link>
           )}
         </div>
@@ -84,7 +84,7 @@ export function IterationsPage() {
       {summary && (
         <div className="mb-4 flex flex-wrap gap-3">
           <IterationStat label="迭代数" value={summary.total} />
-          <IterationStat label="W1 迭代" value={summary.w1} />
+          <IterationStat label="T7 迭代" value={summary.t7} />
           <IterationStat label="当前迭代" value={summary.current} />
           <IterationStat
             label="迭代项 / 完成"
@@ -106,17 +106,22 @@ export function IterationsPage() {
             <CardHeader>
               <CardTitle className="flex flex-wrap items-center gap-3 text-base">
                 {iteration.type === 'T0' ? (
-                  <Badge variant="primary">T0</Badge>
+                  <Link to={`/iterations/${iteration.id}`} className="underline">
+                    <Badge variant="primary">T0 快速通道</Badge>
+                  </Link>
                 ) : (
-                  <span className="font-mono">{iteration.code}</span>
-                )}
-                <Link to={`/iterations/${iteration.id}`} className="underline">
-                  {iteration.name}
-                </Link>
-                {iteration.type === 'W1' && (
-                  <span className="text-sm text-foreground-muted">
-                    {iteration.startAt ?? '?'} ~ {iteration.endAt ?? '?'}
-                  </span>
+                  <>
+                    <Badge variant="soft">{iteration.type}</Badge>
+                    <Link
+                      to={`/iterations/${iteration.id}`}
+                      className="font-mono underline"
+                    >
+                      {iteration.code}
+                    </Link>
+                    <span className="text-sm text-foreground-muted">
+                      {iteration.startAt ?? '?'} ~ {iteration.endAt ?? '?'}
+                    </span>
+                  </>
                 )}
                 {iteration.current && <Badge variant="soft">当前迭代</Badge>}
                 <IterationStatusBadge status={iteration.status} />
@@ -151,7 +156,7 @@ export function IterationsPage() {
         ))}
         {items && items.length === 0 && (
           <p className="text-sm text-foreground-muted">
-            暂无迭代；管理员可新建 W1 迭代或向 T0 快速通道转入需求。
+            暂无迭代；管理员可新建迭代或向 T0 快速通道转入需求。
           </p>
         )}
       </div>

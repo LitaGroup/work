@@ -12,18 +12,17 @@ export interface IterationActor {
   isAdmin: boolean;
 }
 
+/** 创建迭代：T0 不可创建（平台常驻单例），标识由后端按类型自动生成 */
 export interface CreateIterationInput {
-  /** 唯一标识（W1，如 W2026-46） */
-  code: string;
-  name: string;
-  /** 开始日期 YYYY-MM-DD（W1 必填） */
+  /** 类型：T7 每周通道 / Tx 特殊通道 */
+  type: IterationType;
+  /** 开始日期 YYYY-MM-DD（必填） */
   startAt?: string | null;
-  /** 结束日期 YYYY-MM-DD（W1 必填） */
+  /** 结束日期 YYYY-MM-DD（必填） */
   endAt?: string | null;
 }
 
 export interface UpdateIterationInput {
-  name?: string;
   startAt?: string | null;
   endAt?: string | null;
   status?: IterationStatus;
@@ -35,10 +34,11 @@ export interface BacklogMemberInput {
   userId: number;
 }
 
-/** 转入/追加迭代项：原始需求 + 负责人机器人 + 成员 */
+/** 转入/追加迭代项：原始需求 + 负责人机器人（可为空，后续再指定）+ 成员 */
 export interface CreateBacklogItemInput {
   projectId: number;
-  ownerWorkerId: number;
+  /** 负责人机器人（workers.id）；为空表示暂不指定，不创建交付任务 */
+  ownerWorkerId?: number | null;
   members?: BacklogMemberInput[];
 }
 
@@ -94,11 +94,10 @@ export interface IterationSummaryView extends IterationProgress {
   id: number;
   code: string;
   type: IterationType;
-  name: string;
   startAt: string | null;
   endAt: string | null;
   status: IterationStatus;
-  /** 是否当前迭代（W1 今天在起止区间内；T0 恒为 true） */
+  /** 是否当前迭代（非 T0 今天在起止区间内；T0 恒为 true） */
   current: boolean;
   createdAt: Date;
   updatedAt: Date;

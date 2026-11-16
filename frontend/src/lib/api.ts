@@ -39,8 +39,8 @@ export type IdeaType = (typeof IDEA_TYPES)[number]
 export const IDEA_STATUSES = ['构思', '废弃', '采纳'] as const
 export type IdeaStatus = (typeof IDEA_STATUSES)[number]
 
-/** 迭代类型（与后端 IterationType 对应）：T0 快速通道（常驻）/ W1 周迭代 */
-export const ITERATION_TYPES = ['T0', 'W1'] as const
+/** 迭代类型（与后端 IterationType 对应）：T0 快速通道（常驻）/ T7 每周通道 / Tx 特殊通道 */
+export const ITERATION_TYPES = ['T0', 'T7', 'Tx'] as const
 export type IterationType = (typeof ITERATION_TYPES)[number]
 
 /** 迭代状态（与后端 IterationStatus 对应）：进行中 / 已结束 */
@@ -725,7 +725,7 @@ export interface Project {
 
 /** 迭代分组视图单项（与后端 IterationGroup 对应，GET /projects/iterations） */
 export interface IterationGroup {
-  /** 迭代周期原值；'-' 表示未排期 */
+  /** 计划周(w) 原值；'-' 表示未排期 */
   cycle: string
   /** 解析自 `w{n}: MM/DD-MM/DD` 的周编号；无法解析为 null */
   week: number | null
@@ -757,15 +757,28 @@ export interface IterationProgress {
 /** 迭代列表项（GET /iterations，含 backlog 进度） */
 export interface IterationSummary extends IterationProgress {
   id: number
+  /** 唯一标识：T0 固定为 T0；T7 如 2026W47；Tx 如 2026Tx01 */
   code: string
   type: IterationType
-  name: string
   startAt: string | null
   endAt: string | null
   status: IterationStatus
-  /** 是否当前迭代（W1 今天在起止区间内；T0 恒为 true） */
+  /** 是否当前迭代（今天在起止区间内；T0 恒为 true） */
   current: boolean
   createdAt: string
+  updatedAt: string
+}
+
+/** 迭代项轻量视图（GET /backlogs，默认不含取消项）：用于过滤已进入迭代的需求 */
+export interface BacklogSummary {
+  id: number
+  code: string
+  projectId: number
+  iterationId: number
+  title: string
+  status: BacklogStatus
+  ownerWorkerId: number | null
+  ownerName: string | null
   updatedAt: string
 }
 
@@ -2244,6 +2257,14 @@ export interface WorkbenchSummary {
   tasks: WorkbenchTask[]
 }
 
+/** 操作台概览分页：与我相关的全部任务，按创建时间倒序 */
+export interface WorkbenchOverviewPage {
+  items: WorkbenchTask[]
+  total: number
+  page: number
+  pageSize: number
+}
+
 /** 任务交付文档（正文由作者维护，版本与更新时间由平台维护） */
 export interface TaskHandoffDocument {
   /** 文档是否已由执行方/需求方显式创建 */
@@ -2482,7 +2503,7 @@ export const api = {
   },
   /** 迭代分组视图：需求按迭代周期聚合 + 状态计数（业务分区「迭代」栏目） */
   listProjectIterations: () => request<IterationGroup[]>('/projects/iterations'),
-  /** 迭代列表（T0 置顶，W1 按开始日期倒序） */
+  /** 迭代列表（T0 置顶，其余按开始日期倒序） */
   listIterations: (params?: {
     type?: IterationType
     status?: IterationStatus
@@ -2495,10 +2516,9 @@ export const api = {
   },
   /** 迭代详情：迭代信息 + 迭代项列表 */
   getIteration: (id: number) => request<IterationDetail>(`/iterations/${id}`),
-  /** 创建 W1 周迭代（仅管理员） */
+  /** 创建 T7 每周通道 / Tx 特殊通道（仅管理员；标识由后端自动生成） */
   createIteration: (input: {
-    code: string
-    name: string
+    type: Exclude<IterationType, 'T0'>
     startAt: string
     endAt: string
   }) =>
@@ -2506,11 +2526,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(input),
     }),
-  /** 更新迭代：名称 / 起止日期 / 结束或重开（仅管理员） */
+  /** 更新迭代：起止日期 / 结束或重开（仅管理员） */
   updateIteration: (
     id: number,
     input: {
-      name?: string
       startAt?: string | null
       endAt?: string | null
       status?: IterationStatus
@@ -2520,12 +2539,12 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(input),
     }),
-  /** 批量转入：选中需求转为该迭代的 backlog（每条必填负责人） */
+  /** 批量转入：选中需求转为该迭代的 backlog（负责人可暂不指定） */
   createBacklogs: (
     iterationId: number,
     items: Array<{
       projectId: number
-      ownerWorkerId: number
+      ownerWorkerId: number | null
       members?: Array<{ role: BacklogMemberRole; userId: number }>
     }>,
   ) =>
@@ -2533,6 +2552,19 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ items }),
     }),
+  /** 迭代项轻量列表（默认仅未取消）：选择器过滤已进入迭代的需求 */
+  listBacklogs: (params?: {
+    iterationId?: number
+    projectId?: number
+    status?: BacklogStatus
+  }) => {
+    const qs = new URLSearchParams()
+    if (params?.iterationId) qs.set('iterationId', String(params.iterationId))
+    if (params?.projectId) qs.set('projectId', String(params.projectId))
+    if (params?.status) qs.set('status', params.status)
+    const q = qs.toString()
+    return request<BacklogSummary[]>(`/backlogs${q ? `?${q}` : ''}`)
+  },
   /** 迭代项详情 */
   getBacklog: (id: number) => request<BacklogDetail>(`/backlogs/${id}`),
   /** 迭代项状态流转（成员或管理员；备注可空，写入事件流） */
@@ -2541,8 +2573,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ status, remark }),
     }),
-  /** 更新迭代项属性（预期上线时间，传 null 清空） */
-  updateBacklog: (id: number, input: { expectedOnlineAt?: string | null }) =>
+  /** 更新迭代项属性：预期上线时间（传 null 清空）、负责人（仅管理员，改派重建交付任务） */
+  updateBacklog: (
+    id: number,
+    input: { expectedOnlineAt?: string | null; ownerWorkerId?: number },
+  ) =>
     request<Backlog>(`/backlogs/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(input),
@@ -3954,6 +3989,16 @@ export const api = {
   getTaskPackage: (id: number) => request<TaskPackage>(`/tasks/${id}`),
   /** 操作台：绑定机器人 + 我执行/待我处理的任务 */
   getWorkbench: () => request<WorkbenchSummary>('/workbench'),
+  /** 操作台概览：与我相关的全部任务（按创建时间倒序分页） */
+  getWorkbenchTasks: (params?: { page?: number; pageSize?: number }) => {
+    const qs = new URLSearchParams()
+    if (params?.page) qs.set('page', String(params.page))
+    if (params?.pageSize) qs.set('pageSize', String(params.pageSize))
+    const q = qs.toString()
+    return request<WorkbenchOverviewPage>(
+      `/workbench/tasks${q ? `?${q}` : ''}`,
+    )
+  },
   /** 单个任务在当前用户视角下的工作台角色 */
   getWorkbenchTask: (id: number) =>
     request<WorkbenchTask>(`/workbench/tasks/${id}`),

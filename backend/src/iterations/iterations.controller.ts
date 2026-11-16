@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -46,10 +47,8 @@ function iterationActor(req: AuthedRequest): IterationActor {
 }
 
 class CreateIterationDto implements CreateIterationInput {
-  /** 唯一标识（W1，如 W2026-46） */
-  code: string;
-  /** 迭代名称 */
-  name: string;
+  /** 类型：T7 每周通道 / Tx 特殊通道（T0 不可创建） */
+  type: IterationType;
   /** 开始日期 YYYY-MM-DD */
   startAt?: string | null;
   /** 结束日期 YYYY-MM-DD */
@@ -57,7 +56,6 @@ class CreateIterationDto implements CreateIterationInput {
 }
 
 class UpdateIterationDto implements UpdateIterationInput {
-  name?: string;
   startAt?: string | null;
   endAt?: string | null;
   /** 进行中 / 已结束 */
@@ -67,8 +65,8 @@ class UpdateIterationDto implements UpdateIterationInput {
 class CreateBacklogItemDto implements CreateBacklogItemInput {
   /** 原始需求（projects.id） */
   projectId: number;
-  /** 负责人机器人（AI 或真人，workers.id） */
-  ownerWorkerId: number;
+  /** 负责人机器人（workers.id，AI 或真人）；可空表示暂不指定 */
+  ownerWorkerId?: number | null;
   /** 成员：角色 + 平台用户 */
   members?: BacklogMemberInput[];
 }
@@ -87,6 +85,8 @@ class UpdateBacklogStatusDto {
 class UpdateBacklogDto {
   /** 预期上线时间（ISO 字符串，到小时；传 null 清空） */
   expectedOnlineAt?: string | null;
+  /** 负责人机器人（workers.id）：管理员指定/改派，改派时取消旧交付任务并按新负责人重建 */
+  ownerWorkerId?: number;
 }
 
 class MoveBacklogDto {
@@ -117,7 +117,7 @@ export class IterationsController {
     private readonly backlogsService: BacklogsService,
   ) {}
 
-  /** 迭代列表（T0 置顶，W1 按开始日期倒序），含 backlog 进度 */
+  /** 迭代列表（T0 置顶，其余按开始日期倒序），含 backlog 进度 */
   @Get()
   list(
     @Query('type') type?: IterationType,
@@ -126,7 +126,7 @@ export class IterationsController {
     return this.iterationsService.list({ type, status });
   }
 
-  /** 创建 W1 周迭代（仅管理员） */
+  /** 创建 T7 每周通道 / Tx 特殊通道（仅管理员；标识自动生成） */
   @Post()
   create(
     @Body() dto: CreateIterationDto,
@@ -148,7 +148,7 @@ export class IterationsController {
     return this.iterationsService.findOne(id);
   }
 
-  /** 更新迭代：名称 / 起止日期 / 结束或重开（仅管理员） */
+  /** 更新迭代：起止日期 / 结束或重开（仅管理员；T7 改开始日期重算标识） */
   @Patch(':id')
   update(
     @Param('id', ParseIntPipe) id: number,
@@ -191,6 +191,34 @@ export class IterationsMarkdownController {
 @Controller('backlogs')
 export class BacklogsController {
   constructor(private readonly backlogsService: BacklogsService) {}
+
+  /**
+   * 迭代项轻量列表：默认仅未取消（含各迭代），供选择器过滤已进入迭代的需求。
+   * 支持 iterationId / projectId / status 过滤，上限 1000 条。
+   */
+  @Get()
+  list(
+    @Query('iterationId') iterationId?: string,
+    @Query('projectId') projectId?: string,
+    @Query('status') status?: BacklogStatus,
+  ): ReturnType<BacklogsService['list']> {
+    const parseId = (value?: string): number | undefined => {
+      if (value === undefined || value === '') return undefined;
+      const parsed = Number(value);
+      if (!Number.isInteger(parsed) || parsed <= 0) {
+        throw new BadRequestException('过滤 ID 非法');
+      }
+      return parsed;
+    };
+    if (status !== undefined && !Object.values(BacklogStatus).includes(status)) {
+      throw new BadRequestException('迭代项状态非法');
+    }
+    return this.backlogsService.list({
+      iterationId: parseId(iterationId),
+      projectId: parseId(projectId),
+      status,
+    });
+  }
 
   /** Markdown 详情视图（须声明在 :id 之前） */
   @Get(':id.md')
