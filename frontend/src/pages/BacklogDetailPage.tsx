@@ -24,6 +24,18 @@ import {
   SelectItem,
 } from '@appica/ui-react/select'
 import {
+  Combobox,
+  ComboboxTrigger,
+  ComboboxValue,
+  ComboboxInput,
+  ComboboxContent,
+  ComboboxEmpty,
+  ComboboxList,
+  ComboboxItem,
+  createComboboxItems,
+} from '@appica/ui-react/combobox'
+import { ScrollArea } from '@appica/ui-react/scroll-area'
+import {
   Dialog,
   DialogTrigger,
   DialogContent,
@@ -83,7 +95,9 @@ import { NewDefectDialog } from '../components/NewDefectDialog'
 import { TaskTreePanel } from '../components/task-detail/TaskTreePanel'
 import { DetailPageLayout } from '../components/detail/DetailPageLayout'
 import { DetailAgentPanel } from '../components/detail/DetailAgentPanel'
+import { TopicsPanel } from '../components/topics/TopicsPanel'
 import { useAuth } from '../context/AuthContext'
+import { matchesPinyinSearch } from '../lib/pinyin-search'
 
 const SUCCESS_STAY_MS = 2_000
 const FAILURE_STAY_MS = 5_000
@@ -159,7 +173,7 @@ function eventSummary(event: BacklogEvent): string {
 }
 
 /** 内容分区：信息 / 文档 / 任务 / 缺陷 / 事件 / 成员 */
-type BacklogDetailTab = 'info' | 'docs' | 'tasks' | 'defects' | 'events' | 'members'
+type BacklogDetailTab = 'info' | 'docs' | 'tasks' | 'defects' | 'events' | 'members' | 'topics'
 
 /**
  * 迭代项详情：基本信息（需求方/备注/预期上线时间）、文档（转入时自需求迁入）、
@@ -330,8 +344,13 @@ export function BacklogDetailPage() {
     [users],
   )
 
-  const workerItems = useMemo(
-    () => Object.fromEntries((workers ?? []).map((w) => [String(w.id), w.name])),
+  // 负责人 / 执行机器人：机器人数量多，用可搜索 Combobox（原文 + 拼音）并让列表滚动
+  const ownerWorkerOptions = useMemo(
+    () =>
+      createComboboxItems(workers ?? [], {
+        getValue: (worker) => String(worker.id),
+        getLabel: (worker) => worker.name,
+      }),
     [workers],
   )
 
@@ -343,8 +362,12 @@ export function BacklogDetailPage() {
     [taskTemplates],
   )
 
-  const taskWorkerItems = useMemo(
-    () => Object.fromEntries((taskWorkers ?? []).map((w) => [String(w.id), w.name])),
+  const taskWorkerOptions = useMemo(
+    () =>
+      createComboboxItems(taskWorkers ?? [], {
+        getValue: (worker) => String(worker.id),
+        getLabel: (worker) => worker.name,
+      }),
     [taskWorkers],
   )
 
@@ -932,6 +955,7 @@ export function BacklogDetailPage() {
             <TabsTrigger value="docs">文档 {docs?.length ?? 0}</TabsTrigger>
             <TabsTrigger value="tasks">任务 {(related?.tasks ?? []).length}</TabsTrigger>
             <TabsTrigger value="defects">缺陷 {defects?.length ?? 0}</TabsTrigger>
+            <TabsTrigger value="topics">话题</TabsTrigger>
             <TabsTrigger value="events">事件</TabsTrigger>
             <TabsTrigger value="members">成员 {backlog.members?.length ?? 0}</TabsTrigger>
           </TabsList>
@@ -1354,6 +1378,14 @@ export function BacklogDetailPage() {
             </Card>
           </TabsContent>
 
+          <TabsContent value="topics" keepMounted className="pt-4">
+            <TopicsPanel
+              subjectType="迭代项"
+              subjectId={backlog.id}
+              subjectTitle={backlog.title}
+            />
+          </TabsContent>
+
           <TabsContent value="events" keepMounted className="pt-4">
             {/* 事件流 */}
             <Card>
@@ -1449,24 +1481,47 @@ export function BacklogDetailPage() {
           </DialogHeader>
           <DialogBody>
             <label className="flex flex-col gap-1 text-sm">
-              负责人机器人
-              <Select
-                value={ownerTarget}
-                onValueChange={(v) => setOwnerTarget(v as string)}
-                items={workerItems}
+              <span className="text-foreground-muted">负责人机器人</span>
+              <Combobox
+                items={ownerWorkerOptions}
+                value={ownerTarget ?? null}
+                onValueChange={(value) =>
+                  setOwnerTarget(value == null ? undefined : String(value))
+                }
+                filter={(worker: Worker, query: string) =>
+                  matchesPinyinSearch(query, [worker.name])
+                }
+                icon={false}
               >
-                <SelectTrigger>
-                  <SelectValue placeholder="选择负责人（AI 或真人）" />
-                </SelectTrigger>
-                <SelectContent>
-                  {(workers ?? []).map((worker) => (
-                    <SelectItem key={worker.id} value={String(worker.id)}>
-                      {worker.name}
-                      {worker.runtime === 'human' ? '（真人）' : ''}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                <ComboboxTrigger aria-label="负责人机器人">
+                  <ComboboxValue placeholder="选择负责人（AI 或真人）" />
+                </ComboboxTrigger>
+                <ComboboxContent>
+                  <div className="px-2 pb-2 group-data-empty/combobox-content:pt-2">
+                    <ComboboxInput
+                      placeholder="搜索机器人名称"
+                      aria-label="搜索负责人机器人"
+                    />
+                  </div>
+                  <ScrollArea className="max-h-64">
+                    <ComboboxEmpty>
+                      {workers === null ? '加载中…' : '没有匹配的机器人'}
+                    </ComboboxEmpty>
+                    <ComboboxList className="overflow-y-visible">
+                      {(worker: Worker) => (
+                        <ComboboxItem key={worker.id} value={String(worker.id)}>
+                          <span className="truncate">{worker.name}</span>
+                          {worker.runtime === 'human' && (
+                            <span className="ms-auto ps-3 text-xs text-foreground-muted">
+                              真人
+                            </span>
+                          )}
+                        </ComboboxItem>
+                      )}
+                    </ComboboxList>
+                  </ScrollArea>
+                </ComboboxContent>
+              </Combobox>
             </label>
             <p className="mt-2 text-xs text-foreground-muted">
               指定/改派后会取消原交付任务，并按新负责人重新创建交付任务
@@ -1582,28 +1637,53 @@ export function BacklogDetailPage() {
                 </Select>
               </label>
               <label className="flex flex-col gap-1 text-sm">
-                {backlog.taskId ? '执行机器人（可空）' : '负责人机器人'}
-                <Select
-                  value={taskAgentId}
-                  onValueChange={(v) => setTaskAgentId(v as string)}
-                  items={taskWorkerItems}
+                <span className="text-foreground-muted">
+                  {backlog.taskId ? '执行机器人（可空）' : '负责人机器人'}
+                </span>
+                <Combobox
+                  items={taskWorkerOptions}
+                  value={taskAgentId ?? null}
+                  onValueChange={(value) =>
+                    setTaskAgentId(value == null ? undefined : String(value))
+                  }
+                  filter={(worker: Worker, query: string) =>
+                    matchesPinyinSearch(query, [worker.name])
+                  }
+                  icon={false}
                 >
-                  <SelectTrigger>
-                    <SelectValue
+                  <ComboboxTrigger aria-label="执行机器人">
+                    <ComboboxValue
                       placeholder={
                         backlog.taskId ? '留空由平台自动分配' : '选择负责人（AI 或真人）'
                       }
                     />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {(taskWorkers ?? []).map((worker) => (
-                      <SelectItem key={worker.id} value={String(worker.id)}>
-                        {worker.name}
-                        {worker.runtime === 'human' ? '（真人）' : ''}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  </ComboboxTrigger>
+                  <ComboboxContent>
+                    <div className="px-2 pb-2 group-data-empty/combobox-content:pt-2">
+                      <ComboboxInput
+                        placeholder="搜索机器人名称"
+                        aria-label="搜索执行机器人"
+                      />
+                    </div>
+                    <ScrollArea className="max-h-64">
+                      <ComboboxEmpty>
+                        {taskWorkers === null ? '加载中…' : '没有匹配的机器人'}
+                      </ComboboxEmpty>
+                      <ComboboxList className="overflow-y-visible">
+                        {(worker: Worker) => (
+                          <ComboboxItem key={worker.id} value={String(worker.id)}>
+                            <span className="truncate">{worker.name}</span>
+                            {worker.runtime === 'human' && (
+                              <span className="ms-auto ps-3 text-xs text-foreground-muted">
+                                真人
+                              </span>
+                            )}
+                          </ComboboxItem>
+                        )}
+                      </ComboboxList>
+                    </ScrollArea>
+                  </ComboboxContent>
+                </Combobox>
               </label>
               <p className="text-xs text-foreground-muted">
                 {backlog.taskId

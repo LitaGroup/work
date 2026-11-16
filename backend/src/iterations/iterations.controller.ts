@@ -42,6 +42,8 @@ function iterationActor(req: AuthedRequest): IterationActor {
     userId: user.id,
     userName: user.name,
     isAdmin: user.role === UserRole.ADMIN,
+    // 真人机器人令牌经 .md/机器人通道命中时带上；网页通常为空
+    workerId: req.worker?.id ?? null,
   };
 }
 

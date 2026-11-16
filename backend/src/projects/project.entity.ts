@@ -54,16 +54,6 @@ export class Project {
   @Column({ type: 'text', nullable: true })
   remark: string | null;
 
-  /** 人员：{ frontend?, backend?, qa?, product?, client? }（需求池同步含产品与客户端人员） */
-  @Column({ type: 'simple-json', nullable: true })
-  resources: {
-    frontend?: string;
-    backend?: string;
-    qa?: string;
-    product?: string;
-    client?: string;
-  } | null;
-
   /** 飞书多维表格 record_id，增量同步判重用 */
   @Column({ type: 'varchar', length: 50, nullable: true, unique: true })
   feishuRecordId: string | null;

@@ -56,6 +56,7 @@ import { BacklogStatusBadge, StatusBadge } from '../components/StatusBadge'
 import { PageBreadcrumb } from '../components/PageBreadcrumb'
 import { TransferToIterationButton } from '../components/TransferToIterationButton'
 import { DetailPageLayout } from '../components/detail/DetailPageLayout'
+import { TopicsPanel } from '../components/topics/TopicsPanel'
 import { DetailAgentPanel } from '../components/detail/DetailAgentPanel'
 import { CountRow } from '../components/CountRow'
 import { MarkdownViewer } from '../components/MarkdownViewer'
@@ -237,26 +238,6 @@ export function RequirementDetailPage() {
                   <dt>更新时间</dt>
                   <dd>{new Date(project.updatedAt).toLocaleString()}</dd>
                 </div>
-                <div className="flex justify-between pl-3">
-                  <dt>前端</dt>
-                  <dd>{project.resources?.frontend ?? '—'}</dd>
-                </div>
-                <div className="flex justify-between pl-3">
-                  <dt>后端</dt>
-                  <dd>{project.resources?.backend ?? '—'}</dd>
-                </div>
-                <div className="flex justify-between pl-3">
-                  <dt>测试</dt>
-                  <dd>{project.resources?.qa ?? '—'}</dd>
-                </div>
-                <div className="flex justify-between pl-3">
-                  <dt>产品</dt>
-                  <dd>{project.resources?.product ?? '—'}</dd>
-                </div>
-                <div className="flex justify-between pl-3">
-                  <dt>客户端</dt>
-                  <dd>{project.resources?.client ?? '—'}</dd>
-                </div>
               </dl>
             </Card>
           </TooltipProvider>
@@ -295,6 +276,16 @@ export function RequirementDetailPage() {
             </div>
           </div>
           <DocumentsPanel project={project} onChanged={reload} />
+        </section>
+
+        {/* 讨论：需求下的话题 */}
+        <section>
+          <h2 className="mb-3 text-xl font-semibold">讨论</h2>
+          <TopicsPanel
+            subjectType="需求"
+            subjectId={project.id}
+            subjectTitle={project.name}
+          />
         </section>
       </div>
     </DetailPageLayout>

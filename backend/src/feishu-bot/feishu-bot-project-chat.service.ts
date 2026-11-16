@@ -6,11 +6,12 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Cron } from '@nestjs/schedule';
-import { In, IsNull, Repository } from 'typeorm';
+import { In, IsNull, Not, Repository } from 'typeorm';
 import { Subscription } from 'rxjs';
 import { User } from '../auth/user.entity';
-import { TaskStatus } from '../common/enums';
+import { BacklogStatus, TaskStatus } from '../common/enums';
 import { splitMemberNames } from '../common/names';
+import { Backlog } from '../iterations/backlog.entity';
 import { SYSTEM_PROJECT_DELIVERY_TASK_TEMPLATE_ID } from '../tasks/system-task-templates';
 import { TaskRealtimeService } from '../tasks/task-realtime.service';
 import { Task } from '../tasks/task.entity';
@@ -41,15 +42,6 @@ const MAX_CHAT_MEMBERS = 50;
 /** 群名总长度上限 */
 const CHAT_NAME_LIMIT = 80;
 
-/** 项目相关方角色；顺序同时决定建群卡片中的展示顺序 */
-export const PROJECT_CHAT_ROLE_KEYS = [
-  'frontend',
-  'backend',
-  'qa',
-  'product',
-  'client',
-] as const;
-
 /** 项目沟通群名称：保留固定前后缀，仅截断项目名 */
 export function projectChatName(projectName: string): string {
   const prefix = 'LitaWork-需求-';
@@ -62,14 +54,17 @@ export function projectChatName(projectName: string): string {
   return `${prefix}${name.slice(0, available)}${suffix}`;
 }
 
-/** 项目人员中的相关方姓名（多人字段拆分、去重、保持角色顺序） */
+/** 项目相关方姓名：需求方 + 该需求全部未取消迭代项的成员（去重、保持来源顺序） */
 export function projectStakeholderNames(
-  resources: Project['resources'],
+  owner: string | null | undefined,
+  backlogMemberNames: Iterable<string>,
 ): string[] {
   const names: string[] = [];
-  if (!resources) return names;
-  for (const key of PROJECT_CHAT_ROLE_KEYS) {
-    for (const name of splitMemberNames(resources[key])) {
+  for (const name of splitMemberNames(owner)) {
+    if (!names.includes(name)) names.push(name);
+  }
+  for (const raw of backlogMemberNames) {
+    for (const name of splitMemberNames(raw)) {
       if (!names.includes(name)) names.push(name);
     }
   }
@@ -115,6 +110,8 @@ export class FeishuBotProjectChatService
     private readonly users: Repository<User>,
     @InjectRepository(Worker)
     private readonly workers: Repository<Worker>,
+    @InjectRepository(Backlog)
+    private readonly backlogs: Repository<Backlog>,
   ) {}
 
   onModuleInit(): void {
@@ -390,12 +387,31 @@ export class FeishuBotProjectChatService
     }
   }
 
-  /** 项目相关方按姓名匹配平台用户并解析官方应用 open_id */
+  /** 项目相关方（需求方 + 未取消迭代项成员）按姓名匹配平台用户并解析官方应用 open_id */
   private async resolveMembers(
     official: FeishuBotConfig,
     project: Project,
   ): Promise<ResolvedMembers> {
-    const names = projectStakeholderNames(project.resources);
+    const backlogMembers: string[] = [];
+    try {
+      const backlogs = await this.backlogs.find({
+        where: {
+          projectId: project.id,
+          status: Not(BacklogStatus.CANCELED),
+        },
+        select: { id: true, members: true },
+      });
+      for (const row of backlogs) {
+        for (const member of row.members ?? []) {
+          if (member.name) backlogMembers.push(member.name);
+        }
+      }
+    } catch (error) {
+      this.logger.warn(
+        `项目沟通群查询迭代项成员失败（project=${project.id}）：${(error as Error).message}`,
+      );
+    }
+    const names = projectStakeholderNames(project.owner, backlogMembers);
     if (names.length === 0) return { users: [], openIds: [], missingNames: [] };
     const found = await this.users.find({
       where: { name: In(names), enabled: true },

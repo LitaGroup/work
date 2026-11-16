@@ -5,9 +5,7 @@ import type { MigrationInterface, QueryRunner } from 'typeorm';
  * documents_type_enum 增加「设计」值。
  * PostgreSQL 12+ 允许在事务内 ADD VALUE（同一事务不使用该值即可）。
  */
-export class AddDocumentDesignLink1800500000000
-  implements MigrationInterface
-{
+export class AddDocumentDesignLink1800500000000 implements MigrationInterface {
   name = 'AddDocumentDesignLink1800500000000';
 
   public async up(queryRunner: QueryRunner): Promise<void> {

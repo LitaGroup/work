@@ -39,6 +39,7 @@ import { Backlog } from '../iterations/backlog.entity';
 import { FeishuBotTaskChat } from './feishu-bot-task-chat.entity';
 import { FeishuBotTaskChatService } from './feishu-bot-task-chat.service';
 import { FeishuBotController } from './feishu-bot.controller';
+import { TopicsModule } from '../topics/topics.module';
 
 /**
  * 飞书 Bot 接入层：
@@ -76,6 +77,8 @@ import { FeishuBotController } from './feishu-bot.controller';
     forwardRef(() => TasksModule),
     // 审批卡片回调：审批任务通过工单运行时推进
     forwardRef(() => TicketsModule),
+    // 话题：平台群内话题线程消息回流为帖子
+    forwardRef(() => TopicsModule),
   ],
   controllers: [FeishuBotController, FeishuBotCallbackController],
   providers: [

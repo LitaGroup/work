@@ -129,6 +129,7 @@ describe('TicketsService', () => {
       {} as never,
       templates as never,
       workers as never,
+      {} as never,
       tasksService as never,
       dispatchService as never,
       {} as never,

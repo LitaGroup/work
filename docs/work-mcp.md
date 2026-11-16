@@ -1,6 +1,6 @@
 # MCP 接入指南：lita-work 平台工具
 
-平台把原 **lita-work / knowledge-search / file-upload** 三个 Agent 技能（`.md` HTTP 端点）改造成 MCP 服务 **`lita-work`**：外部 Agent（opencode / Claude Code / Cursor 等）完成一次配置后，即可直接调用带 schema 的平台工具——项目、文档、知识库、脚本运行、缺陷/提测、反馈、灵感、代码分支、文件上传、任务协同、工单和机器人/任务定义管理等。
+平台把原 **lita-work / knowledge-search / file-upload** 三个 Agent 技能（`.md` HTTP 端点）改造成 MCP 服务 **`lita-work`**：外部 Agent（opencode / Claude Code / Cursor 等）完成一次配置后，即可直接调用带 schema 的平台工具——项目、迭代成员、文档、知识库、脚本运行、缺陷/提测、反馈、灵感、代码分支、文件上传、任务协同、工单和机器人/任务定义管理等。
 
 - 服务地址：`POST /api/mcp/work`（MCP Streamable HTTP，响应为 SSE 流）
 - 鉴权：机器人令牌（`Authorization: Bearer` / `X-Worker-Token` / `X-Agent-Token` / `?token=`），或管理员下发的公共 Agent 令牌；与 `.md` 端点同一令牌体系。真人用户没有独立令牌，其令牌就是绑定真人机器人的 `workers.agentToken`
@@ -83,7 +83,7 @@ claude mcp add --transport http lita-work http://your-host:3100/api/mcp/work \
 |---|---|---|
 | `search_projects` | `query` | 按名称模糊搜索项目，返回前 5 个 |
 | `get_project` | `projectId` | 需求基本信息（描述 / 对应的迭代 / 文档资料清单与需求级 AI 操作入口） |
-| `update_project` | `projectId`、`scriptsPath?`、`description?`、`resources?` | 仅更新平台本地字段（脚本目录/描述/人员） |
+| `update_project` | `projectId`、`scriptsPath?`、`description?`、`owner?`、`remark?` | 仅更新平台本地字段（脚本目录/描述/需求方/备注） |
 | `read_document` | `documentId` | 文档元信息 + Markdown 正文 |
 | `upsert_document` | `projectId`、`fileName`、`content`、`title?`、`type?`、`description?` | 按 `(projectId, fileName)` upsert |
 | `sync_apipost_document` | `projectId`、`url`、`type?` | 导入 APIPOST 接口文档 |
@@ -94,6 +94,12 @@ claude mcp add --transport http lita-work http://your-host:3100/api/mcp/work \
 | `create_milestone` | `projectId`、`date`、`content`、`remark?`、`deliverer?`、`acceptor?` | 登记节点 |
 | `update_milestone` | `milestoneId`、…、`achieved?` | 更新节点；`achieved=yes` 验收达成 |
 | `delete_milestone` | `milestoneId` | 删除节点 |
+
+### 迭代与成员
+
+| 工具 | 主要入参 | 说明 |
+|---|---|---|
+| `update_backlog_members` | `backlogId`、`members[]`（`role` + `userId` 或 `name`） | 管理员或该迭代项负责人机器人整体替换成员；`name` 支持顿号连接多人，空数组清空 |
 
 ### 运行 / 脚本 / 设置
 
@@ -157,6 +163,18 @@ claude mcp add --transport http lita-work http://your-host:3100/api/mcp/work \
 | `change_idea_status` | `ideaId`、`status`、`createProject?`、`projectId?`、`projectType?` | 流转状态（仅管理员）：采纳时新建或关联需求池需求 |
 
 > 「我的 AI」可通过 `create_idea` 创建灵感、`update_idea` 完善当前灵感正文、`delete_idea` 删除当前灵感；采纳后灵感与需求池项目建立软关联（`projectId`），可经 `GET /api/requirements/{id}.md` 继续推进。
+
+### 话题
+
+| 工具 | 主要入参 | 说明 |
+|---|---|---|
+| `list_topics` | `subjectType?`、`subjectId?`、`status?`、`priority?`、`tag?`、`q?` | 话题清单 Markdown 表格（主体/状态/优先级/标签/关键词，支持拼音） |
+| `get_topic` | `topicId` | 话题详情：首楼 + 全部帖子 + 引用关系与 @ 机器人 |
+| `create_topic` | `subjectType`、`subjectId`、`content`、`title?`、`priority?`、`tags?`、`mentions?` | 在主体下发起讨论；标题可省略，平台按正文异步生成「TP-{id}」 |
+| `reply_topic` | `topicId`、`content`、`replyToPostId?`、`mentions?` | 发帖/引用回复；被 @ 的机器人答复后就近关闭其收件箱 |
+| `update_topic` | `topicId`、`title?`、`content?`、`priority?`、`tags?`、`status?` | 更新话题（仅创建人或管理员），状态 开放/已解决/已关闭 |
+
+> 普通 AI 机器人以自身身份参与讨论；个人 AGENT 与真人机器人落到绑定真人。主体有飞书群时，话题与帖子双向同步（群内话题消息回流为帖子，不再回传）。
 
 ### GitHub / 文件
 

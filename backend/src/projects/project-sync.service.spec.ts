@@ -2,7 +2,6 @@ import {
   composeScheduleRemark,
   extractDocLinks,
   extractHttpLinks,
-  extractLinkedNames,
   extractPeople,
   toIterationCycle,
   toLastModifiedMs,
@@ -198,38 +197,5 @@ describe('extractPeople（人员字段 → 姓名，需求方同步复用）', (
     expect(extractPeople(undefined)).toBe(undefined);
     expect(extractPeople([])).toBe(undefined);
     expect(extractPeople([{ name: '' }, { text: '@' }])).toBe(undefined);
-  });
-});
-
-describe('extractLinkedNames（SingleLink 字段 → 关联记录姓名）', () => {
-  const nameById = new Map([
-    ['recA', '赵胜峰'],
-    ['recB', '徐雪梅'],
-  ]);
-
-  it('按 link_record_ids 解析为姓名，多值顿号连接', () => {
-    expect(
-      extractLinkedNames({ link_record_ids: ['recA', 'recB'] }, nameById),
-    ).toBe('赵胜峰、徐雪梅');
-  });
-
-  it('无法解析的 id 忽略；全空返回 undefined', () => {
-    expect(
-      extractLinkedNames({ link_record_ids: ['recA', 'recX'] }, nameById),
-    ).toBe('赵胜峰');
-    expect(extractLinkedNames({ link_record_ids: ['recX'] }, nameById)).toBe(
-      undefined,
-    );
-  });
-
-  it('字段为空 / null link_record_ids 返回 undefined', () => {
-    expect(extractLinkedNames(null, nameById)).toBe(undefined);
-    expect(extractLinkedNames(undefined, nameById)).toBe(undefined);
-    expect(extractLinkedNames({ link_record_ids: null }, nameById)).toBe(
-      undefined,
-    );
-    expect(extractLinkedNames({ link_record_ids: [] }, nameById)).toBe(
-      undefined,
-    );
   });
 });

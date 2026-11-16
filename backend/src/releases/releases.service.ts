@@ -6,11 +6,17 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
-import { In, Repository } from 'typeorm';
-import { ReleaseStatus, TaskStatus, TaskSubStatus } from '../common/enums';
+import { In, Not, Repository } from 'typeorm';
+import {
+  BacklogStatus,
+  ReleaseStatus,
+  TaskStatus,
+  TaskSubStatus,
+} from '../common/enums';
 import { splitMemberNames } from '../common/names';
 import { beijingTime, mdFrontmatter } from '../common/frontmatter';
 import { FeishuService } from '../feishu/feishu.service';
+import { Backlog } from '../iterations/backlog.entity';
 import { Project } from '../projects/project.entity';
 import { User } from '../auth/user.entity';
 import { Task } from '../tasks/task.entity';
@@ -62,6 +68,8 @@ export class ReleasesService {
     private readonly users: Repository<User>,
     @InjectRepository(Task)
     private readonly tasks: Repository<Task>,
+    @InjectRepository(Backlog)
+    private readonly backlogs: Repository<Backlog>,
     private readonly workerInbox: TaskWorkerInboxService,
     private readonly feishu: FeishuService,
     config: ConfigService,
@@ -72,7 +80,7 @@ export class ReleasesService {
   /**
    * 提测：创建提测记录并把项目状态流转为「测试中」。
    * 测试人员至少 1 人且均须存在于用户系统（users 表，飞书登录落库），否则 400。
-   * 通知（项目人员私聊）异步发送，失败仅告警不阻断提测。
+   * 通知（测试人员 + 迭代项成员私聊）异步发送，失败仅告警不阻断提测。
    */
   async submit(
     projectId: number,
@@ -249,7 +257,7 @@ export class ReleasesService {
       }`,
       `- 提测内容：${release.content ? '已记录（见项目详情）' : '—'}`,
       `- 提测状态：**${releaseStatusOf(release.status)}**（待冒烟 / 进行中 / 已通过 / 未通过）`,
-      `- 已通知：项目人员私聊（发送失败仅告警，不影响提测）`,
+      `- 已通知：测试人员与迭代项成员私聊（发送失败仅告警，不影响提测）`,
       `- 阅读地址：GET /api/requirements/${release.projectId}.md`,
       `- 提测记录：GET /api/releases.md?projectId=${release.projectId}`,
       release.workerId
@@ -297,7 +305,7 @@ export class ReleasesService {
 
   /**
    * 校验姓名均存在于用户系统（users 表，飞书登录落库），不存在则 400 并列出无效姓名。
-   * 供提测测试人员与项目人员（resources）配置共用——项目中不允许配置用户系统之外的人。
+   * 供提测测试人员与需求方配置共用——项目中不允许配置用户系统之外的人。
    */
   async assertNamesInUserSystem(names: string[], label: string): Promise<void> {
     const found = await this.users.find({
@@ -379,7 +387,7 @@ export class ReleasesService {
   }
 
   /**
-   * 提测通知：项目人员（resources 全部人员 + 测试人员，去重）机器人私聊卡片。
+   * 提测通知：测试人员 + 该需求全部未取消迭代项成员（去重）机器人私聊卡片。
    * 人员按姓名在 users 表查 openId，查不到的跳过并告警。
    */
   private async notify(
@@ -428,28 +436,40 @@ export class ReleasesService {
     };
   }
 
-  /** 项目人员（resources 前端/后端/测试/产品/客户端）+ 测试人员 去重后逐个私聊卡片 */
+  /** 测试人员 + 该需求全部未取消迭代项的成员 去重后逐个私聊卡片 */
   private async notifyMembers(
     release: ProjectRelease,
     project: Project,
     card: Record<string, unknown>,
   ): Promise<void> {
     const names = new Set(release.testers);
-    for (const key of [
-      'frontend',
-      'backend',
-      'qa',
-      'product',
-      'client',
-    ] as const) {
-      for (const name of splitMemberNames(project.resources?.[key])) {
-        names.add(name);
-      }
+    const userIds = new Set<number>();
+    let backlogMembers: Backlog['members'] = [];
+    try {
+      const backlogs = await this.backlogs.find({
+        where: {
+          projectId: project.id,
+          status: Not(BacklogStatus.CANCELED),
+        },
+        select: { id: true, members: true },
+      });
+      backlogMembers = backlogs.flatMap((row) => row.members ?? []);
+    } catch (e) {
+      this.logger.warn(`提测通知查询迭代项成员失败: ${(e as Error).message}`);
     }
-    if (names.size === 0) return;
+    for (const member of backlogMembers) {
+      userIds.add(member.userId);
+      if (member.name) names.add(member.name);
+    }
+    if (names.size === 0 && userIds.size === 0) return;
     let members: User[];
     try {
-      members = await this.users.find({ where: { name: In([...names]) } });
+      members = await this.users.find({
+        where: [
+          ...(userIds.size > 0 ? [{ id: In([...userIds]) }] : []),
+          ...(names.size > 0 ? [{ name: In([...names]) }] : []),
+        ],
+      });
     } catch (e) {
       this.logger.warn(`提测通知查询用户失败: ${(e as Error).message}`);
       return;

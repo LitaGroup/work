@@ -18,11 +18,14 @@ import {
   DefectPriority,
   DefectStatus,
   ReleaseStatus,
+  TopicSubjectType,
   WorkerRole,
 } from '../common/enums';
 import { beijingTime, mdFrontmatter } from '../common/frontmatter';
 import { Backlog } from '../iterations/backlog.entity';
 import { Project } from '../projects/project.entity';
+import { Topic } from '../topics/topic.entity';
+import { topicSectionFor } from '../topics/topic-markdown';
 import {
   ACTIVE_RELEASE_STATUSES,
   ProjectRelease,
@@ -169,6 +172,8 @@ export class DefectsService implements OnModuleInit {
     private readonly users: Repository<User>,
     @InjectRepository(Task)
     private readonly tasks: Repository<Task>,
+    @InjectRepository(Topic)
+    private readonly topicRows: Repository<Topic>,
     private readonly testsService: TestsService,
     private readonly tasksService: TasksService,
   ) {}
@@ -421,6 +426,12 @@ export class DefectsService implements OnModuleInit {
       '```',
       '',
     );
+    const topicsText = await topicSectionFor(
+      this.topicRows,
+      TopicSubjectType.DEFECT,
+      defect.id,
+    );
+    if (topicsText) lines.push(topicsText);
     return lines.join('\n');
   }
 

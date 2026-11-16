@@ -128,6 +128,31 @@ export function IdeaStatusBadge({ status }: { status: string }) {
   )
 }
 
+/** 话题状态 → Badge variant：开放蓝 / 已解决绿 / 已关闭淡（未知兜底 soft） */
+const topicVariantByStatus: Record<
+  string,
+  'info' | 'success' | 'secondary' | 'soft'
+> = {
+  开放: 'info',
+  已解决: 'success',
+  已关闭: 'secondary',
+}
+
+export function TopicStatusBadge({ status }: { status: string }) {
+  return (
+    <Badge variant={topicVariantByStatus[status] ?? 'soft'}>{status}</Badge>
+  )
+}
+
+/** 话题优先级 → Badge variant：高红 / 中黄 / 低淡（未知兜底 soft） */
+export function TopicPriorityBadge({ priority }: { priority: string }) {
+  return (
+    <Badge variant={defectPriorityVariant[priority] ?? 'soft'}>
+      {priority}
+    </Badge>
+  )
+}
+
 /** 资源状态 → Badge variant：缺失红 / 草稿黄 / 确认绿 / 废弃淡（未知兜底 soft） */const resourceVariantByStatus: Record<
   string,
   'error' | 'success' | 'soft' | 'warning' | 'secondary'

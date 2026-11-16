@@ -7,6 +7,7 @@ import { ProjectRelease } from '../releases/project-release.entity';
 import { Task } from '../tasks/task.entity';
 import { TasksModule } from '../tasks/tasks.module';
 import { TestsModule } from '../tests/tests.module';
+import { Topic } from '../topics/topic.entity';
 import { Worker } from '../workers/worker.entity';
 import { DefectChangeRecord } from './defect-change-record.entity';
 import { Defect } from './defect.entity';
@@ -27,6 +28,7 @@ import { DefectsService } from './defects.service';
       User,
       Task,
       Backlog,
+      Topic,
     ]),
     TestsModule,
     TasksModule,

@@ -70,6 +70,7 @@ function makeService(row: Backlog) {
     {} as never,
     {} as never,
     {} as never,
+    {} as never,
     tasks as never,
     chat as never,
     {} as never,
@@ -469,7 +470,6 @@ function makeOwnerFixture(overrides?: {
   projectRows?: Array<{
     id: number;
     name: string;
-    resources: null;
   }>;
 }) {
   let nextId = 501;
@@ -523,6 +523,7 @@ function makeOwnerFixture(overrides?: {
     {} as never,
     {} as never,
     {} as never,
+    {} as never,
     tasks as never,
     chat as never,
     {} as never,
@@ -540,7 +541,7 @@ const workerRow = {
 describe('BacklogsService 无负责人转入', () => {
   it('未指定负责人时不创建交付任务', async () => {
     const fixture = makeOwnerFixture({
-      projectRows: [{ id: 100, name: '需求 A', resources: null }],
+      projectRows: [{ id: 100, name: '需求 A' }],
       iteration: { id: 10, code: '2026W47', type: 'T7', status: '进行中' },
     });
     const [created] = await fixture.service.createBatch(
@@ -556,7 +557,7 @@ describe('BacklogsService 无负责人转入', () => {
 
   it('指定负责人时按负责人创建交付任务', async () => {
     const fixture = makeOwnerFixture({
-      projectRows: [{ id: 100, name: '需求 A', resources: null }],
+      projectRows: [{ id: 100, name: '需求 A' }],
       iteration: { id: 10, code: '2026W47', type: 'T7', status: '进行中' },
       worker: workerRow,
     });
@@ -677,6 +678,190 @@ describe('BacklogsService 指定/改派负责人', () => {
         { userId: 1, userName: '管理员', isAdmin: true },
       ),
     ).rejects.toThrow(BadRequestException);
+  });
+});
+
+describe('BacklogsService 成员更新（MCP / 网页）', () => {
+  function makeMembersFixture(options?: {
+    row?: Backlog;
+    users?: Array<{ id: number; name: string; enabled?: boolean }>;
+    humanWorker?: { id: number; humanUserId: number } | null;
+  }) {
+    const row = options?.row ?? backlogRow();
+    const users = options?.users ?? [
+      { id: 7, name: '小明' },
+      { id: 8, name: '小红' },
+      { id: 9, name: '小刚' },
+    ];
+    const save = jest
+      .fn()
+      .mockImplementation((value: Backlog) => Promise.resolve(value));
+    const repository = {
+      findOne: jest.fn().mockResolvedValue(row),
+      save,
+    };
+    const events = {
+      create: jest.fn().mockImplementation((value: unknown) => value),
+      save: jest.fn().mockResolvedValue(undefined),
+    };
+    const usersRepo = {
+      find: jest.fn(
+        (args?: {
+          where?: {
+            id?: { value: number[] };
+            name?: { value: string[] };
+          };
+        }) => {
+          const where = args?.where ?? {};
+          if (where.name) {
+            const names = where.name.value;
+            return Promise.resolve(
+              users.filter(
+                (user) => names.includes(user.name) && user.enabled !== false,
+              ),
+            );
+          }
+          if (where.id) {
+            const ids = where.id.value;
+            return Promise.resolve(
+              users.filter((user) => ids.includes(user.id)),
+            );
+          }
+          return Promise.resolve([]);
+        },
+      ),
+    };
+    const workersRepo = {
+      findOne: jest.fn().mockResolvedValue(options?.humanWorker ?? null),
+    };
+    const service = new BacklogsService(
+      repository as never,
+      {} as never,
+      {} as never,
+      workersRepo as never,
+      usersRepo as never,
+      {} as never,
+      events as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    return { service, save, events, usersRepo, workersRepo };
+  }
+
+  it('管理员按 userId 整体替换成员并记录 members 事件', async () => {
+    const fixture = makeMembersFixture({
+      row: backlogRow({
+        members: [{ role: '产品', userId: 7, name: '小明' }],
+      }),
+    });
+    const updated = await fixture.service.updateMembers(
+      1,
+      [{ role: '前端', userId: 8 }],
+      { userId: 1, userName: '管理员', isAdmin: true },
+    );
+    expect(updated.members).toEqual([
+      { role: '前端', userId: 8, name: '小红' },
+    ]);
+    expect(fixture.events.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        backlogId: 1,
+        type: 'members',
+        operator: '管理员',
+        payload: {
+          from: [{ role: '产品', userId: 7, name: '小明' }],
+          to: [{ role: '前端', userId: 8, name: '小红' }],
+        },
+      }),
+    );
+  });
+
+  it('姓名入参支持顿号连接多人', async () => {
+    const fixture = makeMembersFixture();
+    const updated = await fixture.service.updateMembers(
+      1,
+      [{ role: '测试', name: '小明、小红' }],
+      { userId: 1, userName: '管理员', isAdmin: true },
+    );
+    expect(updated.members).toEqual([
+      { role: '测试', userId: 7, name: '小明' },
+      { role: '测试', userId: 8, name: '小红' },
+    ]);
+  });
+
+  it('姓名不存在或已停用时报错并列出姓名', async () => {
+    const fixture = makeMembersFixture();
+    await expect(
+      fixture.service.updateMembers(
+        1,
+        [{ role: '测试', name: '小明、不存在的人' }],
+        { userId: 1, userName: '管理员', isAdmin: true },
+      ),
+    ).rejects.toThrow(/不存在的人/);
+  });
+
+  it('空数组清空成员', async () => {
+    const fixture = makeMembersFixture({
+      row: backlogRow({
+        members: [{ role: '产品', userId: 7, name: '小明' }],
+      }),
+    });
+    const updated = await fixture.service.updateMembers(1, [], {
+      userId: 1,
+      userName: '管理员',
+      isAdmin: true,
+    });
+    expect(updated.members).toBeNull();
+  });
+
+  it('迭代项负责人机器人可更新成员', async () => {
+    const fixture = makeMembersFixture({
+      row: backlogRow({ ownerWorkerId: 2 }),
+    });
+    const updated = await fixture.service.updateMembers(
+      1,
+      [{ role: '后端', userId: 9 }],
+      { userId: null, userName: '机器人 A', isAdmin: false, workerId: 2 },
+    );
+    expect(updated.members).toEqual([
+      { role: '后端', userId: 9, name: '小刚' },
+    ]);
+  });
+
+  it('网页负责人真人登录（经其真人机器人）可更新成员', async () => {
+    const fixture = makeMembersFixture({
+      row: backlogRow({ ownerWorkerId: 9 }),
+      humanWorker: { id: 9, humanUserId: 7 },
+    });
+    const updated = await fixture.service.updateMembers(
+      1,
+      [{ role: '后端', userId: 8 }],
+      { userId: 7, userName: '小明', isAdmin: false },
+    );
+    expect(updated.members).toEqual([
+      { role: '后端', userId: 8, name: '小红' },
+    ]);
+  });
+
+  it('非管理员且非负责人不可更新成员', async () => {
+    const fixture = makeMembersFixture({
+      row: backlogRow({ ownerWorkerId: 2 }),
+      humanWorker: null,
+    });
+    await expect(
+      fixture.service.updateMembers(1, [{ role: '前端', userId: 8 }], {
+        userId: 7,
+        userName: '小明',
+        isAdmin: false,
+      }),
+    ).rejects.toThrow(ForbiddenException);
   });
 });
 

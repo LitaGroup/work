@@ -19,6 +19,7 @@ import {
 import { TaskStatusBadge } from '../components/StatusBadge'
 import { PageBreadcrumb, type Crumb } from '../components/PageBreadcrumb'
 import { DetailPageLayout } from '../components/detail/DetailPageLayout'
+import { TopicsPanel } from '../components/topics/TopicsPanel'
 import { DetailAgentPanel } from '../components/detail/DetailAgentPanel'
 import { TaskActions } from '../components/task-detail/TaskActions'
 import { TaskConversationView } from '../components/task-detail/TaskConversationView'
@@ -46,6 +47,7 @@ type TaskContentTab =
   | 'documents'
   | 'conversation'
   | 'review'
+  | 'topics'
 
 const TASK_CONTENT_TABS: Array<[TaskContentTab, string]> = [
   ['requirement', '需求'],
@@ -56,6 +58,7 @@ const TASK_CONTENT_TABS: Array<[TaskContentTab, string]> = [
   ['documents', '文档'],
   ['conversation', '会话'],
   ['review', '复盘'],
+  ['topics', '话题'],
 ]
 
 /**
@@ -765,6 +768,13 @@ export function TaskDetailView({
                     : '任务验收通过后由平台生成复盘文档'
                 }
                 contentKey={reviewDoc?.updatedAt}
+              />
+            )}
+            {contentTab === 'topics' && (
+              <TopicsPanel
+                subjectType="任务"
+                subjectId={currentTask.id}
+                subjectTitle={currentTask.title}
               />
             )}
           </div>

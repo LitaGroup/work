@@ -8,10 +8,12 @@ import { FindOptionsWhere, In, IsNull, Repository } from 'typeorm';
 import type { AuthedRequest } from '../auth/auth.guard';
 import { User } from '../auth/user.entity';
 import { beijingTime, mdFrontmatter } from '../common/frontmatter';
-import { TaskStatus } from '../common/enums';
+import { TaskStatus, TopicSubjectType } from '../common/enums';
 import { Worker } from '../workers/worker.entity';
 import { PersonalAgentsService } from '../workers/personal-agents.service';
 import { WorkersService } from '../workers/workers.service';
+import { Topic } from '../topics/topic.entity';
+import { topicSectionFor } from '../topics/topic-markdown';
 import { Task } from './task.entity';
 import { TaskDocumentService } from './task-document.service';
 import { TaskEvent } from './task-event.entity';
@@ -66,6 +68,8 @@ export class TasksAgentService {
     private readonly workers: Repository<Worker>,
     @InjectRepository(User)
     private readonly users: Repository<User>,
+    @InjectRepository(Topic)
+    private readonly topicRows: Repository<Topic>,
     private readonly tasksService: TasksService,
     private readonly taskDocuments: TaskDocumentService,
     private readonly workersService: WorkersService,
@@ -366,6 +370,12 @@ export class TasksAgentService {
         '',
       );
     }
+    const topicsText = await topicSectionFor(
+      this.topicRows,
+      TopicSubjectType.TASK,
+      task.id,
+    );
+    if (topicsText) lines.push(topicsText);
     return lines.join('\n');
   }
 

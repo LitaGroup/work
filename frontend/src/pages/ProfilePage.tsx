@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import {
   Card,
   CardHeader,
@@ -23,7 +24,11 @@ import {
   AlertDialogClose,
 } from '@appica/ui-react/alert-dialog'
 import { useAuth } from '../context/AuthContext'
-import { api, type Settings } from '../lib/api'
+import { api, type Settings, type Topic } from '../lib/api'
+import {
+  TopicPriorityBadge,
+  TopicStatusBadge,
+} from '../components/StatusBadge'
 
 export function ProfilePage() {
   const { user } = useAuth()
@@ -33,6 +38,22 @@ export function ProfilePage() {
   const [copied, setCopied] = useState(false)
   const [copiedScript, setCopiedScript] = useState(false)
   const [resetting, setResetting] = useState(false)
+  const [followedTopics, setFollowedTopics] = useState<Topic[] | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    api
+      .listFollowingTopics()
+      .then((rows) => {
+        if (!cancelled) setFollowedTopics(rows)
+      })
+      .catch(() => {
+        if (!cancelled) setFollowedTopics([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   useEffect(() => {
     api
@@ -212,6 +233,42 @@ export LITA_PROJECT_TOKEN=${tokenValue}`
           </div>
         </Card>
       </div>
+
+      {/* 我关注的话题：新帖经平台官方机器人飞书通知 */}
+      <Card>
+        <CardHeader>
+          <CardTitle>我关注的话题</CardTitle>
+          <CardDescription>
+            关注话题后，新帖会以平台官方机器人飞书私聊卡片通知；全部话题见{' '}
+            <Link to="/topics" className="underline">
+              话题列表
+            </Link>
+            。
+          </CardDescription>
+        </CardHeader>
+        <div className="flex flex-col gap-2 px-6 pb-6 group-data-inset/card:px-4">
+          {followedTopics === null ? (
+            <p className="text-sm text-foreground-muted">加载中…</p>
+          ) : followedTopics.length === 0 ? (
+            <p className="text-sm text-foreground-muted">暂未关注任何话题。</p>
+          ) : (
+            followedTopics.map((topic) => (
+              <div
+                key={topic.id}
+                className="flex flex-wrap items-center gap-2 text-sm"
+              >
+                <span className="font-medium">{topic.title}</span>
+                <TopicPriorityBadge priority={topic.priority} />
+                <TopicStatusBadge status={topic.status} />
+                <span className="text-xs text-foreground-muted">
+                  {topic.subjectType}·{topic.subjectTitle} · {topic.postCount}{' '}
+                  条帖子
+                </span>
+              </div>
+            ))
+          )}
+        </div>
+      </Card>
     </div>
   )
 }

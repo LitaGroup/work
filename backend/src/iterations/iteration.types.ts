@@ -10,6 +10,11 @@ export interface IterationActor {
   userId: number | null;
   userName: string;
   isAdmin: boolean;
+  /**
+   * 调用方机器人（MCP：机器人令牌；网页通常为空）。
+   * 成员维护允许迭代项负责人机器人操作，网页负责人真人登录经 userId 反查其真人机器人。
+   */
+  workerId?: number | null;
 }
 
 /** 创建迭代：T0 不可创建（平台常驻单例），标识由后端按类型自动生成 */
@@ -28,10 +33,13 @@ export interface UpdateIterationInput {
   status?: IterationStatus;
 }
 
-/** 迭代项成员入参：角色 + 平台用户 */
+/** 迭代项成员入参：角色 + 平台用户（userId 与 name 至少提供一个；name 支持多人顿号连接） */
 export interface BacklogMemberInput {
   role: BacklogMemberRole;
-  userId: number;
+  /** 平台用户 ID */
+  userId?: number;
+  /** 平台用户姓名（多个姓名顿号连接时展开为多条记录） */
+  name?: string;
 }
 
 /** 转入/追加迭代项：原始需求 + 负责人机器人（可为空，后续再指定）+ 成员 */

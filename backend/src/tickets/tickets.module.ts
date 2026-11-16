@@ -16,6 +16,7 @@ import { Ticket } from './ticket.entity';
 import { TicketWorkflowRun } from './ticket-workflow-run.entity';
 import { TicketWorkflowRuntimeService } from './ticket-workflow-runtime.service';
 import { Backlog } from '../iterations/backlog.entity';
+import { Topic } from '../topics/topic.entity';
 import { TicketsController, TicketTaskController } from './tickets.controller';
 import { TicketsService } from './tickets.service';
 
@@ -33,6 +34,7 @@ import { TicketsService } from './tickets.service';
       Worker,
       WorkflowDefinition,
       WorkflowDefinitionVersion,
+      Topic,
     ]),
     forwardRef(() => TasksModule),
     WorkersModule,

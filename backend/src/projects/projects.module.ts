@@ -17,6 +17,7 @@ import { TasksModule } from '../tasks/tasks.module';
 import { Project } from './project.entity';
 import { Backlog } from '../iterations/backlog.entity';
 import { Iteration } from '../iterations/iteration.entity';
+import { Topic } from '../topics/topic.entity';
 import { ProjectSyncService } from './project-sync.service';
 import { ProjectSummaryModule } from './project-summary.module';
 import { ProjectsController } from './projects.controller';
@@ -26,7 +27,7 @@ import { SyncState } from './sync-state.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Project, SyncState, Backlog, Iteration]),
+    TypeOrmModule.forFeature([Project, SyncState, Backlog, Iteration, Topic]),
     DocumentsModule,
     ChecksModule,
     SchedulesModule,

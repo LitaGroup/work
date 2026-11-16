@@ -50,6 +50,7 @@ import { visibleEventSource } from '../lib/event-source'
 import { DefectStatusBadge, DefectPriorityBadge } from '../components/StatusBadge'
 import { PageBreadcrumb } from '../components/PageBreadcrumb'
 import { DetailPageLayout } from '../components/detail/DetailPageLayout'
+import { TopicsPanel } from '../components/topics/TopicsPanel'
 import { MarkdownViewer } from '../components/MarkdownViewer'
 import { Terminal } from '../components/Terminal'
 import { DefectImagesField } from '../components/DefectImagesField'
@@ -393,6 +394,15 @@ export function DefectDetailPage() {
             </Card>
           )}
         </section>
+
+      <section>
+        <h2 className="mb-3 text-xl font-semibold">讨论</h2>
+        <TopicsPanel
+          subjectType="缺陷"
+          subjectId={defect.id}
+          subjectTitle={defect.expected.split('\n')[0] || `缺陷 ${defect.id}`}
+        />
+      </section>
 
       {/* 缺陷属性 */}
       <section className="order-first space-y-6">

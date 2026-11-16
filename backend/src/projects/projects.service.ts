@@ -23,6 +23,7 @@ import {
   ResourceStatus,
   TaskStatus,
   TaskSubStatus,
+  TopicSubjectType,
 } from '../common/enums';
 import { ChecksService } from '../checks/checks.service';
 import { Check } from '../checks/check.entity';
@@ -37,6 +38,8 @@ import {
   DocumentsService,
 } from '../documents/documents.service';
 import { Document } from '../documents/document.entity';
+import { Topic } from '../topics/topic.entity';
+import { topicSectionFor } from '../topics/topic-markdown';
 import { DEFECT_LIST_SELECT, DefectsService } from '../defects/defects.service';
 import { Defect } from '../defects/defect.entity';
 import {
@@ -99,15 +102,6 @@ export interface ProjectPageQuery {
    */
   view?: 'unscheduled' | 'scheduled' | 'expired';
 }
-
-/** 人员字段（resources 列）键 → 展示名 */
-const MEMBER_LABELS: Record<string, string> = {
-  frontend: '前端',
-  backend: '后端',
-  qa: '测试',
-  product: '产品',
-  client: '客户端',
-};
 
 /** 需求池「迭代」列：需求当前未取消迭代项所属迭代（应用层引用 backlogs.iterationId） */
 export interface ProjectIterationRef {
@@ -358,6 +352,8 @@ export class ProjectsService {
     private readonly backlogRows: Repository<Backlog>,
     @InjectRepository(Iteration)
     private readonly iterationRows: Repository<Iteration>,
+    @InjectRepository(Topic)
+    private readonly topicRows: Repository<Topic>,
     private readonly projectSummary: ProjectSummaryService,
     private readonly projectDescription: ProjectDescriptionService,
   ) {}
@@ -1021,14 +1017,6 @@ export class ProjectsService {
     }
     if (project.owner) meta.push(`- 需求方：${project.owner}`);
     if (project.remark) meta.push(`- 备注：${project.remark}`);
-    if (project.resources) {
-      const { frontend, backend, qa, product, client } = project.resources;
-      if (frontend || backend || qa || product || client) {
-        meta.push(
-          `- 人员：前端 ${frontend ?? '-'} / 后端 ${backend ?? '-'} / 测试 ${qa ?? '-'} / 产品 ${product ?? '-'} / 客户端 ${client ?? '-'}`,
-        );
-      }
-    }
     if (project.scriptsPath) meta.push(`- 脚本目录：${project.scriptsPath}`);
     meta.push(`- 更新时间：${project.updatedAt.toISOString()}`);
 
@@ -1059,7 +1047,7 @@ export class ProjectsService {
       return `- ${parts.join(' — ')}`;
     });
 
-    return [
+    const lines = [
       mdFrontmatter({ update: project.updatedAt, title: project.name }),
       `# ${project.name}`,
       '',
@@ -1089,10 +1077,10 @@ export class ProjectsService {
       '',
       '搜索需求：`GET /api/requirements/search.md?q={名称关键词}`（匹配度 + 创建时间倒序，前 5）',
       '',
-      '修改需求配置（仅本地字段：脚本目录 / 描述 / 人员，空串清除）：',
+      '修改需求配置（仅本地字段：脚本目录 / 描述 / 需求方 / 备注，空串清除）：',
       '',
       '```bash',
-      `curl -X POST /api/requirements/${project.id}/update.md -H 'Content-Type: application/json' -d '{"scriptsPath": "projects/xxx", "resources": {"frontend": "张三", "backend": "李四", "qa": "王五", "product": "钱七", "client": "赵六"}}'`,
+      `curl -X POST /api/requirements/${project.id}/update.md -H 'Content-Type: application/json' -d '{"scriptsPath": "projects/xxx", "owner": "张三", "remark": "排期优先级：P0；排期备注：xxx"}'`,
       '```',
       '',
       '写入/更新需求文档（按 projectId + fileName 判重 upsert；type 可选 需求/功能/测试/技术/接口/配置，缺省"技术"）：',
@@ -1109,10 +1097,17 @@ export class ProjectsService {
       '',
       '研发操作（检查/测试/导出/提测/缺陷/节点/代码分支等）见所在任务的任务定义说明与 `lita-work` MCP 工具。',
       '',
-    ].join('\n');
+    ];
+    const topicsText = await topicSectionFor(
+      this.topicRows,
+      TopicSubjectType.REQUIREMENT,
+      project.id,
+    );
+    if (topicsText) lines.push(topicsText);
+    return lines.join('\n');
   }
 
-  /** 更新项目可编辑字段：类型/优先级/迭代周期/预期发布时间/需求方 + 脚本目录（scriptsPath）、描述（description）、人员（resources）、摘要（summary），空串清除。状态为推导值不可手改。注意：飞书同步项目的同步字段（类型/优先级/迭代/预期发布/需求方/人员）会在下次同步时被飞书侧覆盖 */
+  /** 更新项目可编辑字段：类型/优先级/迭代周期/预期发布时间/需求方 + 脚本目录（scriptsPath）、描述（description）、摘要（summary），空串清除。状态为推导值不可手改。注意：飞书同步项目的同步字段（类型/优先级/迭代/预期发布/需求方）会在下次同步时被飞书侧覆盖 */
   async update(
     id: number,
     input: {
@@ -1126,13 +1121,6 @@ export class ProjectsService {
       scriptsPath?: string;
       description?: string;
       summary?: string;
-      resources?: {
-        frontend?: string;
-        backend?: string;
-        qa?: string;
-        product?: string;
-        client?: string;
-      } | null;
     },
   ): Promise<Project> {
     const project = await this.findOne(id);
@@ -1192,32 +1180,11 @@ export class ProjectsService {
       }
       project.summary = summary || null;
     }
-    if (input.resources !== undefined) {
-      const members = this.normalizeMembers(input.resources);
-      // 项目中不允许配置用户系统之外的用户（users 表 = 飞书登录落库）
-      const names = new Set<string>();
-      for (const key of [
-        'frontend',
-        'backend',
-        'qa',
-        'product',
-        'client',
-      ] as const) {
-        for (const name of splitMemberNames(members?.[key])) names.add(name);
-      }
-      if (names.size > 0) {
-        await this.releasesService.assertNamesInUserSystem(
-          [...names],
-          '项目人员',
-        );
-      }
-      project.resources = members;
-    }
     return this.projects.save(project);
   }
 
   /**
-   * AI 用：仅本地字段更新（脚本目录/描述/人员/需求方），返回 Markdown 结果。
+   * AI 用：仅本地字段更新（脚本目录/描述/需求方/备注），返回 Markdown 结果。
    * 刻意不含飞书同步字段（类型/优先级/迭代/预期发布），状态为推导值不可改。
    */
   async updateMarkdown(
@@ -1227,13 +1194,6 @@ export class ProjectsService {
       description?: string;
       owner?: string | null;
       remark?: string | null;
-      resources?: {
-        frontend?: string;
-        backend?: string;
-        qa?: string;
-        product?: string;
-        client?: string;
-      } | null;
     },
   ): Promise<string> {
     const project = await this.update(id, input);
@@ -1251,18 +1211,6 @@ export class ProjectsService {
     }
     if (input.remark !== undefined) {
       lines.push(`- 备注：${project.remark ?? '已清除'}`);
-    }
-    if (input.resources !== undefined) {
-      const members = project.resources;
-      lines.push(
-        `- 人员：${
-          members
-            ? Object.entries(members)
-                .map(([key, value]) => `${MEMBER_LABELS[key] ?? key}=${value}`)
-                .join('，')
-            : '已清除'
-        }`,
-      );
     }
     return [
       mdFrontmatter({
@@ -1307,45 +1255,6 @@ export class ProjectsService {
       );
     }
     return normalized || null;
-  }
-
-  /** 人员（resources 列）：{frontend?, backend?, qa?, product?, client?}，各值 trim、空值移除键；null/空对象清除 */
-  private normalizeMembers(
-    resources: {
-      frontend?: string;
-      backend?: string;
-      qa?: string;
-      product?: string;
-      client?: string;
-    } | null,
-  ): {
-    frontend?: string;
-    backend?: string;
-    qa?: string;
-    product?: string;
-    client?: string;
-  } | null {
-    if (!resources || typeof resources !== 'object') return null;
-    const normalized: {
-      frontend?: string;
-      backend?: string;
-      qa?: string;
-      product?: string;
-      client?: string;
-    } = {};
-    for (const key of [
-      'frontend',
-      'backend',
-      'qa',
-      'product',
-      'client',
-    ] as const) {
-      const value = resources[key];
-      if (typeof value === 'string' && value.trim()) {
-        normalized[key] = value.trim();
-      }
-    }
-    return Object.keys(normalized).length > 0 ? normalized : null;
   }
 
   /**

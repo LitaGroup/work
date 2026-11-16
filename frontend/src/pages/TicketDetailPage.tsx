@@ -30,6 +30,7 @@ import { PageBreadcrumb } from '../components/PageBreadcrumb'
 import { TicketStatusBadge } from '../components/StatusBadge'
 import { DetailAgentPanel } from '../components/detail/DetailAgentPanel'
 import { DetailPageLayout } from '../components/detail/DetailPageLayout'
+import { TopicsPanel } from '../components/topics/TopicsPanel'
 import { TaskActions } from '../components/task-detail/TaskActions'
 import { TaskWorkbenchPanel } from '../components/task-detail/TaskWorkbenchPanel'
 import { TicketCurrentNodePanel } from '../components/ticket-detail/TicketCurrentNodePanel'
@@ -50,6 +51,7 @@ type TicketContentTab =
   | 'tasks'
   | 'documents'
   | 'review'
+  | 'topics'
 
 const TICKET_CONTENT_TABS: Array<[TicketContentTab, string]> = [
   ['current', '当前'],
@@ -59,6 +61,7 @@ const TICKET_CONTENT_TABS: Array<[TicketContentTab, string]> = [
   ['tasks', '任务'],
   ['documents', '文档'],
   ['review', '复盘'],
+  ['topics', '话题'],
 ]
 
 const OUTCOME_LABEL: Record<string, string> = {
@@ -794,6 +797,13 @@ export function TicketDetailPage() {
               ) : (
                 <EmptyTabPanel text="节点任务完成后由平台生成复盘文档" />
               ))}
+            {contentTab === 'topics' && (
+              <TopicsPanel
+                subjectType="工单"
+                subjectId={ticket.id}
+                subjectTitle={ticket.title}
+              />
+            )}
           </div>
           </div>
         </DetailPageLayout>

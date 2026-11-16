@@ -49,14 +49,6 @@ class UpdateProjectDto {
   description?: string;
   /** 需求摘要（≤200 字），空串清除；清空后会在需求或需求类文档变更时重新自动生成 */
   summary?: string;
-  /** 人员：{frontend?, backend?, qa?, product?, client?}，空值移除键，{} / null 清除 */
-  resources?: {
-    frontend?: string;
-    backend?: string;
-    qa?: string;
-    product?: string;
-    client?: string;
-  } | null;
 }
 
 /** AI 用更新 DTO 已随需求视图迁至 RequirementsController（/api/requirements/:id/update.md） */

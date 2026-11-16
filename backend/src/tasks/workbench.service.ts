@@ -81,7 +81,7 @@ const WORKBENCH_OVERVIEW_MAX_PAGE_SIZE = 200;
 
 /** 详情页「我的 AI」可用的页面类型 */
 export type AgentPageContextType =
-  'document' | 'script' | 'project' | 'idea' | 'backlog';
+  'document' | 'script' | 'project' | 'idea' | 'backlog' | 'topic';
 
 /** 详情页上下文入参（query/body 原始值） */
 export interface AgentPageContextInput {
@@ -107,6 +107,7 @@ const AGENT_PAGE_TYPES = new Set<AgentPageContextType>([
   'project',
   'idea',
   'backlog',
+  'topic',
 ]);
 const AGENT_PAGE_LABELS: Record<AgentPageContextType, string> = {
   document: '文档',
@@ -114,6 +115,7 @@ const AGENT_PAGE_LABELS: Record<AgentPageContextType, string> = {
   project: '项目',
   idea: '灵感',
   backlog: '迭代项',
+  topic: '话题',
 };
 
 /**

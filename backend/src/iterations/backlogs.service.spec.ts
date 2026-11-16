@@ -24,6 +24,7 @@ function buildService() {
     {} as never,
     {} as never,
     {} as never,
+    {} as never,
   );
   return { service, backlogs, iterations, projects };
 }
@@ -135,6 +136,7 @@ function buildTaskService() {
     {} as never,
     {} as never,
     backlogEvents as never,
+    {} as never,
     {} as never,
     {} as never,
     {} as never,

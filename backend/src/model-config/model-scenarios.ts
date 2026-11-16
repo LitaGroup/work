@@ -25,7 +25,7 @@ export const MODEL_SCENARIOS: ModelScenarioDefinition[] = [
     scenario: MODEL_SCENARIO_TITLE_NAMING,
     name: '工单和任务标题命名',
     description:
-      '创建工单或根任务后，异步调用模型生成简洁标题，统一为「T-{id}」+ 生成内容；失败不影响创建与流程流转。',
+      '创建工单、根任务或话题后，异步调用模型生成简洁标题，工单/任务统一为「T-{id}」、话题为「TP-{id}」+ 生成内容；失败不影响创建与流程流转。',
   },
   {
     scenario: MODEL_SCENARIO_REQUIREMENT_SUMMARY,

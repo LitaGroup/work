@@ -110,7 +110,7 @@ export class AuthController {
     return { user: serializeUser(user) };
   }
 
-  /** 用户系统全量名单（登录后可看）：项目人员/提测测试人员等场景选择用户（不允许配置用户系统之外的人） */
+  /** 用户系统全量名单（登录后可看）：需求方/迭代项成员/提测测试人员等场景选择用户（不允许配置用户系统之外的人） */
   @Get('users')
   async listUsers(@Req() req: Request) {
     await this.requireUser(req);

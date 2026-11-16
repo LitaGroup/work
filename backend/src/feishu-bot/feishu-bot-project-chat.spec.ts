@@ -17,16 +17,11 @@ describe('项目沟通群命名与成员', () => {
     expect(name.endsWith(' 沟通群')).toBe(true);
   });
 
-  it('相关方按前端/后端/测试/产品/客户端顺序拆分去重', () => {
+  it('相关方为需求方 + 迭代项成员，按来源顺序拆分去重', () => {
     expect(
-      projectStakeholderNames({
-        frontend: '张三、李四',
-        backend: '王五',
-        qa: '赵六 张三',
-        product: '钱七',
-        client: '孙八',
-      }),
-    ).toEqual(['张三', '李四', '王五', '赵六', '钱七', '孙八']);
+      projectStakeholderNames('张三', ['李四、王五', '赵六 张三']),
+    ).toEqual(['张三', '李四', '王五', '赵六']);
+    expect(projectStakeholderNames(null, [])).toEqual([]);
   });
 });
 
@@ -118,19 +113,25 @@ describe('FeishuBotProjectChatService', () => {
       findOne: jest.fn().mockResolvedValue({
         id: 3708,
         name: '登录改版',
-        resources: {
-          frontend: '张三',
-          backend: '李四',
-          qa: '王五',
-          product: '钱七',
-          client: '未登录用户',
-        },
+        owner: '张三',
       }),
       find: jest.fn().mockResolvedValue([
         {
           id: 3708,
           name: '登录改版',
-          resources: {},
+          owner: '张三',
+        },
+      ]),
+    };
+    const backlogs = {
+      find: jest.fn().mockResolvedValue([
+        {
+          id: 1,
+          members: [
+            { role: '后端', userId: 8, name: '李四' },
+            { role: '测试', userId: 9, name: '王五' },
+            { role: '产品', userId: 10, name: '钱七' },
+          ],
         },
       ]),
     };
@@ -194,6 +195,7 @@ describe('FeishuBotProjectChatService', () => {
       tasks as never,
       users as never,
       workers as never,
+      backlogs as never,
     );
     return {
       service,

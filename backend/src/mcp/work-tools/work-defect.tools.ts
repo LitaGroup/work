@@ -247,7 +247,7 @@ export class WorkDefectTools implements WorkToolRegistrar {
       {
         title: '发起项目提测',
         description:
-          '创建提测记录并将项目状态流转「测试中」，通知提测群与项目人员。testers 至少 1 人且须为平台用户。',
+          '创建提测记录并将项目状态流转「测试中」，通知测试人员与迭代项成员。testers 至少 1 人且须为平台用户。',
         inputSchema: {
           projectId: z.number().int().positive().describe('项目 ID'),
           testers: z

@@ -1,6 +1,8 @@
 import {
   BadRequestException,
   ForbiddenException,
+  forwardRef,
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
@@ -27,6 +29,7 @@ import {
 import type { FeishuInboundMessage } from './feishu-bot-p2p.service';
 import { FeishuBotP2PService } from './feishu-bot-p2p.service';
 import { FeishuBotTaskChatService } from './feishu-bot-task-chat.service';
+import { TopicFeishuService } from '../topics/topic-feishu.service';
 
 /** 未识别用户的引导文案 */
 const BIND_GUIDANCE =
@@ -54,6 +57,8 @@ export class FeishuBotEventService {
     private readonly taskChats: FeishuBotTaskChatService,
     private readonly groupChats: FeishuBotGroupChatService,
     private readonly approvals: FeishuBotApprovalService,
+    @Inject(forwardRef(() => TopicFeishuService))
+    private readonly topics: TopicFeishuService,
     @InjectRepository(FeishuBotEvent)
     private readonly events: Repository<FeishuBotEvent>,
     @InjectRepository(FeishuBotCard)
@@ -283,7 +288,20 @@ export class FeishuBotEventService {
       return;
     }
 
-    // 群消息：官方机器人处理任务群；机器人绑定的应用按外部群策略处理
+    // 群消息：命中话题线程的先回流为话题帖子；官方机器人其余消息处理任务群；机器人绑定的应用按外部群策略处理
+    const senderType =
+      typeof sender.sender_type === 'string' ? sender.sender_type : undefined;
+    if (
+      await this.topics.handleInboundMessage(
+        row,
+        secrets,
+        source,
+        message,
+        senderType,
+      )
+    ) {
+      return;
+    }
     if (row.kind === 'official') {
       await this.taskChats.handleGroupMessage(row, secrets, source, message);
       return;

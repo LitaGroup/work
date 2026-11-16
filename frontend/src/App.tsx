@@ -44,6 +44,9 @@ const RequirementDetailPage = lazy(() =>
     default: m.RequirementDetailPage,
   })),
 )
+const TopicsPage = lazy(() =>
+  import('./pages/TopicsPage').then((m) => ({ default: m.TopicsPage })),
+)
 const DocumentDetailPage = lazy(() =>
   import('./pages/DocumentDetailPage').then((m) => ({ default: m.DocumentDetailPage })),
 )
@@ -294,6 +297,7 @@ function App() {
             <Route path="/ideas/:ideaId" element={<IdeaDetailPage />} />
             <Route path="/feedback" element={<FeedbackPage />} />
             <Route path="/feedback/:feedbackId" element={<FeedbackDetailPage />} />
+            <Route path="/topics" element={<TopicsPage />} />
             <Route path="/workbench" element={<WorkbenchPage />} />
             <Route path="/workbench/tasks/:taskId" element={<WorkbenchPage />} />
             <Route path="/robots" element={<RobotChatPage />} />

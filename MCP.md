@@ -77,11 +77,12 @@ Claude Code 的 `--header`、Codex 的 `bearer_token_env_var` 均见下文各节
 
 ### 2.1 lita-work：直接操作平台数据
 
-覆盖项目、文档、资源、节点、脚本运行、知识库、缺陷/提测、用户反馈、灵感、GitHub 代码分支、文件上传、任务协同、工单、机器人/任务定义和飞书会话历史查询、平台名义消息发送。代表性工具：
+覆盖项目、迭代成员、文档、资源、节点、脚本运行、知识库、缺陷/提测、用户反馈、灵感、GitHub 代码分支、文件上传、任务协同、工单、机器人/任务定义和飞书会话历史查询、平台名义消息发送。代表性工具：
 
 | 分类 | 代表工具 |
 |---|---|
 | 项目 / 文档 / 资源 / 节点 | `search_projects`、`get_project`、`update_project`、`read_document`、`upsert_document`、`sync_apipost_document`、`list_resources`、`read_resource`、`sync_resource`、`list_milestones`、`create_milestone`、`update_milestone`、`delete_milestone` |
+| 迭代与成员 | `update_backlog_members`（管理员或迭代项负责人机器人整体替换成员，支持 userId 与姓名） |
 | 运行 / 脚本 / 设置 | `run_check`、`run_test`、`run_export`、`run_schedule`、`get_run`、`list_runs`、`import_scripts`、`pull_scripts`、`get_settings` |
 | 知识库 | `search_knowledge`、`list_knowledge_dir`、`read_knowledge`、`create_knowledge`、`update_knowledge`、`delete_knowledge`、`read_feishu_doc` |
 | 缺陷 / 提测 | `list_defects`、`get_defect`、`create_defect`、`update_defect`、`change_defect_status`、`add_defect_record`、`delete_defect`、`list_releases`、`submit_release`、`update_release_status` |
@@ -95,7 +96,7 @@ Claude Code 的 `--header`、Codex 的 `bearer_token_env_var` 均见下文各节
 
 - 写操作按令牌身份校验：任务接受/拒绝/提问/申请验收仅机器人令牌；答复/验收/返工/判失败仅任务需求方；
 - `/project/**`、`/task/**` 知识为系统镜像，只读，变更走对应业务流程；
-- 全部 97 个工具的清单与入参见 [lita-work 接入指南](http://work.cinta.team/work-mcp.md)。
+- 全部工具的清单与入参见 [lita-work 接入指南](http://work.cinta.team/work-mcp.md)。
 
 ### 2.2 lita-bots：把平台机器人当子 Agent
 

@@ -44,6 +44,7 @@ function buildService(task: ReturnType<typeof buildTask>) {
     { find: jest.fn() } as never,
     { find: jest.fn().mockResolvedValue([]) } as never,
     { find: jest.fn().mockResolvedValue([]) } as never,
+    { find: jest.fn().mockResolvedValue([]) } as never,
     { findOneDetail: jest.fn().mockResolvedValue(task) } as never,
     taskDocuments as never,
     {

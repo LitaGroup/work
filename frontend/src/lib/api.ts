@@ -702,7 +702,6 @@ export interface Project {
   /** 备注（飞书「排期优先级」+「排期备注」同步合成；平台内可编辑，下次同步覆盖） */
   remark?: string | null
   /** 以下字段仅详情接口（GET /projects/:id）返回，列表接口（GET /projects）不包含 */
-  resources?: { frontend?: string; backend?: string; qa?: string; product?: string; client?: string } | null
   /** 飞书同步的项目有 record_id，可据此判断来源 */
   feishuRecordId?: string | null
   description?: string | null
@@ -992,6 +991,91 @@ export interface Idea {
   adoptedAt: string | null
   createdAt: string
   updatedAt: string
+}
+
+/** 话题主体类型：挂在主体下的讨论串 */
+export type TopicSubjectType = '迭代项' | '缺陷' | '任务' | '工单' | '需求'
+/** 话题优先级 */
+export type TopicPriority = '高' | '中' | '低'
+/** 话题状态：开放（默认）/ 已解决 / 已关闭（禁止新帖） */
+export type TopicStatus = '开放' | '已解决' | '已关闭'
+/** 帖子来源：平台 / 飞书群回流 */
+export type TopicPostSource = '平台' | '飞书群'
+
+export const TOPIC_SUBJECT_TYPES: TopicSubjectType[] = [
+  '迭代项',
+  '缺陷',
+  '任务',
+  '工单',
+  '需求',
+]
+export const TOPIC_PRIORITIES: TopicPriority[] = ['高', '中', '低']
+export const TOPIC_STATUSES: TopicStatus[] = ['开放', '已解决', '已关闭']
+
+/** 主体详情页 Tab 名称：backlog/任务/工单叫「话题」，缺陷/需求叫「讨论」 */
+export const TOPIC_TAB_LABELS: Record<TopicSubjectType, string> = {
+  迭代项: '话题',
+  缺陷: '讨论',
+  任务: '话题',
+  工单: '话题',
+  需求: '讨论',
+}
+
+/** 话题：挂在迭代项/缺陷/任务/工单/需求下的讨论串 */
+export interface Topic {
+  id: number
+  /** 主体类型 */
+  subjectType: TopicSubjectType
+  /** 主体 ID（backlogs/defects/tasks/tickets/projects） */
+  subjectId: number
+  /** 主体标题快照（主体改名不回填） */
+  subjectTitle: string
+  /** 标题（AI 异步生成「TP-{id}」+ 标题，人工可改） */
+  title: string
+  priority: TopicPriority
+  status: TopicStatus
+  /** 标签（自由输入，最多 10 个） */
+  tags: string[] | null
+  /** 首楼正文（Markdown） */
+  content: string
+  creatorUserId: number | null
+  creatorWorkerId: number | null
+  creatorName: string
+  /** 首楼 @ 的机器人（workers.id） */
+  mentions: number[] | null
+  /** 飞书绑定群与话题根消息（同步成功后写入） */
+  feishuChatId: string | null
+  feishuRootMessageId: string | null
+  feishuThreadId: string | null
+  postCount: number
+  lastPostAt: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+/** 话题帖子（平铺楼层 + 引用摘要） */
+export interface TopicPost {
+  id: number
+  topicId: number
+  /** 引用的帖子（同话题内） */
+  replyToPostId: number | null
+  /** 引用帖子摘要 */
+  replyTo?: {
+    id: number
+    authorName: string
+    excerpt: string
+  } | null
+  authorUserId: number | null
+  authorWorkerId: number | null
+  authorName: string
+  /** 正文（Markdown，图片内嵌 /images/...） */
+  content: string
+  /** 本帖 @ 的机器人（workers.id） */
+  mentions: number[] | null
+  /** 来源：平台 / 飞书群 */
+  source: TopicPostSource
+  sourceMessageId: string | null
+  createdAt: string
 }
 
 /** 缺陷变更记录来源：录入=前端表单 / AI=.md 接口 / 自动=脚本回归通过自动流转 */
@@ -2275,6 +2359,7 @@ export type AgentPageContextType =
   | 'project'
   | 'idea'
   | 'backlog'
+  | 'topic'
 
 /** 详情页「我的 AI」上下文：会话按 type + id 隔离，内容读取接口供 AI 取当前页面 */
 export interface AgentPageContext {
@@ -3243,6 +3328,90 @@ export const api = {
   /** 删除灵感：管理员，或创建人撤销构思中的灵感 */
   deleteIdea: (id: number) =>
     request<void>(`/ideas/${id}`, { method: 'DELETE' }),
+  /** 话题列表（不含帖子正文）：主体/状态/优先级/标签/关键词/我的关注 */
+  listTopics: (params?: {
+    subjectType?: TopicSubjectType
+    subjectId?: number
+    status?: TopicStatus
+    priority?: TopicPriority
+    tag?: string
+    q?: string
+    following?: boolean
+  }) => {
+    const qs = new URLSearchParams()
+    if (params?.subjectType) qs.set('subjectType', params.subjectType)
+    if (params?.subjectId) qs.set('subjectId', String(params.subjectId))
+    if (params?.status) qs.set('status', params.status)
+    if (params?.priority) qs.set('priority', params.priority)
+    if (params?.tag) qs.set('tag', params.tag)
+    if (params?.q) qs.set('q', params.q)
+    if (params?.following) qs.set('following', '1')
+    const suffix = qs.toString()
+    return request<Topic[]>(`/topics${suffix ? `?${suffix}` : ''}`)
+  },
+  getTopic: (id: number) => request<Topic>(`/topics/${id}`),
+  /** 帖子列表（平铺楼层 + 引用摘要，按时间正序） */
+  listTopicPosts: (id: number) =>
+    request<TopicPost[]>(`/topics/${id}/posts`),
+  /** 创建话题（正文必填，标题可省略由 AI 生成） */
+  createTopic: (input: {
+    subjectType: TopicSubjectType
+    subjectId: number
+    content: string
+    title?: string
+    priority?: TopicPriority
+    tags?: string[]
+    mentions?: number[]
+  }) =>
+    request<Topic>('/topics', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  /** 更新话题：创建人或管理员（标题/正文/优先级/标签/状态） */
+  updateTopic: (
+    id: number,
+    input: Partial<{
+      title: string
+      content: string
+      priority: TopicPriority
+      tags: string[]
+      status: TopicStatus
+    }>,
+  ) =>
+    request<Topic>(`/topics/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }),
+  /** 删除话题（仅管理员） */
+  deleteTopic: (id: number) =>
+    request<void>(`/topics/${id}`, { method: 'DELETE' }),
+  /** 发帖（平铺楼层 + 引用同话题帖子） */
+  createTopicPost: (
+    id: number,
+    input: {
+      content: string
+      replyToPostId?: number | null
+      mentions?: number[]
+    },
+  ) =>
+    request<TopicPost>(`/topics/${id}/posts`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  /** 删除帖子（仅管理员） */
+  deleteTopicPost: (id: number, postId: number) =>
+    request<void>(`/topics/${id}/posts/${postId}`, { method: 'DELETE' }),
+  /** 是否已关注 */
+  getTopicFollow: (id: number) =>
+    request<{ following: boolean }>(`/topics/${id}/follow`),
+  followTopic: (id: number) =>
+    request<void>(`/topics/${id}/follow`, { method: 'POST' }),
+  unfollowTopic: (id: number) =>
+    request<void>(`/topics/${id}/follow`, { method: 'DELETE' }),
+  /** 标签建议（最近话题出现过的标签） */
+  listTopicTags: () => request<string[]>('/topics/tags'),
+  /** 我关注的话题 */
+  listFollowingTopics: () => request<Topic[]>('/topics/following'),
   /** 上传图片（Markdown 正文内嵌用），返回可访问链接 */
   uploadImage: async (file: File): Promise<{ path: string; url: string }> => {
     const form = new FormData()

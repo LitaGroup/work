@@ -12,7 +12,9 @@ import { WorkProjectTools } from './work-tools/work-project.tools';
 import { WorkRunTools } from './work-tools/work-run.tools';
 import { WorkTaskTools } from './work-tools/work-task.tools';
 import { WorkTicketTools } from './work-tools/work-ticket.tools';
+import { WorkTopicTools } from './work-tools/work-topic.tools';
 import { WorkAgentTools } from './work-tools/work-agent.tools';
+import { WorkIterationTools } from './work-tools/work-iteration.tools';
 import type {
   McpWorkPrincipal,
   WorkToolRegistrar,
@@ -43,8 +45,10 @@ export class McpWorkService {
     fileTools: WorkFileTools,
     taskTools: WorkTaskTools,
     ticketTools: WorkTicketTools,
+    topicTools: WorkTopicTools,
     agentTools: WorkAgentTools,
     feishuTools: WorkFeishuTools,
+    iterationTools: WorkIterationTools,
   ) {
     this.registrars = [
       projectTools,
@@ -57,8 +61,10 @@ export class McpWorkService {
       fileTools,
       taskTools,
       ticketTools,
+      topicTools,
       agentTools,
       feishuTools,
+      iterationTools,
     ];
   }
 

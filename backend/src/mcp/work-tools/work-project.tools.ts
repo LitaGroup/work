@@ -65,7 +65,7 @@ export class WorkProjectTools implements WorkToolRegistrar {
       {
         title: '更新项目配置',
         description:
-          '仅更新本地字段：脚本目录、Markdown 描述、需求方、备注、人员（前端/后端/测试/产品/客户端）。只更新提供的字段，空串清除；类型/状态/优先级等来自飞书同步，不要通过本工具修改。',
+          '仅更新本地字段：脚本目录、Markdown 描述、需求方、备注。只更新提供的字段，空串清除；类型/状态/优先级等来自飞书同步，不要通过本工具修改。',
         inputSchema: {
           projectId: z.number().int().positive().describe('项目 ID'),
           scriptsPath: z
@@ -86,17 +86,6 @@ export class WorkProjectTools implements WorkToolRegistrar {
             .describe(
               '备注（飞书排期优先级/排期备注同步合成；平台内可编辑，下次同步覆盖），空串清除',
             ),
-          resources: z
-            .object({
-              frontend: z.string().optional(),
-              backend: z.string().optional(),
-              qa: z.string().optional(),
-              product: z.string().optional(),
-              client: z.string().optional(),
-            })
-            .nullable()
-            .optional()
-            .describe('人员配置；null 清除全部'),
         },
       },
       async ({ projectId, ...dto }) =>

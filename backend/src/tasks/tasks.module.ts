@@ -13,6 +13,7 @@ import { McpServersModule } from '../mcp-servers/mcp-servers.module';
 import { ModelConfigModule } from '../model-config/model-config.module';
 import { Ticket } from '../tickets/ticket.entity';
 import { TicketWorkflowRun } from '../tickets/ticket-workflow-run.entity';
+import { Topic } from '../topics/topic.entity';
 import { Task } from './task.entity';
 import { TaskEvent } from './task-event.entity';
 import { TaskExternalEvent } from './task-external-event.entity';
@@ -72,6 +73,7 @@ import { WorkbenchService } from './workbench.service';
       FeishuBotApprovalCard,
       Ticket,
       TicketWorkflowRun,
+      Topic,
     ]),
     WorkersModule,
     ExecutorsModule,
@@ -132,6 +134,7 @@ import { WorkbenchService } from './workbench.service';
     TaskRealtimeService,
     TaskTemplatesService,
     TaskWorkerInboxService,
+    TaskRequesterSessionService,
   ],
 })
 export class TasksModule {}

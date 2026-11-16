@@ -12,6 +12,7 @@ import {
   BacklogMemberRole,
   BacklogStatus,
   IterationStatus,
+  TopicSubjectType,
   WorkerRole,
 } from '../common/enums';
 import { beijingTime, mdFrontmatter } from '../common/frontmatter';
@@ -34,6 +35,8 @@ import { Backlog, BacklogMember } from './backlog.entity';
 import { BacklogDocument } from './backlog-document.entity';
 import { BacklogEvent } from './backlog-event.entity';
 import { Iteration } from './iteration.entity';
+import { Topic } from '../topics/topic.entity';
+import { topicSectionFor } from '../topics/topic-markdown';
 import {
   BacklogMemberInput,
   BacklogReleaseWorkflow,
@@ -43,25 +46,6 @@ import {
   CreateBacklogTaskInput,
   IterationActor,
 } from './iteration.types';
-
-/** 从需求人员 resources 推导成员候选（产品/技术），按姓名解析为平台用户 */
-function autoMemberCandidates(
-  resources: Project['resources'],
-): Array<{ role: BacklogMemberRole; name: string }> {
-  if (!resources) return [];
-  const mapping: Array<[BacklogMemberRole, string | undefined]> = [
-    [BacklogMemberRole.PRODUCT, resources.product],
-    [BacklogMemberRole.FRONTEND, resources.frontend],
-    [BacklogMemberRole.BACKEND, resources.backend],
-    [BacklogMemberRole.QA, resources.qa],
-    [BacklogMemberRole.CLIENT, resources.client],
-  ];
-  const out: Array<{ role: BacklogMemberRole; name: string }> = [];
-  for (const [role, raw] of mapping) {
-    for (const name of splitMemberNames(raw)) out.push({ role, name });
-  }
-  return out;
-}
 
 /** 迭代项轻量列表查询 */
 export interface BacklogListQuery {
@@ -134,6 +118,8 @@ export class BacklogsService {
     private readonly ticketRunRows: Repository<TicketWorkflowRun>,
     @InjectRepository(WorkflowDefinition)
     private readonly workflowDefs: Repository<WorkflowDefinition>,
+    @InjectRepository(Topic)
+    private readonly topicRows: Repository<Topic>,
     private readonly ticketsService: TicketsService,
     private readonly tasks: TasksService,
     private readonly chat: FeishuBotBacklogChatService,
@@ -243,7 +229,7 @@ export class BacklogsService {
 
     const projects = await this.projects.find({
       where: { id: In(projectIds) },
-      select: { id: true, name: true, resources: true },
+      select: { id: true, name: true },
     });
     const projectMap = new Map(
       projects.map((project) => [project.id, project]),
@@ -276,25 +262,6 @@ export class BacklogsService {
       this.assertAssignableWorker(workerMap.get(id), id);
     }
 
-    // 产品/技术成员从需求人员 resources 按姓名自动带入（找不到对应用户则跳过）
-    const resourceNames = new Set<string>();
-    for (const item of items) {
-      const project = projectMap.get(item.projectId)!;
-      for (const candidate of autoMemberCandidates(project.resources)) {
-        resourceNames.add(candidate.name);
-      }
-    }
-    const nameUsers = resourceNames.size
-      ? await this.users.find({
-          where: { name: In([...resourceNames]), enabled: true },
-          select: { id: true, name: true },
-        })
-      : [];
-    const userByName = new Map<string, User>();
-    for (const user of nameUsers) {
-      if (!userByName.has(user.name)) userByName.set(user.name, user);
-    }
-
     const created: Backlog[] = [];
     for (const item of items) {
       const project = projectMap.get(item.projectId)!;
@@ -302,12 +269,7 @@ export class BacklogsService {
         item.ownerWorkerId !== null && item.ownerWorkerId !== undefined
           ? (workerMap.get(item.ownerWorkerId) ?? null)
           : null;
-      const explicit = await this.normalizeMembers(item.members);
-      const members = this.mergeMembers(
-        explicit,
-        autoMemberCandidates(project.resources),
-        userByName,
-      );
+      const members = await this.normalizeMembers(item.members);
 
       let backlog = await this.backlogs.save(
         this.backlogs.create({
@@ -1059,17 +1021,28 @@ export class BacklogsService {
     return lines.join('\n');
   }
 
-  /** 更新成员（仅管理员）；不自动同步已建群成员 */
+  /** 更新成员（管理员或迭代项负责人机器人；网页负责人真人登录同样可改） */
   async updateMembers(
     id: number,
     members: BacklogMemberInput[],
     actor: IterationActor,
   ): Promise<Backlog> {
-    this.assertAdmin(actor, '仅管理员可修改迭代项成员');
     const backlog = await this.findOne(id);
+    await this.assertCanUpdateMembers(backlog, actor);
     const normalized = await this.normalizeMembers(members);
+    const previous = backlog.members ?? [];
     backlog.members = normalized.length ? normalized : null;
-    return this.backlogs.save(backlog);
+    const saved = await this.backlogs.save(backlog);
+    await this.recordEvent(
+      saved.id,
+      'members',
+      {
+        from: previous,
+        to: saved.members ?? [],
+      },
+      actor.userName,
+    );
+    return saved;
   }
 
   async findOneMarkdown(id: number): Promise<string> {
@@ -1179,6 +1152,12 @@ export class BacklogsService {
       eventsText,
       '',
     ];
+    const topicsText = await topicSectionFor(
+      this.topicRows,
+      TopicSubjectType.BACKLOG,
+      backlog.id,
+    );
+    if (topicsText) sections.push(topicsText);
     return `${head}${sections.join('\n')}\n`;
   }
 
@@ -1366,62 +1345,123 @@ export class BacklogsService {
     }
   }
 
+  /** 合并前校验角色与用户存在性（按「角色 + 用户」去重）；userId 与 name 至少提供一个 */
   private async normalizeMembers(
     input?: BacklogMemberInput[],
   ): Promise<BacklogMember[]> {
     if (!input || input.length === 0) return [];
     const validRoles = new Set<string>(Object.values(BacklogMemberRole));
-    const seen = new Set<string>();
-    const picks: BacklogMemberInput[] = [];
+    type Pick = { role: BacklogMemberRole; userId?: number; name?: string };
+    const picks: Pick[] = [];
+    const names = new Set<string>();
     for (const member of input) {
       if (!member || !validRoles.has(member.role)) {
         throw new BadRequestException(`成员角色非法：${String(member?.role)}`);
       }
-      if (!Number.isInteger(member.userId) || member.userId <= 0) {
-        throw new BadRequestException('成员用户 ID 非法');
+      if (member.userId !== undefined && member.userId !== null) {
+        if (!Number.isInteger(member.userId) || member.userId <= 0) {
+          throw new BadRequestException('成员用户 ID 非法');
+        }
+        picks.push({ role: member.role, userId: member.userId });
+        continue;
       }
-      const key = `${member.role}:${member.userId}`;
+      const memberNames = splitMemberNames(member.name);
+      if (memberNames.length === 0) {
+        throw new BadRequestException(
+          `成员「${member.role}」须提供 userId 或 name`,
+        );
+      }
+      for (const name of memberNames) {
+        names.add(name);
+        picks.push({ role: member.role, name });
+      }
+    }
+    const resolvedNames = await this.resolveUserNames([...names]);
+    const seen = new Set<string>();
+    const result: BacklogMember[] = [];
+    const userIds = [
+      ...new Set(
+        picks
+          .map((pick) => pick.userId ?? resolvedNames.get(pick.name!)?.id)
+          .filter((id): id is number => id !== undefined),
+      ),
+    ];
+    const users = userIds.length
+      ? await this.users.find({
+          where: { id: In(userIds) },
+          select: { id: true, name: true },
+        })
+      : [];
+    const userMap = new Map(users.map((user) => [user.id, user]));
+    for (const pick of picks) {
+      const resolved = pick.userId
+        ? userMap.get(pick.userId)
+        : resolvedNames.get(pick.name!);
+      if (!resolved) {
+        throw new BadRequestException(
+          pick.userId
+            ? `成员用户 #${pick.userId} 不存在`
+            : `成员用户「${pick.name}」不存在或已停用`,
+        );
+      }
+      const key = `${pick.role}:${resolved.id}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      picks.push({ role: member.role, userId: member.userId });
-    }
-    const userIds = [...new Set(picks.map((pick) => pick.userId))];
-    const users = await this.users.find({
-      where: { id: In(userIds) },
-      select: { id: true, name: true },
-    });
-    const userMap = new Map(users.map((user) => [user.id, user]));
-    return picks.map((pick) => {
-      const user = userMap.get(pick.userId);
-      if (!user) {
-        throw new BadRequestException(`成员用户 #${pick.userId} 不存在`);
-      }
-      return { role: pick.role, userId: user.id, name: user.name };
-    });
-  }
-
-  /** 合并显式成员与自动带入成员，按「角色 + 用户」去重 */
-  private mergeMembers(
-    explicit: BacklogMember[],
-    auto: Array<{ role: BacklogMemberRole; name: string }>,
-    userByName: Map<string, User>,
-  ): BacklogMember[] {
-    const result = [...explicit];
-    const keys = new Set(
-      result.map((member) => `${member.role}:${member.userId}`),
-    );
-    for (const candidate of auto) {
-      const user = userByName.get(candidate.name);
-      if (!user) continue;
-      const key = `${candidate.role}:${user.id}`;
-      if (keys.has(key)) continue;
-      keys.add(key);
-      result.push({ role: candidate.role, userId: user.id, name: user.name });
+      result.push({
+        role: pick.role,
+        userId: resolved.id,
+        name: resolved.name,
+      });
     }
     return result;
   }
 
+  /** 姓名 → 用户系统内用户（启用）；不存在/停用的姓名直接报错 */
+  private async resolveUserNames(
+    names: string[],
+  ): Promise<Map<string, { id: number; name: string }>> {
+    if (names.length === 0) return new Map();
+    const users = await this.users.find({
+      where: { name: In(names), enabled: true },
+      select: { id: true, name: true },
+    });
+    const byName = new Map<string, { id: number; name: string }>();
+    for (const user of users) {
+      if (!byName.has(user.name)) byName.set(user.name, user);
+    }
+    const missing = names.filter((name) => !byName.has(name));
+    if (missing.length > 0) {
+      throw new BadRequestException(
+        `以下成员用户不存在或已停用：${missing.join('、')}`,
+      );
+    }
+    return byName;
+  }
+
   private assertAdmin(actor: IterationActor, message: string): void {
     if (!actor.isAdmin) throw new ForbiddenException(message);
+  }
+
+  /** 成员维护权限：管理员，或该迭代项的负责人机器人（网页负责人真人登录经其真人机器人判定） */
+  private async assertCanUpdateMembers(
+    backlog: Backlog,
+    actor: IterationActor,
+  ): Promise<void> {
+    if (actor.isAdmin) return;
+    if (
+      actor.workerId !== null &&
+      actor.workerId !== undefined &&
+      backlog.ownerWorkerId === actor.workerId
+    ) {
+      return;
+    }
+    if (actor.userId !== null && backlog.ownerWorkerId !== null) {
+      const humanWorker = await this.workers.findOne({
+        where: { humanUserId: actor.userId },
+        select: { id: true },
+      });
+      if (humanWorker && backlog.ownerWorkerId === humanWorker.id) return;
+    }
+    throw new ForbiddenException('仅管理员或迭代项负责人可修改成员');
   }
 }

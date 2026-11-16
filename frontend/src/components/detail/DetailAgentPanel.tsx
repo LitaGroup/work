@@ -293,6 +293,7 @@ export function DetailAgentPanel({
         project: '项目',
         idea: '灵感',
         backlog: '迭代项',
+        topic: '话题',
       }[context.type]
     : taskId
       ? '任务'

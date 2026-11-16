@@ -10,9 +10,16 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import type { User } from '../auth/user.entity';
 import type { AuthedRequest } from '../auth/auth.guard';
-import { TaskStatus, TaskSubStatus, WorkerRole } from '../common/enums';
+import {
+  TaskStatus,
+  TaskSubStatus,
+  TopicSubjectType,
+  WorkerRole,
+} from '../common/enums';
 import { beijingTime, mdFrontmatter } from '../common/frontmatter';
 import { unescapeMarkdown } from '../common/markdown-escape';
+import { Topic } from '../topics/topic.entity';
+import { topicSectionFor } from '../topics/topic-markdown';
 import { TaskDispatchService } from '../tasks/task-dispatch.service';
 import { TaskTemplate } from '../tasks/task-template.entity';
 import { Task } from '../tasks/task.entity';
@@ -117,6 +124,8 @@ export class TicketsService {
     private readonly templates: Repository<TaskTemplate>,
     @InjectRepository(Worker)
     private readonly workers: Repository<Worker>,
+    @InjectRepository(Topic)
+    private readonly topicRows: Repository<Topic>,
     private readonly tasksService: TasksService,
     private readonly dispatchService: TaskDispatchService,
     private readonly taskDocuments: TaskDocumentService,
@@ -758,6 +767,12 @@ export class TicketsService {
           : '工单没有关联任务。',
         '',
       );
+      const topicsText = await topicSectionFor(
+        this.topicRows,
+        TopicSubjectType.TICKET,
+        ticket.id,
+      );
+      if (topicsText) lines.push(topicsText);
       return lines.join('\n');
     }
 
@@ -937,6 +952,12 @@ export class TicketsService {
         : '',
       '',
     );
+    const topicsText = await topicSectionFor(
+      this.topicRows,
+      TopicSubjectType.TICKET,
+      ticket.id,
+    );
+    if (topicsText) lines.push(topicsText);
     return lines.join('\n');
   }
 

@@ -109,6 +109,7 @@ describe('DefectsService 机器人提测缺陷派单', () => {
       { findOne: backlogFindOne } as never,
       { findOne: userFindOne } as never,
       { findOne: taskFindOne } as never,
+      {} as never,
       { onRunFinalized: jest.fn() } as never,
       { create: taskCreate } as never,
     );

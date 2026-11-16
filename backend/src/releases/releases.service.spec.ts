@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { ProjectStatus, ReleaseStatus } from '../common/enums';
 import { FeishuService } from '../feishu/feishu.service';
+import { Backlog } from '../iterations/backlog.entity';
 import { Project } from '../projects/project.entity';
 import { User } from '../auth/user.entity';
 import { Task } from '../tasks/task.entity';
@@ -25,7 +26,6 @@ describe('ReleasesService', () => {
       id: 1,
       name: '活动项目',
       status: ProjectStatus.IN_PROGRESS,
-      resources: { frontend: '张三', backend: '李四', qa: '王五' },
       ...over,
     }) as Project;
 
@@ -37,16 +37,23 @@ describe('ReleasesService', () => {
     releasesFindOne = jest.fn();
     // where.name 为 TypeORM In() FindOperator，取其 .value 还原姓名数组
     usersFind = jest.fn();
-    usersFind.mockImplementation(
-      (args?: { where?: { name?: { value?: string[] } } }) =>
-        Promise.resolve(
-          (args?.where?.name?.value ?? []).map((n) => ({
-            id: 1,
-            name: n,
-            feishuOpenId: `ou_${n}`,
-          })),
-        ),
-    );
+    usersFind.mockImplementation((args?: { where?: unknown }) => {
+      const where = args?.where;
+      const conditions = Array.isArray(where) ? where : where ? [where] : [];
+      const names = new Set<string>();
+      for (const cond of conditions as Array<{
+        name?: { value?: string[] };
+      }>) {
+        for (const name of cond?.name?.value ?? []) names.add(name);
+      }
+      return Promise.resolve(
+        [...names].map((name) => ({
+          id: names.size,
+          name,
+          feishuOpenId: `ou_${name}`,
+        })),
+      );
+    });
     tasksFindOne = jest.fn();
     sendUserCard = jest.fn();
     sendUserCard.mockResolvedValue(undefined);
@@ -72,6 +79,20 @@ describe('ReleasesService', () => {
         },
         { provide: getRepositoryToken(User), useValue: { find: usersFind } },
         {
+          provide: getRepositoryToken(Backlog),
+          useValue: {
+            find: jest.fn().mockResolvedValue([
+              {
+                id: 1,
+                members: [
+                  { role: '前端', userId: 2, name: '张三' },
+                  { role: '后端', userId: 3, name: '李四' },
+                ],
+              },
+            ]),
+          },
+        },
+        {
           provide: getRepositoryToken(Task),
           useValue: { findOne: tasksFindOne },
         },
@@ -86,7 +107,7 @@ describe('ReleasesService', () => {
     service = moduleRef.get(ReleasesService);
   });
 
-  it('提测成功：创建记录（待冒烟）+ 项目人员私聊通知', async () => {
+  it('提测成功：创建记录（待冒烟）+ 测试人员与迭代项成员私聊通知', async () => {
     const release = await service.submit(1, {
       content: ' 修复了登录问题 ',
       urls: [' https://staging.example.com ', ''],
@@ -168,6 +189,10 @@ describe('ReleasesService', () => {
         },
         { provide: getRepositoryToken(Project), useValue: missing },
         { provide: getRepositoryToken(User), useValue: { find: usersFind } },
+        {
+          provide: getRepositoryToken(Backlog),
+          useValue: { find: jest.fn().mockResolvedValue([]) },
+        },
         {
           provide: getRepositoryToken(Task),
           useValue: { findOne: jest.fn() },
@@ -327,6 +352,10 @@ describe('ReleasesService', () => {
           useValue: { findOne: jest.fn() },
         },
         { provide: getRepositoryToken(User), useValue: { find: usersFind } },
+        {
+          provide: getRepositoryToken(Backlog),
+          useValue: { find: jest.fn().mockResolvedValue([]) },
+        },
         {
           provide: getRepositoryToken(Task),
           useValue: { findOne: jest.fn() },

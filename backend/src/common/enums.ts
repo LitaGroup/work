@@ -424,3 +424,38 @@ export enum BacklogMemberRole {
   QA = '测试',
   CLIENT = '客户端',
 }
+
+/**
+ * 话题（Topic）挂载的主体类型：挂在主体下的讨论串。
+ * 主体为应用层软引用（subjectType + subjectId），不建物理外键。
+ */
+export enum TopicSubjectType {
+  BACKLOG = '迭代项',
+  DEFECT = '缺陷',
+  TASK = '任务',
+  TICKET = '工单',
+  REQUIREMENT = '需求',
+}
+
+/** 话题优先级：高/中/低（默认中） */
+export enum TopicPriority {
+  HIGH = '高',
+  MEDIUM = '中',
+  LOW = '低',
+}
+
+/**
+ * 话题状态：开放（默认，可持续讨论）→ 已解决（讨论完成）/ 已关闭（禁止新帖）。
+ * 创建人或管理员可流转，已关闭需管理员或创建人重开。
+ */
+export enum TopicStatus {
+  OPEN = '开放',
+  RESOLVED = '已解决',
+  CLOSED = '已关闭',
+}
+
+/** 话题帖子来源：平台=网页/MCP 写入；飞书群=绑定的飞书群话题消息回流 */
+export enum TopicPostSource {
+  PLATFORM = '平台',
+  FEISHU_GROUP = '飞书群',
+}
