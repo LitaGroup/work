@@ -189,77 +189,79 @@ export function BacklogSelection({
           已选 {drafts.size} 条
         </span>
       </div>
-      <Table hoverableRows>
-        <TableHeader>
-          <TableRow>
-            <TableHead className="w-14 text-center">选择</TableHead>
-            <TableHead className="w-16">ID</TableHead>
-            <TableHead>需求</TableHead>
-            <TableHead className="w-20 text-center">类型</TableHead>
-            <TableHead className="w-44 text-center">计划周(w)</TableHead>
-            <TableHead className="text-center">状态</TableHead>
-            <TableHead className="w-52 text-center">负责人</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {visible.map((project) => {
-            const checked = drafts.has(project.id)
-            const owner = drafts.get(project.id)
-            return (
-              <TableRow key={project.id}>
-                <TableCell className="text-center">
-                  <Checkbox
-                    checked={checked}
-                    onCheckedChange={(value) =>
-                      toggle(project.id, value === true)
-                    }
-                  />
-                </TableCell>
-                <TableCell>{project.id}</TableCell>
-                <TableCell className="max-w-md truncate" title={project.name}>
-                  {project.name}
-                </TableCell>
-                <TableCell className="text-center text-sm text-foreground-muted">
-                  {project.type}
-                </TableCell>
-                <TableCell className="text-center text-sm text-foreground-muted">
-                  {weekOf(project) === UNSCHEDULED_WEEK ? '未排期' : weekOf(project)}
-                </TableCell>
-                <TableCell className="text-center text-sm text-foreground-muted">
-                  {project.status}
-                </TableCell>
-                <TableCell className="text-center">
-                  <Select
-                    value={owner ? String(owner) : undefined}
-                    onValueChange={(v) => setOwner(project.id, Number(v))}
-                    items={workerItems}
-                    disabled={!checked}
-                  >
-                    <SelectTrigger aria-label="选择负责人机器人">
-                      <SelectValue
-                        placeholder={checked ? '暂不指定' : '先勾选'}
-                      />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {workers.map((worker) => (
-                        <SelectItem key={worker.id} value={String(worker.id)}>
-                          {worker.name}
-                          {worker.runtime === 'human' ? '（真人）' : ''}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </TableCell>
-              </TableRow>
-            )
-          })}
-          {visible.length === 0 && (
+      <div className="max-h-[60vh] overflow-y-auto">
+        <Table hoverableRows>
+          <TableHeader className="sticky top-0 z-10">
             <TableRow>
-              <TableCell colSpan={7}>没有匹配的需求</TableCell>
+              <TableHead className="w-14 text-center">选择</TableHead>
+              <TableHead className="w-16">ID</TableHead>
+              <TableHead>需求</TableHead>
+              <TableHead className="w-20 text-center">类型</TableHead>
+              <TableHead className="w-44 text-center">计划周(w)</TableHead>
+              <TableHead className="text-center">状态</TableHead>
+              <TableHead className="w-52 text-center">负责人</TableHead>
             </TableRow>
-          )}
-        </TableBody>
-      </Table>
+          </TableHeader>
+          <TableBody>
+            {visible.map((project) => {
+              const checked = drafts.has(project.id)
+              const owner = drafts.get(project.id)
+              return (
+                <TableRow key={project.id}>
+                  <TableCell className="text-center">
+                    <Checkbox
+                      checked={checked}
+                      onCheckedChange={(value) =>
+                        toggle(project.id, value === true)
+                      }
+                    />
+                  </TableCell>
+                  <TableCell>{project.id}</TableCell>
+                  <TableCell className="max-w-md truncate" title={project.name}>
+                    {project.name}
+                  </TableCell>
+                  <TableCell className="text-center text-sm text-foreground-muted">
+                    {project.type}
+                  </TableCell>
+                  <TableCell className="text-center text-sm text-foreground-muted">
+                    {weekOf(project) === UNSCHEDULED_WEEK ? '未排期' : weekOf(project)}
+                  </TableCell>
+                  <TableCell className="text-center text-sm text-foreground-muted">
+                    {project.status}
+                  </TableCell>
+                  <TableCell className="text-center">
+                    <Select
+                      value={owner ? String(owner) : undefined}
+                      onValueChange={(v) => setOwner(project.id, Number(v))}
+                      items={workerItems}
+                      disabled={!checked}
+                    >
+                      <SelectTrigger aria-label="选择负责人机器人">
+                        <SelectValue
+                          placeholder={checked ? '暂不指定' : '先勾选'}
+                        />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {workers.map((worker) => (
+                          <SelectItem key={worker.id} value={String(worker.id)}>
+                            {worker.name}
+                            {worker.runtime === 'human' ? '（真人）' : ''}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </TableCell>
+                </TableRow>
+              )
+            })}
+            {visible.length === 0 && (
+              <TableRow>
+                <TableCell colSpan={7}>没有匹配的需求</TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
+      </div>
     </div>
   )
 }

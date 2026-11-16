@@ -239,7 +239,7 @@ export function IterationDetailPage() {
                 <DialogTrigger render={<Button size="sm" />}>
                   添加需求
                 </DialogTrigger>
-                <DialogContent className="max-w-4xl">
+                <DialogContent className="w-full max-w-6xl">
                   <DialogHeader>
                     <DialogTitle>向「{detail.code}」添加需求</DialogTitle>
                   </DialogHeader>
