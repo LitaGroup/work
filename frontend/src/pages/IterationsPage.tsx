@@ -59,7 +59,7 @@ export function IterationsPage() {
       ITERATION_TYPES.map((type) => ({
         type,
         items: (items ?? []).filter((item) => item.type === type),
-      })).filter((group) => group.items.length > 0),
+      })),
     [items],
   )
 
@@ -98,37 +98,43 @@ export function IterationsPage() {
 
       {items && (
         <Card contentProps={{ className: 'p-0' }}>
-          {groups.length > 0 ? (
-            <div className="divide-y divide-border">
-              {groups.map((group) => (
-                <Collapsible
-                  key={group.type}
-                  defaultOpen={group.items.some((item) => item.current)}
-                >
-                  <CollapsibleTrigger className="group flex w-full items-center gap-2 px-4 py-2 text-left">
-                    <ChevronRight className="size-4 group-data-[panel-open]:hidden" />
-                    <ChevronDown className="hidden size-4 group-data-[panel-open]:block" />
-                    <span className="font-medium">{GROUP_LABELS[group.type]}</span>
-                    <span className="text-sm text-foreground-muted">
-                      共 {group.items.length} 个
-                    </span>
-                  </CollapsibleTrigger>
-                  <CollapsibleContent>
+          <div className="divide-y divide-border">
+            {groups.map((group) => (
+              <Collapsible
+                key={group.type}
+                defaultOpen={group.items.some((item) => item.current)}
+              >
+                <CollapsibleTrigger className="group flex w-full items-center gap-2 px-4 py-2 text-left">
+                  <ChevronRight className="size-4 group-data-[panel-open]:hidden" />
+                  <ChevronDown className="hidden size-4 group-data-[panel-open]:block" />
+                  <span className="font-medium">{GROUP_LABELS[group.type]}</span>
+                  <span className="text-sm text-foreground-muted">
+                    共 {group.items.length} 个
+                  </span>
+                </CollapsibleTrigger>
+                <CollapsibleContent>
+                  {group.items.length > 0 ? (
                     <div className="divide-y divide-border">
                       {group.items.map((iteration) => (
                         <IterationRow key={iteration.id} iteration={iteration} />
                       ))}
                     </div>
-                  </CollapsibleContent>
-                </Collapsible>
-              ))}
-            </div>
-          ) : (
-            <p className="px-4 py-3 text-sm text-foreground-muted">
-              暂无迭代；管理员可新建迭代或向 T0 快速通道转入需求。
-            </p>
-          )}
+                  ) : (
+                    <p className="px-4 py-3 text-sm text-foreground-muted">
+                      暂无迭代
+                    </p>
+                  )}
+                </CollapsibleContent>
+              </Collapsible>
+            ))}
+          </div>
         </Card>
+      )}
+
+      {items && items.length === 0 && (
+        <p className="mt-4 text-sm text-foreground-muted">
+          暂无迭代；管理员可新建迭代或向 T0 快速通道转入需求。
+        </p>
       )}
     </div>
   )
