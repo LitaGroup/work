@@ -21,7 +21,6 @@ import {
 } from '../../lib/api'
 import { useImeEnterGuard } from '../../lib/ime-enter'
 import { useAuth } from '../../context/AuthContext'
-import { TaskStatusBadge } from '../StatusBadge'
 import { TaskChatMessageItem } from './TaskChatMessages'
 import { toTaskChatThreadMessage } from './task-chat-message'
 import {
@@ -280,32 +279,21 @@ export function TaskWorkbenchPanel({
     >
       {/* 右侧预留详情抽屉关闭按钮的位置 */}
       <header className="shrink-0 px-3 py-2.5 pr-14">
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex flex-wrap items-center gap-1">
-            {rightTabs.map(([key, label]) => (
-              <button
-                key={key}
-                type="button"
-                onClick={() => selectRightTab(key)}
-                className={`rounded-[var(--radius-md)] px-2.5 py-1 text-sm ${
-                  currentRightTab === key
-                    ? 'bg-background-muted font-medium text-foreground-intense'
-                    : 'text-foreground-muted hover:text-foreground-intense'
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            {currentRightTab !== 'agent' && task && (
-              <TaskStatusBadge
-                status={task.status}
-                subStatus={task.subStatus}
-                showMain
-              />
-            )}
-          </div>
+        <div className="flex flex-wrap items-center gap-1">
+          {rightTabs.map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => selectRightTab(key)}
+              className={`rounded-[var(--radius-md)] px-2.5 py-1 text-sm ${
+                currentRightTab === key
+                  ? 'bg-background-muted font-medium text-foreground-intense'
+                  : 'text-foreground-muted hover:text-foreground-intense'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
         </div>
         {error && (
           <p role="alert" className="mt-2 text-[11px] text-error-foreground">
