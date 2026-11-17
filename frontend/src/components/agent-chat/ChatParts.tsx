@@ -46,7 +46,7 @@ function ChatMarkdownLink({
 
 const MARKDOWN_COMPONENTS = { a: ChatMarkdownLink }
 
-/** 机器人对话 Markdown（任务详情、工作台与机器人调试共用）
+/** 机器人对话 Markdown（任务详情、工作台与机器人对话共用）
  *  text 仅用于与 assistant-ui 的 TextMessagePartProps 保持类型兼容，
  *  实际渲染由 MarkdownTextPrimitive 从消息上下文读取。 */
 export function ChatMarkdownText({
@@ -171,7 +171,7 @@ function toolSummary(argsText?: string): string | undefined {
   return undefined
 }
 
-/** 任务对话与调试对话共用的后端工具记录结构 */
+/** 任务对话与机器人对话共用的后端工具记录结构 */
 export interface ChatToolData {
   id: string
   name: string

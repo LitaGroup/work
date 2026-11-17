@@ -17,7 +17,7 @@ import {
   type WorkerDebugSnapshot,
 } from './worker-debug.service';
 
-/** 顶部「机器人」一对一聊天会话范围（与机器人调试的 debug 会话隔离） */
+/** 顶部「机器人」一对一聊天会话范围（与我的 AI、飞书群聊等其它会话隔离） */
 export const WORKER_CHAT_SCOPE = 'chat';
 
 /** 单个聊天会话的首条消息时间与机器人信息 */
@@ -45,7 +45,7 @@ const CHAT_FIRST_PROMPT = [
  * 顶部「机器人」一对一聊天：
  * - 每个「用户 + 机器人」只维护一个 chat scope 会话，复用现有唯一索引；
  * - 仅允许当前用户与可对话的公共 AI 机器人聊天；
- * - 机器人调试（debug）、我的 AI（agent:*）使用各自 scope，互不影响。
+ * - 我的 AI（agent:*）使用各自 scope，互不影响。
  */
 @Injectable()
 export class WorkerChatService {

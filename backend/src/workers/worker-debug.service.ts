@@ -421,7 +421,7 @@ interface DebugSession {
   updatedAt: Date;
 }
 
-/** 机器人调试页默认会话范围（我的 AI 使用 agent:global / agent:task:{id}） */
+/** 默认会话范围（机器人对话 / 我的 AI / 飞书 / MCP 均显式传入自己的 scope） */
 export const DEBUG_SCOPE = 'debug';
 
 /** 历史主 Agent 模式：仅用于识别旧会话远端实际生效的模式，个人 AI 统一使用 build */

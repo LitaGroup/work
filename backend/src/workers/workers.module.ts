@@ -19,7 +19,6 @@ import { WorkerSkillCatalogService } from './worker-skill-catalog.service';
 import { WorkerStandardCatalogService } from './worker-standard-catalog.service';
 import { WorkerChatController } from './worker-chat.controller';
 import { WorkerChatService } from './worker-chat.service';
-import { WorkerDebugController } from './worker-debug.controller';
 import { WorkerDebugService } from './worker-debug.service';
 import { PersonalAgentsService } from './personal-agents.service';
 import { WorkersController } from './workers.controller';
@@ -47,7 +46,6 @@ import { WorkersService } from './workers.service';
     McpServersModule,
   ],
   controllers: [
-    WorkerDebugController,
     WorkerChatController,
     WorkersListMarkdownController,
     WorkersMarkdownController,

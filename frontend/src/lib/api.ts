@@ -1713,7 +1713,7 @@ export interface WorkerChatSession {
   startedAt: string
 }
 
-/** 可调试 Agent（仅启用、执行器在线且模型配置完整的机器人） */
+/** 可对话 Agent（仅启用、执行器在线且模型配置完整的机器人） */
 export interface WorkerDebugOption {
   id: number
   name: string
@@ -1726,7 +1726,7 @@ export interface WorkerDebugOption {
   variant: string | null
 }
 
-/** 机器人提问（调试对话中的问答卡片，结构与任务对话的 TaskChatQuestion 一致） */
+/** 机器人提问（机器人对话中的问答卡片，结构与任务对话的 TaskChatQuestion 一致） */
 export interface WorkerDebugQuestion {
   id: string
   /** 提问所在 opencode 会话（可能是子会话） */
@@ -1808,14 +1808,14 @@ export interface WorkerDebugModelCatalog {
   providers: WorkerDebugModelProvider[]
 }
 
-/** opencode 待办（todowrite 工具产出，随调试快照返回） */
+/** opencode 待办（todowrite 工具产出，随会话快照返回） */
 export interface WorkerDebugTodo {
   content: string
   status: 'pending' | 'in_progress' | 'completed' | 'cancelled'
   priority?: string
 }
 
-/** 调试对话快照；同一用户 + 机器人固定绑定一个 sessionId，7 天不活跃才重置 */
+/** 机器人对话快照；同一用户 + 机器人固定绑定一个 sessionId，7 天不活跃才重置 */
 export interface WorkerDebugSnapshot {
   worker: WorkerDebugOption
   /** 当前选择/生效的模型与思考等级 */
@@ -1823,7 +1823,7 @@ export interface WorkerDebugSnapshot {
   sessionId: string | null
   status: 'idle' | 'running'
   messages: WorkerDebugMessage[]
-  /** 最近一次 todowrite 的待办清单（右侧待办面板数据源） */
+  /** 最近一次 todowrite 的待办清单 */
   todos: WorkerDebugTodo[]
   error: string | null
   updatedAt: string
@@ -4071,38 +4071,6 @@ export const api = {
   /** 顶部「机器人」：清空消息并解绑 opencode 会话 */
   resetWorkerChat: (workerId: number) =>
     request<WorkerDebugSnapshot>(`/worker-chats/${workerId}/reset`, {
-      method: 'POST',
-    }),
-  /** 当前用户与机器人的调试会话快照（含最近一次 todowrite 待办） */
-  getWorkerDebugSnapshot: (workerId: number) =>
-    request<WorkerDebugSnapshot>(`/workers/${workerId}/debug`),
-  /** 发送一轮消息；立即返回 running，轮询快照取得最终回复 */
-  sendWorkerDebugMessage: (workerId: number, content: string) =>
-    request<WorkerDebugSnapshot>(`/workers/${workerId}/debug/messages`, {
-      method: 'POST',
-      body: JSON.stringify({ content }),
-    }),
-  /** 中断当前轮次，保留 opencode 会话与多轮上下文 */
-  interruptWorkerDebug: (workerId: number) =>
-    request<WorkerDebugSnapshot>(`/workers/${workerId}/debug/interrupt`, {
-      method: 'POST',
-    }),
-  /** 回答（answers）或跳过（null）调试对话中的机器人提问 */
-  replyWorkerDebugQuestion: (
-    workerId: number,
-    questionId: string,
-    answers: string[][] | null,
-  ) =>
-    request<WorkerDebugSnapshot>(
-      `/workers/${workerId}/debug/questions/${encodeURIComponent(questionId)}/reply`,
-      {
-        method: 'POST',
-        body: JSON.stringify(answers ? { answers } : { reject: true }),
-      },
-    ),
-  /** 清空对话并解绑旧会话；下一条消息创建新会话 */
-  resetWorkerDebug: (workerId: number) =>
-    request<WorkerDebugSnapshot>(`/workers/${workerId}/debug/reset`, {
       method: 'POST',
     }),
 

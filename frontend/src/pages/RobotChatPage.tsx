@@ -19,7 +19,7 @@ import { DebugChat } from '../components/agent-chat/DebugChat'
 
 /**
  * 顶部「机器人」：左侧会话 / 全部机器人，右侧统一聊天区。
- * 每个用户与每个机器人固定一个 chat 会话（与机器人调试、我的 AI 隔离），
+ * 每个用户与每个机器人固定一个 chat 会话（与我的 AI 隔离），
  * 可重置；消息经 SSE 实时推送，支持附件上传与机器人提问。
  */
 export function RobotChatPage() {

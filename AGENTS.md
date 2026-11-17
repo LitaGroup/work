@@ -64,7 +64,7 @@
 - `backend/src/tasks/`：任务状态机、任务定义、派发、协同、文档、工作台和实时流。
 - `backend/src/wakeups/`：机器人定时唤醒（任务会话与「我的 AI」会话共用，到期扫描投递并恢复会话）。
 - `backend/src/tickets/`、`workflows/`：工单、工作流定义、发布版本和运行时流转。
-- `backend/src/workers/`、`executors/`：机器人、个人 AGENT、工位初始化、调试会话、opencode 执行器。
+- `backend/src/workers/`、`executors/`：机器人、个人 AGENT、工位初始化、机器人对话会话、opencode 执行器。
 - `backend/src/knowledge/`：知识树、全文/向量混合检索与 Embedding 队列。
 - `backend/src/defects/`、`releases/`、`feedbacks/`：缺陷、项目提测与用户反馈（业务分区「反馈」，独立实体 `feedbacks`）；`ideas/`：灵感（业务分区「灵感」，采纳后关联需求池）。
 - `backend/src/feishu/`、`feishu-bot/`：飞书只读导入、机器人长连接与任务群。
@@ -215,14 +215,14 @@
 - 系统机器人默认不能绑定飞书应用，唯一例外是 `systemKey=feedback-handler`「系统-反馈处理」：绑定飞书应用进入用户反馈群做话题采集与分发。
 - 真人机器人通过 `workers.humanUserId` 与用户唯一绑定，`runtime=human`，以人为执行器，可并行执行多个任务，不走 opencode 会话。
 - AI 机器人按 `workers.maxParallelTasks`（默认 3，1 为串行）并行执行任务，达到上限后新任务保持等待；等待、待验收等非执行状态不占用执行容量。
-- 机器人可配置备用模型（`workers.backupProviderId/backupModelId/backupVariant`）：主模型命中 429/限流/配额/余额/Token 用尽等限额错误时自动切换。限额识别与冷却在 `executors/model-availability.ts`，冷却按「执行器 + 供应商 + 模型」共享并固定 30 分钟（进程内内存），到期自动回主模型；与主模型相同的备用配置视为未配置。任务会话在原会话 `switchModel` 后自动续跑（每轮最多切一次），一次性会话、调试/我的 AI、工位初始化同样优先使用未冷却的模型；未配置备用或备用也失败时保持原有失败流程。
+- 机器人可配置备用模型（`workers.backupProviderId/backupModelId/backupVariant`）：主模型命中 429/限流/配额/余额/Token 用尽等限额错误时自动切换。限额识别与冷却在 `executors/model-availability.ts`，冷却按「执行器 + 供应商 + 模型」共享并固定 30 分钟（进程内内存），到期自动回主模型；与主模型相同的备用配置视为未配置。任务会话在原会话 `switchModel` 后自动续跑（每轮最多切一次），一次性会话、机器人对话/我的 AI、工位初始化同样优先使用未冷却的模型；未配置备用或备用也失败时保持原有失败流程。
 - 一次性会话（需求方自动回复/提问答复/自动验收、提测通知）不占用任务的执行容量，同一需求方机器人同一时刻只运行一个一次性会话。
 - 个人 AGENT 通过 `personalAgentUserId` 唯一绑定，只服务「我的 AI」对话，不出现在对外机器人清单，不承接任务分配或工单执行，不可网页删除。
 - 工位目录：production 为 `{WORKER_BASE_DIR}/worker/{id}`，其他环境为 `{WORKER_BASE_DIR}/worker-dev/{id}`。
 - 机器人工位同步 `AGENTS.md`、`.opencode/skills` 和规范到 `.opencode/rules/`；技能引用技能库 `SKILL.md`（lita-work / knowledge-search / file-upload 等平台能力技能已下线，目录不再展示、保存时自动丢弃），规范引用规范库目录的 `README.md`。取消规范只清理 manifest 记录的受管文件，保留机器人自有文档。
 - 工位 `.opencode/opencode.json` 由平台初始化/派发时注入 MCP 配置：固定 `lita-work`（`{APP_URL}/api/mcp/work` + 机器人令牌）与机器人勾选的自定义 MCP（管理区「MCP 配置」，`workers.mcps`），权限 600，纳入受管文件，机器人不得读取展示、改写或删除；令牌只经服务端落盘。MCP 鉴权支持固定令牌（明文落盘）、环境变量（`{env:NAME}` 占位，凭据不落盘）与机器人自身 `LITA_WORK_TOKEN`。
 - opencode 集成位于 `executors/`：HTTP Basic 鉴权、会话/prompt/interrupt、SSE 事件和提问。会话终态必须匹配当前 session，不能只凭进程或连接状态判断任务完成。
-- 调试会话落 `worker_debug_sessions`，按 `userId + workerId + contextKey` 唯一绑定；机器人调试、通用我的 AI、每个任务会话相互隔离，7 天不活跃重置。
+- 调试会话落 `worker_debug_sessions`，按 `userId + workerId + contextKey` 唯一绑定；机器人对话（管理区列表「对话」跳顶部 `/robots/{id}`）、通用我的 AI、每个任务会话相互隔离，7 天不活跃重置。
 
 ### 任务处理中心
 

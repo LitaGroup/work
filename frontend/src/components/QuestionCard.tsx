@@ -20,7 +20,7 @@ interface QuestionCardProps {
 }
 
 /**
- * 机器人提问卡片主体（任务详情页与机器人调试页共用）：
+ * 机器人提问卡片主体（任务详情页与机器人对话共用）：
  * 逐题回答 + 单选/多选选项 + 自由输入 + 跳过，最后统一提交。
  */
 export function QuestionCard({

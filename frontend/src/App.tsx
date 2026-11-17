@@ -153,9 +153,6 @@ const WorkersPage = lazy(() =>
 const WorkerEditPage = lazy(() =>
   import('./pages/WorkerEditPage').then((m) => ({ default: m.WorkerEditPage })),
 )
-const WorkerDebugPage = lazy(() =>
-  import('./pages/WorkerDebugPage').then((m) => ({ default: m.WorkerDebugPage })),
-)
 const ExecutorsPage = lazy(() =>
   import('./pages/ExecutorsPage').then((m) => ({ default: m.ExecutorsPage })),
 )
@@ -259,12 +256,10 @@ function LegacyWorkerRedirect() {
   return <Navigate to={`/admin/workers/${workerId}`} replace />
 }
 
-/** 机器人调试已迁移到管理模块：保留旧链接兼容 */
+/** 机器人调试页已下线：旧链接跳到顶部「机器人」对话页 */
 function LegacyWorkerDebugRedirect() {
   const { workerId } = useParams<{ workerId: string }>()
-  return (
-    <Navigate to={`/admin/workers/${workerId}/debug`} replace />
-  )
+  return <Navigate to={`/robots/${workerId}`} replace />
 }
 
 /** 话题主体类型 → 主体详情页路径前缀（与后端 topicWebPath 保持一致） */
@@ -507,7 +502,7 @@ function App() {
               path="/tasks/workers/:workerId/debug"
               element={<LegacyWorkerDebugRedirect />}
             />
-            {/* 调试入口已并入机器人列表行内按钮：旧链接兼容 */}
+            {/* 调试页已下线：旧链接兼容 */}
             <Route
               path="/tasks/debug"
               element={<Navigate to="/admin/workers" replace />}
@@ -534,7 +529,7 @@ function App() {
               <Route path="/admin/workers/:workerId" element={<WorkerEditPage />} />
               <Route
                 path="/admin/workers/:workerId/debug"
-                element={<WorkerDebugPage />}
+                element={<LegacyWorkerDebugRedirect />}
               />
               <Route path="/admin/executors" element={<ExecutorsPage />} />
               <Route path="/admin/users" element={<UserListPage />} />

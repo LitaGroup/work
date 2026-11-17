@@ -338,10 +338,10 @@ export function WorkersPage() {
                 <div className="flex justify-center gap-2">
                   {!w.humanUserId && (
                     <Link
-                      to={`/admin/workers/${w.id}/debug`}
+                      to={`/robots/${w.id}`}
                       className={buttonVariants({ variant: 'outline', size: 'sm' })}
                     >
-                      调试
+                      对话
                     </Link>
                   )}
                   <Link
