@@ -36,6 +36,7 @@ import {
 import { PageBreadcrumb } from '../components/PageBreadcrumb'
 import { BacklogSelection } from '../components/BacklogSelection'
 import { BacklogStatusDialog } from '../components/BacklogStatusDialog'
+import { IterationDescription } from '../components/IterationDescription'
 import { BacklogStatusBadge, IterationStatusBadge } from '../components/StatusBadge'
 import { useAuth } from '../context/AuthContext'
 
@@ -204,13 +205,27 @@ export function IterationDetailPage() {
             <IterationStatusBadge status={detail.status} />
             {detail.current && <Badge variant="soft">当前迭代</Badge>}
           </h1>
-          <p className="mt-1 text-sm text-foreground-muted">
-            {detail.type !== 'T0'
-              ? `${detail.startAt ?? '?'} ~ ${detail.endAt ?? '?'}`
-              : '常驻快速通道'}
-            {' · '}
-            共 {detail.total} 条，已完成 {detail.done} 条（{detail.percent}%）
-          </p>
+          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-foreground-muted">
+            <IterationDescription
+              iterationId={detail.id}
+              value={detail.description}
+              canEdit={isAdmin}
+              onSaved={(description) =>
+                setDetail((prev) =>
+                  prev ? { ...prev, description } : prev,
+                )
+              }
+            />
+            <span>
+              {detail.type !== 'T0'
+                ? `${detail.startAt ?? '?'} ~ ${detail.endAt ?? '?'}`
+                : '常驻快速通道'}
+            </span>
+            <span>·</span>
+            <span>
+              共 {detail.total} 条，已完成 {detail.done} 条（{detail.percent}%）
+            </span>
+          </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {isAdmin && (

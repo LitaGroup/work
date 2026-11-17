@@ -537,19 +537,25 @@ export class FeishuBotClientService {
 
   // ---- 群管理（任务群） ----
 
-  /** 读取群基本信息（群名等）；机器人须在群内且有 im:chat:readonly 权限 */
+  /**
+   * 读取群基本信息（群名、群状态等）；机器人须在群内且有 im:chat:readonly 权限。
+   * chatStatus 为 normal / dissolved / dissolved_save，用于判断群是否仍可用。
+   */
   async getChatInfo(
     configId: number,
     secrets: FeishuBotSecrets,
     chatId: string,
-  ): Promise<{ name: string | null }> {
+  ): Promise<{ name: string | null; chatStatus: string | null }> {
     const data = await this.request(
       configId,
       secrets,
       'GET',
       `/im/v1/chats/${encodeURIComponent(chatId)}`,
     );
-    return { name: readString(data, 'name') };
+    return {
+      name: readString(data, 'name'),
+      chatStatus: readString(data, 'chat_status'),
+    };
   }
 
   /**

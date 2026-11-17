@@ -914,6 +914,11 @@ export function BacklogDetailPage() {
               {' · '}负责人 {backlog.ownerName ?? '未指定'}
               {' · '}预期上线 {formatHour(backlog.expectedOnlineAt)}
             </p>
+            {backlog.feishuChat?.lastError && (
+              <p className="mt-1 text-xs text-foreground-muted">
+                飞书群同步异常：{backlog.feishuChat.lastError}
+              </p>
+            )}
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {backlog.feishuChat?.state === 'active' && backlog.feishuChat.chatId && (
@@ -927,7 +932,7 @@ export function BacklogDetailPage() {
                     'noopener',
                   )
                 }
-                title="在飞书客户端打开迭代沟通群"
+                title="在飞书客户端打开迭代沟通群（仅群成员可打开）"
               >
                 打开飞书群
               </Button>

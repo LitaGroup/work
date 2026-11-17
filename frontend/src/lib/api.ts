@@ -774,6 +774,8 @@ export interface IterationSummary extends IterationProgress {
   /** 唯一标识：T0 固定为 T0；T7 如 2026W47；Tx 如 2026Tx01 */
   code: string
   type: IterationType
+  /** 描述（可空，默认空；管理员可在迭代页就地编辑，最长 200 字） */
+  description: string | null
   startAt: string | null
   endAt: string | null
   status: IterationStatus
@@ -2689,6 +2691,8 @@ export const api = {
       startAt?: string | null
       endAt?: string | null
       status?: IterationStatus
+      /** 描述（可空；最长 200 字，传 null 清空） */
+      description?: string | null
     },
   ) =>
     request<IterationSummary>(`/iterations/${id}`, {

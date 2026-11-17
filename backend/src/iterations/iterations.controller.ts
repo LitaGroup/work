@@ -61,6 +61,8 @@ class UpdateIterationDto implements UpdateIterationInput {
   endAt?: string | null;
   /** 进行中 / 已结束 */
   status?: IterationStatus;
+  /** 描述（可空；最长 200 字，传 null 清空） */
+  description?: string | null;
 }
 
 class CreateBacklogItemDto implements CreateBacklogItemInput {

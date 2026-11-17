@@ -29,6 +29,10 @@ export class Iteration {
   @Column({ type: 'enum', enum: IterationType, default: IterationType.T7 })
   type: IterationType;
 
+  /** 描述（可空，平台内维护；默认空，管理员可在迭代页就地编辑） */
+  @Column({ type: 'text', nullable: true })
+  description: string | null;
+
   /** 开始日期（T7/Tx 必填；T0 为空） */
   @Column({ type: 'date', nullable: true })
   startAt: string | null;

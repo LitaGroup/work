@@ -1,5 +1,5 @@
 import { BadRequestException, ForbiddenException } from '@nestjs/common';
-import { BacklogStatus, IterationType } from '../common/enums';
+import { BacklogStatus, IterationStatus, IterationType } from '../common/enums';
 import { backlogChatName } from '../feishu-bot/feishu-bot-backlog-chat.service';
 import { Backlog } from './backlog.entity';
 import { BacklogsService } from './backlogs.service';
@@ -181,6 +181,62 @@ const adminActor: IterationActor = {
   userName: '管理员',
   isAdmin: true,
 };
+
+function iterationRow(overrides?: Partial<Iteration>): Iteration {
+  return {
+    id: 9,
+    code: '2026W47',
+    type: IterationType.T7,
+    description: null,
+    startAt: '2026-11-17',
+    endAt: '2026-11-23',
+    status: IterationStatus.ACTIVE,
+    createdAt: new Date('2026-11-17T02:00:00Z'),
+    updatedAt: new Date('2026-11-17T02:00:00Z'),
+    ...overrides,
+  };
+}
+
+describe('IterationsService.update 描述', () => {
+  it('管理员可设置描述并去除首尾空白', async () => {
+    const { service, iterations } = makeIterationsService({
+      taken: iterationRow(),
+    });
+    const updated = await service.update(
+      9,
+      { description: '  本周重点：迭代详情内联展开  ' },
+      adminActor,
+    );
+    expect(updated.description).toBe('本周重点：迭代详情内联展开');
+    expect(iterations.save).toHaveBeenCalled();
+  });
+
+  it('空白描述落为 null（清空）', async () => {
+    const { service } = makeIterationsService({
+      taken: iterationRow({ description: '旧描述' }),
+    });
+    const updated = await service.update(9, { description: '   ' }, adminActor);
+    expect(updated.description).toBeNull();
+  });
+
+  it('描述超过 200 字拒绝更新', async () => {
+    const { service } = makeIterationsService({ taken: iterationRow() });
+    await expect(
+      service.update(9, { description: '长'.repeat(201) }, adminActor),
+    ).rejects.toThrow(/不能超过 200/);
+  });
+
+  it('非管理员不可修改描述', async () => {
+    const { service } = makeIterationsService({ taken: iterationRow() });
+    await expect(
+      service.update(
+        9,
+        { description: '越权' },
+        { ...adminActor, isAdmin: false },
+      ),
+    ).rejects.toThrow(ForbiddenException);
+  });
+});
 
 describe('IterationsService.create', () => {
   it('T7 按开始日期所在周自动生成标识', async () => {

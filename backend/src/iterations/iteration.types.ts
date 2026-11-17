@@ -31,6 +31,8 @@ export interface UpdateIterationInput {
   startAt?: string | null;
   endAt?: string | null;
   status?: IterationStatus;
+  /** 描述（可空；传 null 清空，最长 200 字） */
+  description?: string | null;
 }
 
 /** 迭代项成员入参：角色 + 机器人（AI 用 workerId；真人用 userId/name，后端映射为其真人机器人） */
@@ -122,6 +124,8 @@ export interface IterationSummaryView extends IterationProgress {
   id: number;
   code: string;
   type: IterationType;
+  /** 描述（可空，默认空） */
+  description: string | null;
   startAt: string | null;
   endAt: string | null;
   status: IterationStatus;

@@ -17,6 +17,18 @@ import {
   SelectItem,
 } from '@appica/ui-react/select'
 import {
+  Combobox,
+  ComboboxTrigger,
+  ComboboxValue,
+  ComboboxInput,
+  ComboboxContent,
+  ComboboxEmpty,
+  ComboboxList,
+  ComboboxItem,
+  createComboboxItems,
+} from '@appica/ui-react/combobox'
+import { ScrollArea } from '@appica/ui-react/scroll-area'
+import {
   api,
   PROJECT_TYPES,
   type Project,
@@ -73,8 +85,13 @@ export function BacklogSelection({
     }
   }, [])
 
-  const workerItems = useMemo(
-    () => Object.fromEntries(workers.map((w) => [String(w.id), w.name])),
+  // 负责人机器人：数量多，用可搜索 Combobox（原文 + 拼音）
+  const workerOptions = useMemo(
+    () =>
+      createComboboxItems(workers, {
+        getValue: (worker: Worker) => String(worker.id),
+        getLabel: (worker: Worker) => worker.name,
+      }),
     [workers],
   )
 
@@ -222,7 +239,6 @@ export function BacklogSelection({
               <TableHead>需求</TableHead>
               <TableHead className="w-20 text-center">类型</TableHead>
               <TableHead className="w-44 text-center">计划周(w)</TableHead>
-              <TableHead className="text-center">状态</TableHead>
               <TableHead className="w-52 text-center">负责人</TableHead>
             </TableRow>
           </TableHeader>
@@ -250,37 +266,60 @@ export function BacklogSelection({
                   <TableCell className="text-center text-sm text-foreground-muted">
                     {weekOf(project) === UNSCHEDULED_WEEK ? '未排期' : weekOf(project)}
                   </TableCell>
-                  <TableCell className="text-center text-sm text-foreground-muted">
-                    {project.status}
-                  </TableCell>
                   <TableCell className="text-center">
-                    <Select
-                      value={owner ? String(owner) : undefined}
-                      onValueChange={(v) => setOwner(project.id, Number(v))}
-                      items={workerItems}
+                    <Combobox
+                      items={workerOptions}
+                      value={owner ? String(owner) : null}
+                      onValueChange={(value) => {
+                        if (value != null) setOwner(project.id, Number(value))
+                      }}
+                      filter={(worker: Worker, query: string) =>
+                        matchesPinyinSearch(query, [worker.name])
+                      }
                       disabled={!checked}
                     >
-                      <SelectTrigger aria-label="选择负责人机器人">
-                        <SelectValue
+                      <ComboboxTrigger
+                        className="w-full"
+                        aria-label="选择负责人机器人"
+                      >
+                        <ComboboxValue
                           placeholder={checked ? '暂不指定' : '先勾选'}
                         />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {workers.map((worker) => (
-                          <SelectItem key={worker.id} value={String(worker.id)}>
-                            {worker.name}
-                            {worker.runtime === 'human' ? '（真人）' : ''}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                      </ComboboxTrigger>
+                      <ComboboxContent>
+                        <div className="px-2 pb-2 group-data-empty/combobox-content:pt-2">
+                          <ComboboxInput
+                            placeholder="搜索机器人名称"
+                            aria-label="搜索负责人机器人"
+                          />
+                        </div>
+                        <ScrollArea className="max-h-64">
+                          <ComboboxEmpty>没有匹配的机器人</ComboboxEmpty>
+                          <ComboboxList className="overflow-y-visible">
+                            {(worker: Worker) => (
+                              <ComboboxItem
+                                key={worker.id}
+                                value={String(worker.id)}
+                              >
+                                <span className="truncate">{worker.name}</span>
+                                {worker.runtime === 'human' && (
+                                  <span className="ms-auto ps-3 text-xs text-foreground-muted">
+                                    真人
+                                  </span>
+                                )}
+                              </ComboboxItem>
+                            )}
+                          </ComboboxList>
+                        </ScrollArea>
+                      </ComboboxContent>
+                    </Combobox>
                   </TableCell>
                 </TableRow>
               )
             })}
             {visible.length === 0 && (
               <TableRow>
-                <TableCell colSpan={7}>没有匹配的需求</TableCell>
+                <TableCell colSpan={6}>没有匹配的需求</TableCell>
               </TableRow>
             )}
           </TableBody>

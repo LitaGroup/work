@@ -27,6 +27,9 @@ export const T0_ITERATION_CODE = 'T0';
 /** 列表查询上限（迭代数量有限） */
 const LIST_LIMIT = 500;
 
+/** 迭代描述最大长度（与前端输入上限一致） */
+export const ITERATION_DESCRIPTION_MAX = 200;
+
 /** 一天的毫秒数（自然周计算使用 UTC 日差，避免时区与夏令时干扰） */
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -261,6 +264,9 @@ export class IterationsService implements OnModuleInit {
     }
     iteration.startAt = nextStart;
     iteration.endAt = nextEnd;
+    if (input.description !== undefined) {
+      iteration.description = this.normalizeDescription(input.description);
+    }
     if (input.status !== undefined) {
       if (!Object.values(IterationStatus).includes(input.status)) {
         throw new BadRequestException('迭代状态仅允许：进行中/已结束');
@@ -325,6 +331,7 @@ export class IterationsService implements OnModuleInit {
       `- 唯一标识：${detail.code}`,
       `- 类型：${detail.type}`,
       `- 状态：${detail.status}`,
+      ...(detail.description ? [`- 描述：${detail.description}`] : []),
       `- 起止：${this.dateRangeText(detail.startAt, detail.endAt)}`,
       `- 迭代项：${detail.total} 个，已完成 ${detail.done} 个（${detail.percent}%）`,
       `- 平台链接：/iterations/${detail.id}`,
@@ -397,6 +404,7 @@ export class IterationsService implements OnModuleInit {
       id: iteration.id,
       code: iteration.code,
       type: iteration.type,
+      description: iteration.description ?? null,
       startAt: iteration.startAt,
       endAt: iteration.endAt,
       status: iteration.status,
@@ -444,6 +452,19 @@ export class IterationsService implements OnModuleInit {
       throw new BadRequestException(`${label}格式须为 YYYY-MM-DD`);
     }
     return trimmed;
+  }
+
+  /** 迭代描述：去首尾空白，空串落 null，最长 200 字 */
+  private normalizeDescription(
+    value: string | null | undefined,
+  ): string | null {
+    const trimmed = String(value ?? '').trim();
+    if (trimmed.length > ITERATION_DESCRIPTION_MAX) {
+      throw new BadRequestException(
+        `迭代描述不能超过 ${ITERATION_DESCRIPTION_MAX} 个字符`,
+      );
+    }
+    return trimmed || null;
   }
 
   private assertDateOrder(startAt: string, endAt: string): void {

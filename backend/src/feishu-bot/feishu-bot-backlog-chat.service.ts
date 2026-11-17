@@ -41,6 +41,9 @@ const MAX_BOT_MEMBERS = 5;
 /** 群名总长度上限 */
 const CHAT_NAME_LIMIT = 80;
 
+/** 飞书错误码：chat_id 无效（群不存在或已永久解散） */
+const CHAT_MISSING_ERROR_CODE = 'code=232006';
+
 /** 终态：完成 / 取消 */
 export function isBacklogTerminal(status: BacklogStatus): boolean {
   return (
@@ -280,8 +283,11 @@ export class FeishuBotBacklogChatService
           return;
         }
         if (fresh.state !== 'active' || !fresh.chatId) return;
+        if (!(await this.ensureChatAlive(fresh, secrets))) return;
 
-        await this.syncMembersInternal(fresh, backlog, official, secrets);
+        if (!isBacklogTerminal(backlog.status)) {
+          await this.syncMembersInternal(fresh, backlog, official, secrets);
+        }
         await this.markFinished(fresh, backlog);
         if (fresh.lastStatus !== backlog.status) {
           await this.sendStatusCard(fresh, backlog, official, secrets);
@@ -516,6 +522,54 @@ export class FeishuBotBacklogChatService
   }
 
   /**
+   * 群存活校验：飞书侧已解散（chat_status=dissolved / dissolved_save）或 chat_id 失效时
+   * 重置绑定，让详情页重新提供「飞书建群」入口；其它错误仅告警并保持现状。
+   */
+  private async ensureChatAlive(
+    row: FeishuBotBacklogChat,
+    secrets: FeishuBotSecrets,
+  ): Promise<boolean> {
+    if (!row.chatId) return false;
+    try {
+      const info = await this.client.getChatInfo(
+        row.officialConfigId,
+        secrets,
+        row.chatId,
+      );
+      if (
+        info.chatStatus === 'dissolved' ||
+        info.chatStatus === 'dissolved_save'
+      ) {
+        await this.resetChat(row, '飞书群已在飞书侧解散，可重新建群');
+        return false;
+      }
+      return true;
+    } catch (error) {
+      const message = (error as Error).message;
+      if (isChatMissingError(message)) {
+        await this.resetChat(row, '飞书群已不存在，可重新建群');
+        return false;
+      }
+      this.logger.warn(
+        `迭代沟通群存活校验失败（backlog#${row.backlogId}）: ${message}`,
+      );
+      return true;
+    }
+  }
+
+  /** 群已不可用：置为 destroyed 并记录原因，下次「飞书建群」会重建绑定 */
+  private async resetChat(
+    row: FeishuBotBacklogChat,
+    lastError: string,
+  ): Promise<void> {
+    await this.chats.update(row.id, { state: 'destroyed', lastError });
+    row.state = 'destroyed';
+    this.logger.warn(
+      `迭代沟通群在飞书侧不可用，重置绑定（chat ${row.chatId}）: ${lastError}`,
+    );
+  }
+
+  /**
    * 成员变化后把新增成员拉进已有群（只加不减）。
    * 由迭代项成员保存 / 负责人变化 / 需求方联动触发；无群或终态时直接返回。
    */
@@ -540,7 +594,12 @@ export class FeishuBotBacklogChatService
     });
   }
 
-  /** 增量同步群成员：与已跟踪的机器人集合求差集后只补加缺失成员 */
+  /**
+   * 增量同步群成员：与已跟踪的机器人集合求差集后只补加缺失成员。
+   * 升级前的存量群没有跟踪记录（memberWorkerIds 为空），此时按全部当前成员补拉：
+   * 旧版本建群后从不补拉真人成员，不能假定他们已在群内；
+   * 飞书拉人接口 succeed_type=1 会忽略已入群/非法成员，重复调用是安全的。
+   */
   private async syncMembersInternal(
     row: FeishuBotBacklogChat,
     backlog: Backlog,
@@ -550,16 +609,6 @@ export class FeishuBotBacklogChatService
     if (!row.chatId) return;
     const resolved = await this.resolveMembers(official, backlog);
     const added = new Set(row.memberWorkerIds ?? []);
-
-    // 存量群首次同步（升级前无跟踪）：视为当前成员已入群，仅补建跟踪避免重复拉人
-    if (added.size === 0) {
-      const seed = resolved.targets.map((target) => target.workerId);
-      if (seed.length === 0) return;
-      await this.chats.update(row.id, { memberWorkerIds: seed });
-      row.memberWorkerIds = seed;
-      return;
-    }
-
     const newTargets = resolved.targets.filter(
       (target) => !added.has(target.workerId),
     );
@@ -745,6 +794,14 @@ export class FeishuBotBacklogChatService
       this.logger.log(`迭代沟通群已解散：chat ${row.chatId}`);
     } catch (error) {
       const message = (error as Error).message;
+      if (isChatMissingError(message)) {
+        await this.chats.update(row.id, {
+          state: 'destroyed',
+          lastError: null,
+        });
+        this.logger.log(`迭代沟通群已不存在：chat ${row.chatId}`);
+        return;
+      }
       await this.chats.update(row.id, { lastError: message });
       this.logger.warn(`迭代沟通群解散失败（chat ${row.chatId}）: ${message}`);
     }
@@ -767,6 +824,11 @@ export class FeishuBotBacklogChatService
       if (this.locks.get(key) === tail) this.locks.delete(key);
     }
   }
+}
+
+/** 飞书接口错误是否表示群已不存在（232006：chat_id 无效） */
+function isChatMissingError(message: string): boolean {
+  return message.includes(CHAT_MISSING_ERROR_CODE);
 }
 
 function formatBeijing(value: Date): string {
