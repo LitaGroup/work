@@ -4,14 +4,17 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  OnModuleInit,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { randomBytes } from 'crypto';
 import { FindOptionsWhere, In, Not, Repository } from 'typeorm';
 import {
+  AUTO_BACKLOG_MEMBER_ROLES,
   BacklogMemberRole,
   BacklogStatus,
   IterationStatus,
+  MANUAL_BACKLOG_MEMBER_ROLES,
   TopicSubjectType,
   WorkerRole,
 } from '../common/enums';
@@ -88,7 +91,7 @@ const BACKLOG_LIST_LIMIT = 1000;
  * 飞书沟通群由成员/管理员在详情页手动创建；状态由成员/管理员手动流转。
  */
 @Injectable()
-export class BacklogsService {
+export class BacklogsService implements OnModuleInit {
   private readonly logger = new Logger(BacklogsService.name);
 
   /** 进行中的标题生成（防重复调度） */
@@ -126,6 +129,31 @@ export class BacklogsService {
     private readonly chat: FeishuBotBacklogChatService,
     private readonly llm: LlmService,
   ) {}
+
+  /** 启动时补齐存量迭代项的自动成员行（负责人/需求方），只改成员不动飞书群 */
+  onModuleInit(): void {
+    void this.backfillAutoMembers();
+  }
+
+  private async backfillAutoMembers(): Promise<void> {
+    try {
+      const rows = await this.backlogs.find({
+        where: { status: Not(BacklogStatus.CANCELED) },
+      });
+      let changed = 0;
+      for (const backlog of rows) {
+        if (await this.refreshAutoMembers(backlog)) {
+          await this.backlogs.save(backlog);
+          changed += 1;
+        }
+      }
+      if (changed > 0) {
+        this.logger.log(`已补齐 ${changed} 个迭代项的自动成员行`);
+      }
+    } catch (error) {
+      this.logger.warn(`迭代项自动成员行补齐失败：${(error as Error).message}`);
+    }
+  }
 
   /**
    * 迭代项轻量列表（默认仅未取消，含各迭代），供选择器过滤已进入迭代的需求。
@@ -294,6 +322,11 @@ export class BacklogsService {
       backlog.code = `BL-${String(backlog.id).padStart(4, '0')}`;
       backlog = await this.backlogs.save(backlog);
 
+      // 追加系统维护的自动成员（负责人 / 需求方），供展示与建群使用
+      if (await this.refreshAutoMembers(backlog)) {
+        backlog = await this.backlogs.save(backlog);
+      }
+
       // 负责人存在真人登录身份时创建交付任务并直接指派给该机器人；未指定负责人则暂不建任务。
       if (owner && actor.userId !== null) {
         try {
@@ -392,7 +425,7 @@ export class BacklogsService {
       throw new BadRequestException('已结束的迭代项不可再变更状态');
     }
     if (backlog.status === status) return backlog;
-    if (!actor.isAdmin && !this.isMember(backlog, actor.userId)) {
+    if (!actor.isAdmin && !(await this.isMember(backlog, actor))) {
       throw new ForbiddenException('仅迭代项成员或管理员可推进状态');
     }
 
@@ -487,7 +520,7 @@ export class BacklogsService {
     actor: IterationActor,
   ): Promise<Backlog> {
     const backlog = await this.findOne(id);
-    if (!actor.isAdmin && !this.isMember(backlog, actor.userId)) {
+    if (!actor.isAdmin && !(await this.isMember(backlog, actor))) {
       throw new ForbiddenException('仅迭代项成员或管理员可编辑迭代项属性');
     }
     const ownerChange =
@@ -510,17 +543,24 @@ export class BacklogsService {
     }
     const saved = await this.backlogs.save(backlog);
     if (ownerChange) {
+      // 负责人变化 → 刷新「负责人」成员行并同步飞书群
+      let current = saved;
+      if (await this.refreshAutoMembers(current)) {
+        current = await this.backlogs.save(current);
+      }
       await this.recordEvent(
-        saved.id,
+        current.id,
         'owner',
         {
           from: ownerChange.from,
           to: ownerChange.to,
-          taskId: saved.taskId,
+          taskId: current.taskId,
           previousTaskId: ownerChange.previousTaskId,
         },
         actor.userName,
       );
+      await this.syncChatMembers(current);
+      return current;
     }
     return saved;
   }
@@ -604,8 +644,11 @@ export class BacklogsService {
     return { from, to: worker.name, previousTaskId };
   }
 
-  /** 详情视图：迭代项 + 需求方/涉及方（实时取自原始需求）+ 所属迭代标识 + 提测工单工作流可用性（供前端提测按钮置灰）+ 飞书沟通群状态（供建群/打开群按钮） */
-  async getDetail(id: number): Promise<
+  /** 详情视图：迭代项 + 需求方/涉及方（实时取自原始需求）+ 所属迭代标识 + 提测工单工作流可用性（供前端提测按钮置灰）+ 飞书沟通群状态（供建群/打开群按钮）+ 当前查看者操作权限 */
+  async getDetail(
+    id: number,
+    actor?: IterationActor,
+  ): Promise<
     Backlog & {
       owner: string | null;
       /** 涉及方：实时取自原始需求 projects.involvedParties（不落库） */
@@ -618,6 +661,8 @@ export class BacklogsService {
       releaseWorkflow: BacklogReleaseWorkflow | null;
       /** 飞书沟通群：未建群/已解散为 null */
       feishuChat: BacklogChatInfo | null;
+      /** 当前查看者是否可操作（管理员或手动成员；自动列入的负责人/需求方不计） */
+      canOperate: boolean;
     }
   > {
     const backlog = await this.findOne(id);
@@ -632,6 +677,8 @@ export class BacklogsService {
       }),
       this.chat.describe(backlog.id),
     ]);
+    const canOperate =
+      !!actor && (actor.isAdmin || (await this.isMember(backlog, actor)));
     return {
       ...backlog,
       owner: project?.owner ?? null,
@@ -641,6 +688,7 @@ export class BacklogsService {
         : null,
       releaseWorkflow: await this.releaseWorkflowInfo(),
       feishuChat,
+      canOperate,
     };
   }
 
@@ -839,7 +887,7 @@ export class BacklogsService {
       : null;
 
     if (backlog.taskId) {
-      if (!actor.isAdmin && !this.isMember(backlog, actor.userId)) {
+      if (!actor.isAdmin && !(await this.isMember(backlog, actor))) {
         throw new ForbiddenException('仅迭代项成员或管理员可新建任务');
       }
       return this.tasks.create({
@@ -903,6 +951,7 @@ export class BacklogsService {
     backlog.ownerWorkerId = worker.id;
     backlog.ownerName = worker.name;
     backlog.taskId = task.id;
+    await this.refreshAutoMembers(backlog);
     await this.backlogs.save(backlog);
     await this.recordEvent(
       backlog.id,
@@ -910,6 +959,7 @@ export class BacklogsService {
       { from, to: worker.name, taskId: task.id, previousTaskId: null },
       actor.userName,
     );
+    await this.syncChatMembers(backlog);
     return task;
   }
 
@@ -925,7 +975,7 @@ export class BacklogsService {
     creator: { user: unknown; worker: unknown },
   ): Promise<{ ticketId: number; ticketCode: string; title: string }> {
     const backlog = await this.findOne(id);
-    if (!actor.isAdmin && !this.isMember(backlog, actor.userId)) {
+    if (!actor.isAdmin && !(await this.isMember(backlog, actor))) {
       throw new ForbiddenException('仅迭代项成员或管理员可发起提测');
     }
     const workflow = await this.releaseWorkflowInfo();
@@ -1020,7 +1070,7 @@ export class BacklogsService {
     actor: IterationActor,
   ): Promise<BacklogChatInfo | null> {
     const backlog = await this.findOne(id);
-    if (!actor.isAdmin && !this.isMember(backlog, actor.userId)) {
+    if (!actor.isAdmin && !(await this.isMember(backlog, actor))) {
       throw new ForbiddenException('仅迭代项成员或管理员可创建飞书群');
     }
     const info = await this.chat.createForBacklog(id);
@@ -1044,6 +1094,8 @@ export class BacklogsService {
     const normalized = await this.normalizeMembers(members);
     const previous = backlog.members ?? [];
     backlog.members = normalized.length ? normalized : null;
+    // 追加系统维护的自动成员（负责人 / 需求方）
+    await this.refreshAutoMembers(backlog);
     const saved = await this.backlogs.save(backlog);
     await this.recordEvent(
       saved.id,
@@ -1054,6 +1106,8 @@ export class BacklogsService {
       },
       actor.userName,
     );
+    // 新增成员自动拉进已有飞书沟通群（只加不减）
+    await this.syncChatMembers(saved);
     return saved;
   }
 
@@ -1341,9 +1395,157 @@ export class BacklogsService {
     );
   }
 
-  private isMember(backlog: Backlog, userId: number | null): boolean {
-    if (userId === null) return false;
-    return (backlog.members ?? []).some((member) => member.userId === userId);
+  private isManualRole(role: BacklogMemberRole): boolean {
+    return MANUAL_BACKLOG_MEMBER_ROLES.includes(role);
+  }
+
+  private isAutoRole(role: BacklogMemberRole): boolean {
+    return AUTO_BACKLOG_MEMBER_ROLES.includes(role);
+  }
+
+  /** 操作人对应的机器人：机器人令牌用自身；真人登录映射其真人机器人 */
+  private async resolveActorWorkerId(
+    actor: IterationActor,
+  ): Promise<number | null> {
+    if (actor.workerId !== null && actor.workerId !== undefined) {
+      return actor.workerId;
+    }
+    if (actor.userId === null || actor.userId === undefined) return null;
+    const human = await this.workers.findOne({
+      where: { humanUserId: actor.userId },
+      select: { id: true },
+    });
+    return human?.id ?? null;
+  }
+
+  /** 是否手动成员（以机器人身份判定；自动列入的负责人/需求方不授予成员操作权限） */
+  private async isMember(
+    backlog: Backlog,
+    actor: IterationActor,
+  ): Promise<boolean> {
+    const workerId = await this.resolveActorWorkerId(actor);
+    if (workerId === null) return false;
+    return (backlog.members ?? []).some(
+      (member) =>
+        member.workerId === workerId && this.isManualRole(member.role),
+    );
+  }
+
+  /**
+   * 重新计算并写入自动成员行（负责人 / 需求方）。
+   * 手动成员原样保留；自动行由负责人字段、需求方字段派生，按「角色 + 机器人」去重
+   * （同一人不同角色各占一行）。仅改动内存对象，由调用方保存。返回是否变化。
+   */
+  private async refreshAutoMembers(backlog: Backlog): Promise<boolean> {
+    const manual = (backlog.members ?? []).filter((member) =>
+      this.isManualRole(member.role),
+    );
+    const auto: BacklogMember[] = [];
+
+    // 负责人：ownerWorkerId 对应的机器人（真人或 AI 机器人）
+    if (backlog.ownerWorkerId) {
+      let name = backlog.ownerName;
+      if (!name) {
+        const worker = await this.workers.findOne({
+          where: { id: backlog.ownerWorkerId },
+          select: { name: true },
+        });
+        name = worker?.name ?? `#${backlog.ownerWorkerId}`;
+      }
+      auto.push({
+        role: BacklogMemberRole.OWNER,
+        workerId: backlog.ownerWorkerId,
+        name: name.slice(0, 100),
+      });
+    }
+
+    // 需求方：projects.owner 姓名 → 真人机器人
+    const project = await this.projects.findOne({
+      where: { id: backlog.projectId },
+      select: { owner: true },
+    });
+    const demandNames = splitMemberNames(project?.owner ?? null);
+    if (demandNames.length) {
+      const users = await this.users.find({
+        where: { name: In(demandNames), enabled: true },
+        select: { id: true, name: true },
+      });
+      const userByName = new Map<string, { id: number; name: string }>();
+      for (const user of users) {
+        if (!userByName.has(user.name)) userByName.set(user.name, user);
+      }
+      const demandUserIds = [
+        ...new Set([...userByName.values()].map((user) => user.id)),
+      ];
+      const humans = demandUserIds.length
+        ? await this.workers.find({
+            where: { humanUserId: In(demandUserIds) },
+            select: { id: true, name: true, humanUserId: true },
+          })
+        : [];
+      const humanByUser = new Map(
+        humans.map((worker) => [worker.humanUserId as number, worker]),
+      );
+      for (const name of demandNames) {
+        const user = userByName.get(name);
+        if (!user) continue;
+        const human = humanByUser.get(user.id);
+        if (!human) continue;
+        auto.push({
+          role: BacklogMemberRole.DEMAND,
+          workerId: human.id,
+          name: (human.name || user.name).slice(0, 100),
+        });
+      }
+    }
+
+    const seen = new Set<string>();
+    const merged: BacklogMember[] = [];
+    for (const member of [...manual, ...auto]) {
+      const key = `${member.role}:${member.workerId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(member);
+    }
+
+    const before = JSON.stringify(backlog.members ?? []);
+    const after = JSON.stringify(merged);
+    if (before === after) return false;
+    backlog.members = merged.length ? merged : null;
+    return true;
+  }
+
+  /** 成员变化后同步进已有飞书沟通群（只加不减）；失败只告警 */
+  private async syncChatMembers(backlog: Backlog): Promise<void> {
+    try {
+      await this.chat.syncMembers(backlog.id);
+    } catch (error) {
+      this.logger.warn(
+        `迭代项 ${backlog.code} 沟通群成员同步失败：${(error as Error).message}`,
+      );
+    }
+  }
+
+  /**
+   * 需求方（projects.owner）变化后联动刷新：该需求全部未取消迭代项的「需求方」成员行
+   * 重新派生，并把新增成员拉进已有飞书群。失败只告警不阻断主流程。
+   */
+  async refreshDemandMembers(projectId: number): Promise<void> {
+    const backlogs = await this.backlogs.find({
+      where: { projectId, status: Not(BacklogStatus.CANCELED) },
+    });
+    for (const backlog of backlogs) {
+      try {
+        if (await this.refreshAutoMembers(backlog)) {
+          await this.backlogs.save(backlog);
+        }
+        await this.syncChatMembers(backlog);
+      } catch (error) {
+        this.logger.warn(
+          `需求 #${projectId} 迭代项 ${backlog.code} 需求方成员刷新失败：${(error as Error).message}`,
+        );
+      }
+    }
   }
 
   private assertAssignableWorker(worker: Worker | undefined, id: number): void {
@@ -1363,18 +1565,37 @@ export class BacklogsService {
     }
   }
 
-  /** 合并前校验角色与用户存在性（按「角色 + 用户」去重）；userId 与 name 至少提供一个 */
+  /**
+   * 合并前校验角色与机器人存在性（按「角色 + 机器人」去重）。
+   * 成员统一存为机器人：workerId 直接选机器人；userId/name 选真人时映射为其真人机器人。
+   * 自动角色（负责人/需求方）由系统维护，手动提交会被忽略。
+   */
   private async normalizeMembers(
     input?: BacklogMemberInput[],
   ): Promise<BacklogMember[]> {
     if (!input || input.length === 0) return [];
-    const validRoles = new Set<string>(Object.values(BacklogMemberRole));
-    type Pick = { role: BacklogMemberRole; userId?: number; name?: string };
+    const allRoles = new Set<string>(Object.values(BacklogMemberRole));
+    const manualRoles = new Set<string>(MANUAL_BACKLOG_MEMBER_ROLES);
+    type Pick = {
+      role: BacklogMemberRole;
+      workerId?: number;
+      userId?: number;
+      name?: string;
+    };
     const picks: Pick[] = [];
     const names = new Set<string>();
     for (const member of input) {
-      if (!member || !validRoles.has(member.role)) {
+      if (!member || !allRoles.has(member.role)) {
         throw new BadRequestException(`成员角色非法：${String(member?.role)}`);
+      }
+      // 自动角色由系统按负责人/需求方维护，忽略手动提交
+      if (!manualRoles.has(member.role)) continue;
+      if (member.workerId !== undefined && member.workerId !== null) {
+        if (!Number.isInteger(member.workerId) || member.workerId <= 0) {
+          throw new BadRequestException('成员机器人 ID 非法');
+        }
+        picks.push({ role: member.role, workerId: member.workerId });
+        continue;
       }
       if (member.userId !== undefined && member.userId !== null) {
         if (!Number.isInteger(member.userId) || member.userId <= 0) {
@@ -1386,7 +1607,7 @@ export class BacklogsService {
       const memberNames = splitMemberNames(member.name);
       if (memberNames.length === 0) {
         throw new BadRequestException(
-          `成员「${member.role}」须提供 userId 或 name`,
+          `成员「${member.role}」须提供 workerId、userId 或 name`,
         );
       }
       for (const name of memberNames) {
@@ -1394,42 +1615,102 @@ export class BacklogsService {
         picks.push({ role: member.role, name });
       }
     }
-    const resolvedNames = await this.resolveUserNames([...names]);
-    const seen = new Set<string>();
-    const result: BacklogMember[] = [];
-    const userIds = [
+
+    // 直接选择的机器人（AI 或真人机器人）
+    const directWorkerIds = [
       ...new Set(
         picks
-          .map((pick) => pick.userId ?? resolvedNames.get(pick.name!)?.id)
+          .map((pick) => pick.workerId)
           .filter((id): id is number => id !== undefined),
       ),
     ];
-    const users = userIds.length
+    const directWorkers = directWorkerIds.length
+      ? await this.workers.find({ where: { id: In(directWorkerIds) } })
+      : [];
+    const directMap = new Map(
+      directWorkers.map((worker) => [worker.id, worker]),
+    );
+
+    // 真人姓名 → 用户（启用）
+    const resolvedNames = names.size
+      ? await this.resolveUserNames([...names])
+      : new Map<string, { id: number; name: string }>();
+    // 直接选择的用户 ID
+    const directUserIds = [
+      ...new Set(
+        picks
+          .map((pick) => pick.userId)
+          .filter((id): id is number => id !== undefined),
+      ),
+    ];
+    const directUsers = directUserIds.length
       ? await this.users.find({
-          where: { id: In(userIds) },
+          where: { id: In(directUserIds) },
           select: { id: true, name: true },
         })
       : [];
-    const userMap = new Map(users.map((user) => [user.id, user]));
+    const directUserMap = new Map(directUsers.map((user) => [user.id, user]));
+
+    // 用户 → 真人机器人
+    const userIds = [
+      ...new Set([
+        ...directUserIds,
+        ...[...resolvedNames.values()].map((user) => user.id),
+      ]),
+    ];
+    const humans = userIds.length
+      ? await this.workers.find({
+          where: { humanUserId: In(userIds) },
+          select: { id: true, name: true, humanUserId: true },
+        })
+      : [];
+    const humanByUser = new Map(
+      humans.map((worker) => [worker.humanUserId as number, worker]),
+    );
+
+    const seen = new Set<string>();
+    const result: BacklogMember[] = [];
     for (const pick of picks) {
-      const resolved = pick.userId
-        ? userMap.get(pick.userId)
-        : resolvedNames.get(pick.name!);
-      if (!resolved) {
-        throw new BadRequestException(
-          pick.userId
-            ? `成员用户 #${pick.userId} 不存在`
-            : `成员用户「${pick.name}」不存在或已停用`,
-        );
+      let workerId: number;
+      let name: string;
+      if (pick.workerId !== undefined) {
+        const worker = directMap.get(pick.workerId);
+        if (!worker) {
+          throw new BadRequestException(`成员机器人 #${pick.workerId} 不存在`);
+        }
+        this.assertAssignableWorker(worker, pick.workerId);
+        workerId = worker.id;
+        name = worker.name;
+      } else {
+        let userId: number;
+        if (pick.userId !== undefined) {
+          const user = directUserMap.get(pick.userId);
+          if (!user) {
+            throw new BadRequestException(`成员用户 #${pick.userId} 不存在`);
+          }
+          userId = user.id;
+        } else {
+          const user = resolvedNames.get(pick.name!);
+          if (!user) {
+            throw new BadRequestException(
+              `成员用户「${pick.name}」不存在或已停用`,
+            );
+          }
+          userId = user.id;
+        }
+        const human = humanByUser.get(userId);
+        if (!human) {
+          throw new BadRequestException(
+            `用户 #${userId} 缺少真人机器人，无法加入成员`,
+          );
+        }
+        workerId = human.id;
+        name = human.name;
       }
-      const key = `${pick.role}:${resolved.id}`;
+      const key = `${pick.role}:${workerId}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      result.push({
-        role: pick.role,
-        userId: resolved.id,
-        name: resolved.name,
-      });
+      result.push({ role: pick.role, workerId, name: name.slice(0, 100) });
     }
     return result;
   }

@@ -603,6 +603,23 @@ export class FeishuBotClientService {
     );
   }
 
+  /** 将真人拉入群（openIds 为 open_id；单次最多 50 人，非法/已入群成员由飞书忽略） */
+  async addChatUsers(
+    configId: number,
+    secrets: FeishuBotSecrets,
+    chatId: string,
+    openIds: string[],
+  ): Promise<void> {
+    if (openIds.length === 0) return;
+    await this.request(
+      configId,
+      secrets,
+      'POST',
+      `/im/v1/chats/${encodeURIComponent(chatId)}/members?member_id_type=open_id&succeed_type=1`,
+      { id_list: openIds.slice(0, 50) },
+    );
+  }
+
   /** 解散群（机器人须为群主） */
   async dissolveChat(
     configId: number,

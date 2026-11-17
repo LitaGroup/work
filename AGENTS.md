@@ -62,6 +62,7 @@
 - `backend/src/iterations/`：迭代（T0 / T7 / Tx）与迭代项（Backlog）；转入时负责人可暂不指定，指定/改派时创建或重建交付任务，迭代沟通群由 `feishu-bot/` 维护。
 - `backend/src/checks/`、`tests/`、`exports/`、`schedules/`、`scripts/`：脚本登记、导入、运行、历史与调度。
 - `backend/src/tasks/`：任务状态机、任务定义、派发、协同、文档、工作台和实时流。
+- `backend/src/wakeups/`：机器人定时唤醒（任务会话与「我的 AI」会话共用，到期扫描投递并恢复会话）。
 - `backend/src/tickets/`、`workflows/`：工单、工作流定义、发布版本和运行时流转。
 - `backend/src/workers/`、`executors/`：机器人、个人 AGENT、工位初始化、调试会话、opencode 执行器。
 - `backend/src/knowledge/`：知识树、全文/向量混合检索与 Embedding 队列。
@@ -70,7 +71,7 @@
 - `backend/src/model-config/`：管理区「模型配置」（固定场景的 OpenAI 兼容连接：baseUrl/apiKey/model/思考等级）与通用单次大模型调用（`LlmService`，工单/任务标题命名等后台任务）。
 - `backend/src/github/`、`github-gateway/`：仓库/分支/提交集成与凭证网关。
 - `backend/src/agent/`、`remote-run/`、`app-versions/`：Appium Agent、远程运行与 APP 包。
-- `backend/src/files/`、`images/`、`settings/`、`mcp/`：上传、设置与 MCP 开放（`lita-bots` 调用机器人、`lita-work` 平台工具：需求/迭代项（含成员与状态流转）/知识/运行/缺陷/反馈/灵感/任务协同/工单/机器人/飞书会话历史与消息发送）；`backend/src/mcp-servers/` 为管理区「MCP 配置」（机器人连接的外部 MCP 服务）。
+- `backend/src/files/`、`images/`、`settings/`、`mcp/`：上传、设置与 MCP 开放（`lita-bots` 调用机器人、`lita-work` 平台工具：需求/迭代项（含成员与状态流转）/知识/运行/缺陷/反馈/灵感/任务协同/工单/机器人/飞书会话历史与消息发送/定时唤醒）；`backend/src/mcp-servers/` 为管理区「MCP 配置」（机器人连接的外部 MCP 服务）。
 
 其他入口：
 
@@ -151,7 +152,11 @@
 - 迭代由 **Backlog** 组成，独立于需求池：`backlogs.projectId` 记录原始需求（`projects.id`，应用层软引用）。一个需求同时只允许一个未取消的 backlog；取消后可再次转入。
 - 转入/追加的**负责人机器人**（AI 或真人）可暂不指定（不创建交付任务）；指定/改派由管理员操作，指定后按负责人创建交付任务（显式 `agentId=负责人`，系统任务定义 **ID=9「迭代-Backlog交付」**），改派先取消旧交付任务再重建。已完成的交付任务取消失败只告警，不阻断改派。
 - 需求选择器（新建迭代 / 追加需求）默认过滤已进入迭代的需求（存在未取消迭代项），支持名称/类型/计划周(w) 过滤；转入接口仍兜底判重（未取消即拒绝）。
-- 成员角色：产品 / 业务 / 项目 / 前端 / 后端 / 测试 / 客户端；成员由管理员或迭代项负责人维护（`PATCH /api/backlogs/{id}/members` 或 `lita-work` MCP `update_backlog_members`，支持 userId 与姓名），转入迭代时不再从需求自动带入。
+- 成员角色：产品 / 业务 / 项目 / 前端 / 后端 / 测试 / 客户端；成员由管理员或迭代项负责人维护（`PATCH /api/backlogs/{id}/members` 或 `lita-work` MCP `update_backlog_members`，支持 workerId 直接选机器人、userId 或姓名选真人），转入迭代时不从需求自动带入手动成员。
+- **成员统一以机器人表示**：真人用其「真人机器人」（`workers.humanUserId`），AI 用「普通机器人」；`backlogs.members` 存 `{role, workerId, name}`，不再存 userId。手动选择器可选真人（映射真人机器人）或 AI 机器人。
+- **负责人/需求方自动列入成员**（系统维护、不可手动移除、不授予成员操作权限）：负责人取 `ownerWorkerId`（真人或 AI 机器人），需求方取 `projects.owner` 姓名对应的真人机器人；自动行角色为 负责人/需求方，按 `(role, workerId)` 去重，同一人不同角色显示多次。需求方在需求编辑/飞书同步变更时联动刷新该需求全部未取消迭代项的成员行。
+- 成员权限按机器人判定：仅「手动成员」授予操作权限（管理员与负责人既有规则不变），自动列入的负责人/需求方只展示不入权限。
+- 迭代项飞书沟通群按成员机器人进群：真人机器人 → 绑定真人 open_id，AI 机器人 → 绑定的飞书应用 app_id；成员新增（含负责人/需求方自动列入）自动拉入已有群，**只加不减**（移除成员不踢人），`feishu_bot_backlog_chats.memberWorkerIds` 跟踪已入群机器人。
 - `lita-work` MCP 的迭代项工具与网页写能力等价（权限复用成员/负责人/管理员规则）：`get_backlog`、`update_backlog_members`、`update_backlog`（预期上线时间、负责人改派）、`change_backlog_status`（状态 + 备注）、`move_backlog`（移动迭代）、`create_backlog_task`（子任务/交付任务）、`create_backlog_release_ticket`（发起提测工单）。
 - 状态：等待 → 执行 → 测试 → 发布 → 完成，允许回退与取消；由成员或管理员手动流转，记录操作人与各阶段时间；取消时联动取消未结束的交付任务。状态与任务/需求状态解耦。推进走弹窗（选状态 + 备注可空，备注写入事件流），网页两处（迭代表格/迭代项详情）共用同一弹窗组件，不再使用行内下拉。
 - 迭代项有自己的标题：转入后异步用 `title-naming` 场景生成 `「BL-{id}」+ 模型标题`（乐观条件更新，失败保留需求名快照兜底，不覆盖人工修改）；迭代表格展示迭代项标题并链接 `/backlogs/{id}`（需求仅保留 `#id` 提示）。
@@ -163,7 +168,7 @@
 - 提测：迭代项详情页「提测」按钮按系统工作流 `release-ticket`（代码预置，启动与迁移均按规范定义幂等发布 v1）创建工单，描述自动填入迭代项上下文、人工可补充；`tickets.backlogId` 记录关联，创建成功写 `release-ticket` 事件。提测不与迭代项/迭代状态绑定，同一迭代项可多次发起提测工单（完成、取消后仍可提测）。
 - 新建任务：迭代项详情页「任务」分区「新建任务」按 `POST /api/backlogs/{id}/tasks` 处理——已有交付任务时创建其子任务（成员或管理员）；无交付任务时按所选执行机器人创建交付任务（系统任务定义「迭代-Backlog交付」）并登记迭代项负责人（仅管理员，等价于指定负责人）。
 - 迭代项详情页为标准双栏布局 + 右下角可收起 AI 面板（⌥A）；内容分区为 信息 / 文档 / 任务（任务树 + 相关工单）/ 缺陷（按 `backlogId` 关联，支持页内新建）/ 话题 / 事件 / 成员，分区与 URL hash 一一对应（如 `/backlogs/{id}#topics` 直达话题，切换分区同步 `history.replaceState`）；「话题」页签显示话题数（其他页面的 `TopicsPanel` 卡片标题也显示计数）。AI 页面上下文类型 `backlog`（`agent:page:backlog:*`），`contextReadUrl` 固定 `/api/backlogs/{id}.md`。
-- 迭代项成员在详情页「成员」分区内直接维护（管理员）：角色 + 用户选择后「添加」、每个成员「移除」，均立即调用 `PATCH /api/backlogs/{id}/members`（整体替换语义），不再有「编辑成员」弹窗。
+- 迭代项成员在详情页「成员」分区内直接维护（管理员）：角色 + 成员（真人或 AI 机器人）选择后「添加」、每个手动成员「移除」，均立即调用 `PATCH /api/backlogs/{id}/members`（整体替换手动成员，负责人/需求方自动维持）。
 - 支持向已有迭代追加需求、移动 backlog 到其它迭代（移动不重建交付任务与沟通群）；周迭代到期未完成的 backlog 留在原迭代，由管理员手动结转到新迭代。
 - backlog 不再自动建立飞书沟通群：由成员或管理员在迭代项详情页手动「飞书建群」（`POST /api/backlogs/{id}/feishu-chat`，群名 `LitaWork-迭代-{标题} 沟通群`），拉入成员真人与负责人机器人绑定的飞书应用（负责人后续绑定由对账补拉）；已建群直接「打开飞书群」（Feishu AppLink `applink.feishu.cn/client/chat/open?openChatId=...`，仅能打开已加入的群）；完成/取消后保留 7 天自动解散，建群失败保留绑定并由对账重试（每分钟、上限 30 次），终态不再建群；迁移清理从未建成群的残留绑定。
 - Agent 视图：`GET /api/iterations.md`、`GET /api/iterations/{id}.md`、`GET /api/backlogs/{id}.md`。
@@ -236,6 +241,7 @@
 - 任务列表、详情和对话使用 SSE：订阅先收快照，再收任务、实时行等增量；看板不恢复定时轮询。
 - 任务执行中继续发送的消息直接投递当前 opencode 会话，由 opencode 按序处理；平台不维护发送队列。opencode 接受 prompt 后才写反馈事件。
 - 任务外部事件（lita-proxy 工单回调）：执行机器人经 MCP `get_task_callback_url` 领取任务级回调地址（`POST /api/tasks/{id}/external-event`，纯内网免鉴权），建单时作为 `callbackUrl` 传给 proxy；回调按「任务 + 工单 + 状态」幂等落 `task_external_events`，回合仍在执行时直投当前会话，回合已结束转「待继续」由 LOOP 恢复，任务已结束只记录不复活，暂不可投递按 2/10/30 分钟退避重试。
+- 定时唤醒（`wakeups`，MCP `schedule_task_wakeup` / `cancel_task_wakeup` / `schedule_agent_wakeup` / `cancel_agent_wakeup`）：机器人自主设置「多久后唤醒我」的回访提醒，用于等待人工确认/答复、等待工单或脚本结果等长任务场景。任务唤醒仅任务当前执行机器人可设置，落库后由 `WakeupsService` 每 15 秒扫描到期投递，投递规则与外部事件一致（回合在跑直投会话、回合结束转「待继续」由 LOOP 按容量恢复、任务结束只记录），**待反馈等暂不可接收状态按 2/10/30 分钟退避等待状态变化**；「我的 AI」会话唤醒经个人 AGENT 会话投递（`agent:global` / `agent:task:{id}` / `agent:page:{type}:{hash}`，会话繁忙时退避）。每任务 / 每会话范围只保留一条 scheduled，新设置覆盖旧的；`delayMinutes`（0.5~43200）与 `wakeAt`（ISO 8601，无时区按北京时间）二选一，`note` 随唤醒消息回传。
 
 任务定义：
 

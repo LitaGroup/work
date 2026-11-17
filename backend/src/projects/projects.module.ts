@@ -14,6 +14,7 @@ import { FeishuBotModule } from '../feishu-bot/feishu-bot.module';
 import { GithubModule } from '../github/github.module';
 import { ReleasesModule } from '../releases/releases.module';
 import { TasksModule } from '../tasks/tasks.module';
+import { IterationsModule } from '../iterations/iterations.module';
 import { Project } from './project.entity';
 import { Backlog } from '../iterations/backlog.entity';
 import { Iteration } from '../iterations/iteration.entity';
@@ -42,6 +43,7 @@ import { SyncState } from './sync-state.entity';
     ReleasesModule,
     TasksModule,
     FeishuBotModule,
+    IterationsModule,
     ProjectSummaryModule,
   ],
   controllers: [ProjectsController, RequirementsController],

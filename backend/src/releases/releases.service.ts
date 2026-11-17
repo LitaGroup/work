@@ -21,6 +21,7 @@ import { Project } from '../projects/project.entity';
 import { User } from '../auth/user.entity';
 import { Task } from '../tasks/task.entity';
 import { TaskWorkerInboxService } from '../tasks/task-worker-inbox.service';
+import { Worker } from '../workers/worker.entity';
 import { ProjectRelease, ReleaseBranch } from './project-release.entity';
 
 /** 卡片内提测内容截断长度（lark_md 卡片过长会被飞书折叠/截断） */
@@ -70,6 +71,8 @@ export class ReleasesService {
     private readonly tasks: Repository<Task>,
     @InjectRepository(Backlog)
     private readonly backlogs: Repository<Backlog>,
+    @InjectRepository(Worker)
+    private readonly workers: Repository<Worker>,
     private readonly workerInbox: TaskWorkerInboxService,
     private readonly feishu: FeishuService,
     config: ConfigService,
@@ -457,9 +460,19 @@ export class ReleasesService {
     } catch (e) {
       this.logger.warn(`提测通知查询迭代项成员失败: ${(e as Error).message}`);
     }
-    for (const member of backlogMembers) {
-      userIds.add(member.userId);
-      if (member.name) names.add(member.name);
+    // 成员统一为机器人：真人机器人取绑定真人私聊；AI 机器人无可私聊真人，跳过
+    const workerIds = [
+      ...new Set((backlogMembers ?? []).map((member) => member.workerId)),
+    ];
+    const workers = workerIds.length
+      ? await this.workers.find({ where: { id: In(workerIds) } })
+      : [];
+    const workerById = new Map(workers.map((worker) => [worker.id, worker]));
+    for (const member of backlogMembers ?? []) {
+      const worker = workerById.get(member.workerId);
+      if (!worker || worker.humanUserId === null) continue;
+      userIds.add(worker.humanUserId);
+      if (worker.humanUserName) names.add(worker.humanUserName);
     }
     if (names.size === 0 && userIds.size === 0) return;
     let members: User[];

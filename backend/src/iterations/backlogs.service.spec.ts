@@ -121,7 +121,14 @@ function buildTaskService() {
   const projects = {
     findOne: jest.fn().mockResolvedValue({ id: 7, name: '礼包改版' }),
   };
-  const workers = { findOne: jest.fn() };
+  const workers = {
+    findOne: jest.fn((args?: { where?: { humanUserId?: number } }) =>
+      Promise.resolve(
+        args?.where?.humanUserId ? { id: args.where.humanUserId } : undefined,
+      ),
+    ),
+    find: jest.fn().mockResolvedValue([]),
+  };
   const backlogEvents = {
     save: jest.fn(),
     create: jest.fn((row: unknown) => row),
@@ -164,7 +171,7 @@ describe('BacklogsService.createTask', () => {
     backlogs.findOne.mockResolvedValue({
       ...backlogRow,
       taskId: 500,
-      members: [{ role: '产品', userId: 21, name: '李四' }],
+      members: [{ role: '产品', workerId: 21, name: '李四' }],
     });
     tasks.create.mockResolvedValue({ id: 600, code: 'TK-0600' });
 
@@ -253,7 +260,7 @@ describe('BacklogsService.createFeishuChat', () => {
     const { service, backlogs, backlogEvents, chat } = buildTaskService();
     backlogs.findOne.mockResolvedValue({
       ...backlogRow,
-      members: [{ role: '产品', userId: 21, name: '李四' }],
+      members: [{ role: '产品', workerId: 21, name: '李四' }],
     });
     const info = await service.createFeishuChat(12, memberActor);
     expect(chat.createForBacklog).toHaveBeenCalledWith(12);

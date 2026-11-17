@@ -33,12 +33,14 @@ export interface UpdateIterationInput {
   status?: IterationStatus;
 }
 
-/** 迭代项成员入参：角色 + 平台用户（userId 与 name 至少提供一个；name 支持多人顿号连接） */
+/** 迭代项成员入参：角色 + 机器人（AI 用 workerId；真人用 userId/name，后端映射为其真人机器人） */
 export interface BacklogMemberInput {
   role: BacklogMemberRole;
-  /** 平台用户 ID */
+  /** 机器人 ID（workers.id，AI 或真人机器人，与 userId/name 三选一） */
+  workerId?: number;
+  /** 平台用户 ID（真人；后端映射为其真人机器人） */
   userId?: number;
-  /** 平台用户姓名（多个姓名顿号连接时展开为多条记录） */
+  /** 平台用户姓名（真人；多个姓名顿号连接时展开为多条记录） */
   name?: string;
 }
 

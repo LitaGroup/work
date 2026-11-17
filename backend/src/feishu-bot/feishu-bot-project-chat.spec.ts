@@ -128,9 +128,9 @@ describe('FeishuBotProjectChatService', () => {
         {
           id: 1,
           members: [
-            { role: '后端', userId: 8, name: '李四' },
-            { role: '测试', userId: 9, name: '王五' },
-            { role: '产品', userId: 10, name: '钱七' },
+            { role: '后端', workerId: 8, name: '李四' },
+            { role: '测试', workerId: 9, name: '王五' },
+            { role: '产品', workerId: 10, name: '钱七' },
           ],
         },
       ]),
@@ -152,7 +152,14 @@ describe('FeishuBotProjectChatService', () => {
         { id: 10, name: '钱七', feishuOpenId: 'ou_qianqi', enabled: true },
       ]),
     };
-    const workers = { findOne: jest.fn().mockResolvedValue(null) };
+    const workers = {
+      findOne: jest.fn().mockResolvedValue(null),
+      find: jest.fn().mockResolvedValue([
+        { id: 8, humanUserId: 8, humanUserName: '李四', name: '李四' },
+        { id: 9, humanUserId: 9, humanUserName: '王五', name: '王五' },
+        { id: 10, humanUserId: 10, humanUserName: '钱七', name: '钱七' },
+      ]),
+    };
     const configs = {
       loadEnabledOfficial: jest.fn().mockResolvedValue(official),
       loadEnabledWithSecrets: jest.fn().mockResolvedValue(official),

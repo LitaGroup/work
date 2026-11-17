@@ -7,6 +7,7 @@ import { DocumentType, ProjectType } from '../common/enums';
 import { DocumentsService } from '../documents/documents.service';
 import { BitableRecord, FeishuService } from '../feishu/feishu.service';
 import { Project } from './project.entity';
+import { BacklogsService } from '../iterations/backlogs.service';
 import { ProjectSummaryService } from './project-summary.service';
 import { ProjectDescriptionService } from './project-description.service';
 import { SyncState } from './sync-state.entity';
@@ -218,6 +219,7 @@ export class ProjectSyncService {
     private readonly syncStates: Repository<SyncState>,
     private readonly projectSummary: ProjectSummaryService,
     private readonly projectDescription: ProjectDescriptionService,
+    private readonly backlogsService: BacklogsService,
   ) {}
 
   /** 需求池 → 平台单向同步，每 1 小时自动增量一次；失败仅告警不中断 */
@@ -307,12 +309,17 @@ export class ProjectSyncService {
     project.expectedReleaseAt = extractDate(f['理想上线时间']);
     project.iterationCycle = toIterationCycle(f['w']);
     // 需求方为飞书人员字段（[{name}]），空值/无姓名时置空，与飞书侧保持一致
+    const previousOwner = project.owner ?? null;
     project.owner = extractPeople(f['需求方']) ?? null;
     // 备注由飞书「排期优先级」「排期备注」合成（平台内展示；人工编辑会被下次同步覆盖）
     project.remark = composeScheduleRemark(f['排期优先级'], f['排期备注']);
     // 涉及方为飞书多选字段（如 Android/iOS/Backend），空值置空，与飞书侧保持一致
     project.involvedParties = extractMultiSelect(f['涉及方']);
     await this.projects.save(project);
+    // 需求方变化 → 联动刷新该需求全部未取消迭代项的「需求方」成员行并同步飞书群
+    if ((previousOwner ?? null) !== (project.owner ?? null)) {
+      void this.backlogsService.refreshDemandMembers(project.id);
+    }
     await this.syncRequirementDocuments(project.id, f['需求'], fullText);
     // 设计链接镜像同步（字段为空/无完整链接时删除同步创建的设计文档）
     try {

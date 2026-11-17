@@ -8,10 +8,16 @@ import {
 } from 'typeorm';
 import { BacklogMemberRole, BacklogStatus } from '../common/enums';
 
-/** 迭代项成员：角色 + 平台用户 + 姓名快照 */
+/**
+ * 迭代项成员：角色 + 机器人 + 名称快照。
+ * 成员统一以机器人表示（真人用其「真人机器人」，AI 用「普通机器人」）；
+ * 负责人/需求方由系统自动列入（role 为 负责人/需求方），不授予成员操作权限。
+ */
 export interface BacklogMember {
   role: BacklogMemberRole;
-  userId: number;
+  /** 机器人 ID（workers.id） */
+  workerId: number;
+  /** 机器人名称快照 */
   name: string;
 }
 

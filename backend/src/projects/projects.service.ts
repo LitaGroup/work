@@ -57,6 +57,7 @@ import { ReleasesService } from '../releases/releases.service';
 import { ProjectRelease } from '../releases/project-release.entity';
 import { SUMMARY_MAX_CHARS } from '../model-config/llm.service';
 import { FeishuBotProjectChatService } from '../feishu-bot/feishu-bot-project-chat.service';
+import { BacklogsService } from '../iterations/backlogs.service';
 import {
   TasksService,
   type ProjectDeliveryTaskView,
@@ -356,6 +357,7 @@ export class ProjectsService {
     private readonly topicRows: Repository<Topic>,
     private readonly projectSummary: ProjectSummaryService,
     private readonly projectDescription: ProjectDescriptionService,
+    private readonly backlogsService: BacklogsService,
   ) {}
 
   findAll(): Promise<Project[]> {
@@ -1190,7 +1192,12 @@ export class ProjectsService {
       }
       project.summary = summary || null;
     }
-    return this.projects.save(project);
+    const saved = await this.projects.save(project);
+    // 需求方变化 → 联动刷新该需求全部未取消迭代项的「需求方」成员行并同步飞书群
+    if (input.owner !== undefined) {
+      void this.backlogsService.refreshDemandMembers(saved.id);
+    }
+    return saved;
   }
 
   /**

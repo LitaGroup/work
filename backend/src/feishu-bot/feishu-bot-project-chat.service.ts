@@ -401,9 +401,22 @@ export class FeishuBotProjectChatService
         },
         select: { id: true, members: true },
       });
+      // 成员统一为机器人：真人机器人取绑定真人姓名；AI 机器人无可匹配真人，跳过
+      const workerIds = new Set<number>();
       for (const row of backlogs) {
         for (const member of row.members ?? []) {
-          if (member.name) backlogMembers.push(member.name);
+          workerIds.add(member.workerId);
+        }
+      }
+      const workers = workerIds.size
+        ? await this.workers.find({
+            where: { id: In([...workerIds]) },
+            select: { id: true, humanUserId: true, humanUserName: true },
+          })
+        : [];
+      for (const worker of workers) {
+        if (worker.humanUserId !== null && worker.humanUserName) {
+          backlogMembers.push(worker.humanUserName);
         }
       }
     } catch (error) {

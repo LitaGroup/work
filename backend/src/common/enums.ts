@@ -423,7 +423,28 @@ export enum BacklogMemberRole {
   BACKEND = '后端',
   QA = '测试',
   CLIENT = '客户端',
+  /** 负责人（系统按 ownerWorkerId 自动列入，不授予成员操作权限、不可手动维护） */
+  OWNER = '负责人',
+  /** 需求方（系统按 projects.owner 自动列入，不授予成员操作权限、不可手动维护） */
+  DEMAND = '需求方',
 }
+
+/** 可手动添加/移除的成员角色（负责人/需求方由系统自动维护，不在其中） */
+export const MANUAL_BACKLOG_MEMBER_ROLES: BacklogMemberRole[] = [
+  BacklogMemberRole.PRODUCT,
+  BacklogMemberRole.BUSINESS,
+  BacklogMemberRole.PROJECT,
+  BacklogMemberRole.FRONTEND,
+  BacklogMemberRole.BACKEND,
+  BacklogMemberRole.QA,
+  BacklogMemberRole.CLIENT,
+];
+
+/** 系统自动列入的成员角色（由负责人/需求方字段派生） */
+export const AUTO_BACKLOG_MEMBER_ROLES: BacklogMemberRole[] = [
+  BacklogMemberRole.OWNER,
+  BacklogMemberRole.DEMAND,
+];
 
 /**
  * 话题（Topic）挂载的主体类型：挂在主体下的讨论串。

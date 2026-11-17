@@ -63,6 +63,7 @@ import { Textarea } from '@appica/ui-react/textarea'
 import {
   api,
   BACKLOG_MEMBER_ROLES,
+  AUTO_BACKLOG_MEMBER_ROLES,
   DEFECT_PLATFORMS,
   DEFECT_PRIORITIES,
   DEFECT_STATUSES,
@@ -110,6 +111,10 @@ type ActionFeedback =
 const ROLE_ITEMS = Object.fromEntries(
   BACKLOG_MEMBER_ROLES.map((role) => [role, role]),
 )
+
+/** 负责人/需求方由系统自动维护，不可手动移除/添加 */
+const isAutoMemberRole = (role: BacklogMemberRole): boolean =>
+  (AUTO_BACKLOG_MEMBER_ROLES as readonly string[]).includes(role)
 
 const EVENT_LABELS: Record<string, string> = {
   created: '创建',
@@ -302,7 +307,8 @@ export function BacklogDetailPage() {
   // 成员维护（管理员）：成员 Tab 内直接添加/移除
   const [users, setUsers] = useState<PlatformUser[] | null>(null)
   const [addRole, setAddRole] = useState<BacklogMemberRole>('产品')
-  const [addUserId, setAddUserId] = useState<string | undefined>(undefined)
+  // 选择目标：真人用 `u:{userId}`，AI 机器人用 `w:{workerId}`
+  const [addTarget, setAddTarget] = useState<string | undefined>(undefined)
   const [savingMembers, setSavingMembers] = useState(false)
 
   // 移动迭代（管理员）
@@ -407,10 +413,27 @@ export function BacklogDetailPage() {
     [related],
   )
 
-  const userItems = useMemo(
-    () => Object.fromEntries((users ?? []).map((u) => [String(u.id), u.name])),
-    [users],
-  )
+  // 成员选择：真人（users）+ AI 机器人（workers 中 runtime 非 human），可搜索（原文 + 拼音）
+  const memberTargetOptions = useMemo(() => {
+    const options: Array<{ key: string; label: string; name: string }> = []
+    for (const u of users ?? []) {
+      options.push({ key: `u:${u.id}`, label: u.name, name: u.name })
+    }
+    for (const w of (workers ?? []).filter(
+      (worker) =>
+        worker.runtime !== 'human' && worker.enabled && !worker.personalAgentUserId,
+    )) {
+      options.push({
+        key: `w:${w.id}`,
+        label: `${w.name}（AI 机器人）`,
+        name: w.name,
+      })
+    }
+    return createComboboxItems(options, {
+      getValue: (option) => option.key,
+      getLabel: (option) => option.label,
+    })
+  }, [users, workers])
 
   // 负责人 / 执行机器人：机器人数量多，用可搜索 Combobox（原文 + 拼音）并让列表滚动
   const ownerWorkerOptions = useMemo(
@@ -439,13 +462,27 @@ export function BacklogDetailPage() {
     [taskWorkers],
   )
 
-  // 进入「成员」分区才加载用户列表（供添加成员选择）
+  // 进入「成员」分区才加载真人 + AI 机器人列表（供添加成员选择）
   useEffect(() => {
-    if (tab !== 'members' || users) return
-    api
-      .listUsers()
-      .then(setUsers)
-      .catch((e: Error) => setError(e.message))
+    if (tab !== 'members') return
+    if (!users) {
+      api
+        .listUsers()
+        .then(setUsers)
+        .catch((e: Error) => setError(e.message))
+    }
+    if (!workers) {
+      api
+        .listWorkers({ role: '工作者' })
+        .then((rows) =>
+          setWorkers(
+            rows.filter(
+              (worker) => worker.enabled && !worker.personalAgentUserId,
+            ),
+          ),
+        )
+        .catch((e: Error) => setError(e.message))
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab])
 
@@ -490,8 +527,7 @@ export function BacklogDetailPage() {
   )
 
   const terminal = backlog.status === '完成' || backlog.status === '取消'
-  const isMember = (backlog.members ?? []).some((m) => m.userId === user?.id)
-  const canOperate = isAdmin || isMember
+  const canOperate = isAdmin || (backlog.canOperate ?? false)
   const releaseWorkflowReady = backlog.releaseWorkflow?.enabled ?? false
   // 新建任务：无交付任务时仅管理员可创建；已有交付任务时成员或管理员可建子任务
   const taskCreateDisabledReason = !backlog.taskId
@@ -504,9 +540,13 @@ export function BacklogDetailPage() {
       ? '仅迭代项成员或管理员可新建任务'
       : null
 
-  /** 成员保存：整体替换语义，前端在现有列表上增删后立即保存 */
+  /** 成员保存：整体替换语义（仅手动成员；负责人/需求方由后端自动维护），前端增删后立即保存 */
   const persistMembers = (
-    next: Array<{ role: BacklogMemberRole; userId: number }>,
+    next: Array<{
+      role: BacklogMemberRole
+      workerId?: number
+      userId?: number
+    }>,
     successMessage: string,
     after?: () => void,
   ) => {
@@ -529,29 +569,48 @@ export function BacklogDetailPage() {
       .finally(() => setSavingMembers(false))
   }
 
+  /** 现有手动成员（排除自动列入的负责人/需求方），用于整体替换时回传 */
+  const manualMemberKeys = () =>
+    (backlog.members ?? [])
+      .filter((m) => !isAutoMemberRole(m.role))
+      .map((m) => ({ role: m.role, workerId: m.workerId }))
+
   const addMember = () => {
-    const userId = Number(addUserId)
-    if (!Number.isInteger(userId) || userId <= 0) {
+    if (!addTarget) {
       showFeedback({ kind: 'failure', message: '请选择成员' }, FAILURE_STAY_MS)
       return
     }
-    const current = (backlog.members ?? []).map((m) => ({ role: m.role, userId: m.userId }))
-    if (current.some((m) => m.role === addRole && m.userId === userId)) {
+    const [kind, raw] = addTarget.split(':')
+    const value = Number(raw)
+    if (!Number.isInteger(value) || value <= 0) {
+      showFeedback({ kind: 'failure', message: '请选择成员' }, FAILURE_STAY_MS)
+      return
+    }
+    const entry =
+      kind === 'u'
+        ? { role: addRole, userId: value }
+        : { role: addRole, workerId: value }
+    if (
+      kind === 'w' &&
+      manualMemberKeys().some(
+        (m) => m.role === addRole && m.workerId === value,
+      )
+    ) {
       showFeedback(
         { kind: 'failure', message: '该成员已有相同角色' },
         FAILURE_STAY_MS,
       )
       return
     }
-    persistMembers([...current, { role: addRole, userId }], '成员已添加', () =>
-      setAddUserId(undefined),
+    persistMembers([...manualMemberKeys(), entry], '成员已添加', () =>
+      setAddTarget(undefined),
     )
   }
 
-  const removeMember = (target: { role: BacklogMemberRole; userId: number }) => {
-    const next = (backlog.members ?? [])
-      .map((m) => ({ role: m.role, userId: m.userId }))
-      .filter((m) => !(m.role === target.role && m.userId === target.userId))
+  const removeMember = (target: { role: BacklogMemberRole; workerId: number }) => {
+    const next = manualMemberKeys().filter(
+      (m) => !(m.role === target.role && m.workerId === target.workerId),
+    )
     persistMembers(next, '成员已移除')
   }
 
@@ -1511,7 +1570,7 @@ export function BacklogDetailPage() {
                   <Badge variant="soft">{backlog.members?.length ?? 0}</Badge>
                 </CardTitle>
                 <CardDescription>
-                  产品 / 业务 / 项目 / 技术（前端、后端、测试、客户端）；成员或管理员可推进状态与提测
+                  成员以机器人表示（真人用其真人机器人，AI 用普通机器人）；负责人、需求方自动列入（不可手动移除，不授予成员操作权限）
                 </CardDescription>
               </CardHeader>
               {isAdmin && (
@@ -1537,28 +1596,49 @@ export function BacklogDetailPage() {
                   </label>
                   <label className="flex flex-col gap-1 text-sm">
                     成员
-                    <Select
-                      value={addUserId}
-                      onValueChange={(v) => setAddUserId(v as string)}
-                      items={userItems}
+                    <Combobox
+                      items={memberTargetOptions}
+                      value={addTarget ?? null}
+                      onValueChange={(value) =>
+                        setAddTarget(value == null ? undefined : String(value))
+                      }
+                      filter={(option: { key: string; label: string; name: string }, query: string) =>
+                        matchesPinyinSearch(query, [option.name])
+                      }
+                      icon={false}
                     >
-                      <SelectTrigger className="w-48">
-                        <SelectValue placeholder="选择用户" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {(users ?? []).map((u) => (
-                          <SelectItem key={u.id} value={String(u.id)}>
-                            {u.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                      <ComboboxTrigger aria-label="成员">
+                        <ComboboxValue placeholder="选择真人或 AI 机器人" />
+                      </ComboboxTrigger>
+                      <ComboboxContent>
+                        <div className="px-2 pb-2 group-data-empty/combobox-content:pt-2">
+                          <ComboboxInput
+                            placeholder="搜索成员（真人或 AI 机器人）"
+                            aria-label="搜索成员"
+                          />
+                        </div>
+                        <ScrollArea className="max-h-64">
+                          <ComboboxEmpty>
+                            {users === null || workers === null
+                              ? '加载中…'
+                              : '没有匹配的成员'}
+                          </ComboboxEmpty>
+                          <ComboboxList className="overflow-y-visible">
+                            {(option: { key: string; label: string; name: string }) => (
+                              <ComboboxItem key={option.key} value={option.key}>
+                                <span className="truncate">{option.label}</span>
+                              </ComboboxItem>
+                            )}
+                          </ComboboxList>
+                        </ScrollArea>
+                      </ComboboxContent>
+                    </Combobox>
                   </label>
                   <Button
                     variant="outline"
                     size="sm"
                     onClick={addMember}
-                    disabled={savingMembers || !addUserId}
+                    disabled={savingMembers || !addTarget}
                   >
                     {savingMembers ? '保存中…' : '添加'}
                   </Button>
@@ -1568,29 +1648,35 @@ export function BacklogDetailPage() {
                 {(backlog.members ?? []).length === 0 && (
                   <span className="text-sm text-foreground-muted">暂无成员</span>
                 )}
-                {(backlog.members ?? []).map((member) => (
-                  <span
-                    key={`${member.role}:${member.userId}`}
-                    className="inline-flex items-center gap-2 rounded-md border border-border px-2 py-1 text-sm"
-                  >
-                    {member.role}：{member.name}
-                    {isAdmin && (
-                      <button
-                        type="button"
-                        className="text-foreground-muted underline"
-                        disabled={savingMembers}
-                        onClick={() =>
-                          removeMember({
-                            role: member.role,
-                            userId: member.userId,
-                          })
-                        }
-                      >
-                        移除
-                      </button>
-                    )}
-                  </span>
-                ))}
+                {(backlog.members ?? []).map((member) => {
+                  const auto = isAutoMemberRole(member.role)
+                  return (
+                    <span
+                      key={`${member.role}:${member.workerId}`}
+                      className="inline-flex items-center gap-2 rounded-md border border-border px-2 py-1 text-sm"
+                    >
+                      {member.role}：{member.name}
+                      {auto && (
+                        <span className="text-xs text-foreground-muted">自动</span>
+                      )}
+                      {isAdmin && !auto && (
+                        <button
+                          type="button"
+                          className="text-foreground-muted underline"
+                          disabled={savingMembers}
+                          onClick={() =>
+                            removeMember({
+                              role: member.role,
+                              workerId: member.workerId,
+                            })
+                          }
+                        >
+                          移除
+                        </button>
+                      )}
+                    </span>
+                  )
+                })}
               </div>
             </Card>
           </TabsContent>

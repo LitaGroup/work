@@ -1,7 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { BacklogMemberRole, BacklogStatus, UserRole } from '../../common/enums';
+import {
+  MANUAL_BACKLOG_MEMBER_ROLES,
+  BacklogStatus,
+  UserRole,
+} from '../../common/enums';
+import type { BacklogMemberRole } from '../../common/enums';
 import { BacklogsService } from '../../iterations/backlogs.service';
 import type { IterationActor } from '../../iterations/iteration.types';
 import { TicketsService } from '../../tickets/tickets.service';
@@ -10,10 +15,7 @@ import type { McpWorkPrincipal, WorkToolRegistrar } from './work-tools.types';
 
 const BacklogMemberRoleArg = z
   .enum(
-    Object.values(BacklogMemberRole) as [
-      BacklogMemberRole,
-      ...BacklogMemberRole[],
-    ],
+    MANUAL_BACKLOG_MEMBER_ROLES as [BacklogMemberRole, ...BacklogMemberRole[]],
   )
   .describe('成员角色：产品/业务/项目/前端/后端/测试/客户端');
 
@@ -57,27 +59,35 @@ export class WorkIterationTools implements WorkToolRegistrar {
       {
         title: '更新迭代项成员',
         description:
-          '仅管理员或该迭代项负责人机器人：整体替换迭代项成员（role + userId 或 name，name 支持顿号连接多人）。传空数组清空成员。成员须在用户系统内存在（按姓名解析时要求启用）。',
+          '仅管理员或该迭代项负责人机器人：整体替换迭代项成员（role + 机器人：workerId 直接选机器人，或 userId/name 选真人自动映射其真人机器人）。传空数组清空手动成员（负责人/需求方自动维持）。成员角色仅产品/业务/项目/前端/后端/测试/客户端。',
         inputSchema: {
           backlogId: z.number().int().positive().describe('迭代项 ID'),
           members: z
             .array(
               z.object({
                 role: BacklogMemberRoleArg,
+                workerId: z
+                  .number()
+                  .int()
+                  .positive()
+                  .optional()
+                  .describe('机器人 ID（workers.id，AI 或真人机器人）'),
                 userId: z
                   .number()
                   .int()
                   .positive()
                   .optional()
-                  .describe('平台用户 ID（与 name 二选一）'),
+                  .describe(
+                    '平台用户 ID（真人，映射其为真人机器人；与 workerId/name 三选一）',
+                  ),
                 name: z
                   .string()
                   .min(1)
                   .optional()
-                  .describe('平台用户姓名（多个顿号连接可一次添加多人）'),
+                  .describe('平台用户姓名（真人；多个顿号连接可一次添加多人）'),
               }),
             )
-            .describe('成员列表（整体替换；空数组清空）'),
+            .describe('成员列表（整体替换手动成员；空数组清空）'),
         },
       },
       async (args) =>

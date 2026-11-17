@@ -10,7 +10,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Cron } from '@nestjs/schedule';
 import { In, Repository } from 'typeorm';
 import { User } from '../auth/user.entity';
-import { BacklogStatus } from '../common/enums';
+import { BacklogStatus, WorkerRuntime } from '../common/enums';
 import { Backlog } from '../iterations/backlog.entity';
 import { Worker } from '../workers/worker.entity';
 import { FeishuBotClientService } from './feishu-bot-client.service';
@@ -35,6 +35,9 @@ const CREATE_MAX_ATTEMPTS = 30;
 /** 飞书建群单次最多邀请的用户数 */
 const MAX_CHAT_MEMBERS = 50;
 
+/** 飞书群机器人数量上限（建群与补拉均受此约束） */
+const MAX_BOT_MEMBERS = 5;
+
 /** 群名总长度上限 */
 const CHAT_NAME_LIMIT = 80;
 
@@ -57,9 +60,23 @@ export function backlogChatName(title: string): string {
   return `${prefix}${name.slice(0, available)}${suffix}`;
 }
 
+/** 单个成员在飞书群中的落地目标：真人用 open_id，AI 机器人用其飞书应用 app_id */
+interface MemberTarget {
+  workerId: number;
+  kind: 'user' | 'bot';
+  /** open_id（user）或 app_id（bot） */
+  id: string;
+  name: string;
+  /** 真人绑定的 users.id（仅 user） */
+  userId?: number;
+}
+
 interface ResolvedMembers {
+  targets: MemberTarget[];
   users: User[];
   openIds: string[];
+  botAppIds: string[];
+  memberNames: string[];
   missingNames: string[];
 }
 
@@ -150,6 +167,7 @@ export class FeishuBotBacklogChatService
           name: backlogChatName(backlog.title),
           backlogTitle: backlog.title,
           memberUserIds: [],
+          memberWorkerIds: [],
           memberNames: [],
           botIds: [],
           lastStatus: null,
@@ -263,7 +281,7 @@ export class FeishuBotBacklogChatService
         }
         if (fresh.state !== 'active' || !fresh.chatId) return;
 
-        await this.syncOwnerBot(fresh, backlog, official, secrets);
+        await this.syncMembersInternal(fresh, backlog, official, secrets);
         await this.markFinished(fresh, backlog);
         if (fresh.lastStatus !== backlog.status) {
           await this.sendStatusCard(fresh, backlog, official, secrets);
@@ -275,48 +293,55 @@ export class FeishuBotBacklogChatService
     }
   }
 
-  /** 建群：成员 + 负责人机器人；机器人拉入失败时降级为仅拉用户 */
+  /** 建群：成员（真人 open_id + AI 机器人 app_id）；机器人拉入失败时降级为仅拉真人 */
   private async createGroupChat(
     row: FeishuBotBacklogChat,
     official: FeishuBotConfig,
     secrets: FeishuBotSecrets,
     backlog: Backlog,
   ): Promise<void> {
-    const members = await this.resolveMembers(official, backlog);
-    const botIds = await this.resolveBotIds(backlog, official);
+    const resolved = await this.resolveMembers(official, backlog);
+    const botAppIds = resolved.botAppIds;
     try {
       let chatId: string;
-      let addedBotIds = botIds;
+      let botsAdded = botAppIds.length > 0;
       try {
         chatId = await this.client.createChat(
           official.id,
           secrets,
           row.name,
           `迭代项沟通群（${backlog.code}，需求 #${backlog.projectId}）`,
-          members.openIds,
-          { botIds, idempotencyKey: `backlog-chat-${row.id}` },
+          resolved.openIds,
+          { botIds: botAppIds, idempotencyKey: `backlog-chat-${row.id}` },
         );
       } catch (error) {
-        if (botIds.length === 0) throw error;
+        if (botAppIds.length === 0) throw error;
         this.logger.warn(
-          `迭代沟通群拉入机器人失败，降级为仅拉用户（${backlog.code}）: ${(error as Error).message}`,
+          `迭代沟通群拉入机器人失败，降级为仅拉真人（${backlog.code}）: ${(error as Error).message}`,
         );
-        addedBotIds = [];
+        botsAdded = false;
         chatId = await this.client.createChat(
           official.id,
           secrets,
           row.name,
           `迭代项沟通群（${backlog.code}，需求 #${backlog.projectId}）`,
-          members.openIds,
+          resolved.openIds,
           { idempotencyKey: `backlog-chat-${row.id}` },
         );
       }
+      const addedBotIds = botsAdded ? botAppIds : [];
+      const memberWorkerIds = resolved.targets
+        .filter((target) => target.kind === 'user' || botsAdded)
+        .map((target) => target.workerId);
+      const memberUserIds = resolved.users.map((user) => user.id);
+      const memberNames = resolved.memberNames;
       await this.chats.update(row.id, {
         chatId,
         state: 'active',
         officialConfigId: official.id,
-        memberUserIds: members.users.map((user) => user.id),
-        memberNames: members.users.map((user) => user.name),
+        memberUserIds,
+        memberWorkerIds,
+        memberNames,
         botIds: addedBotIds,
         lastStatus: backlog.status,
         lastError: null,
@@ -324,8 +349,9 @@ export class FeishuBotBacklogChatService
       Object.assign(row, {
         chatId,
         state: 'active',
-        memberUserIds: members.users.map((user) => user.id),
-        memberNames: members.users.map((user) => user.name),
+        memberUserIds,
+        memberWorkerIds,
+        memberNames,
         botIds: addedBotIds,
         lastStatus: backlog.status,
       });
@@ -346,9 +372,9 @@ export class FeishuBotBacklogChatService
               `- **成员**：${
                 row.memberNames.length ? row.memberNames.join('、') : '暂无'
               }`,
-              ...(members.missingNames.length
+              ...(resolved.missingNames.length
                 ? [
-                    `- **未加入**：${members.missingNames.join('、')}（未匹配平台用户或未登录过平台）`,
+                    `- **未加入**：${resolved.missingNames.join('、')}（未匹配平台用户或未登录过平台）`,
                   ]
                 : []),
               `- **迭代项链接**：${this.client.appUrl}/backlogs/${backlog.id}`,
@@ -363,7 +389,7 @@ export class FeishuBotBacklogChatService
         );
       }
       this.logger.log(
-        `迭代沟通群已创建：${backlog.code} → chat ${chatId}（${members.users.length} 人，${addedBotIds.length} 个机器人）`,
+        `迭代沟通群已创建：${backlog.code} → chat ${chatId}（${resolved.openIds.length} 人，${addedBotIds.length} 个机器人）`,
       );
     } catch (error) {
       const message = (error as Error).message;
@@ -373,81 +399,236 @@ export class FeishuBotBacklogChatService
     }
   }
 
-  /** backlog 成员（已存 userId）解析为平台用户与飞书 open_id */
+  /**
+   * backlog 成员（统一为机器人）解析为飞书落地目标：
+   * 真人机器人 → 绑定真人的 open_id；AI 机器人 → 其绑定的独立飞书应用 app_id。
+   * 无法解析的成员计入 missingNames。
+   */
   private async resolveMembers(
     official: FeishuBotConfig,
     backlog: Backlog,
   ): Promise<ResolvedMembers> {
     const members = backlog.members ?? [];
-    if (members.length === 0)
-      return { users: [], openIds: [], missingNames: [] };
-    const userIds = [...new Set(members.map((m) => m.userId))];
-    const found = await this.users.find({ where: { id: In(userIds) } });
-    const byId = new Map(found.map((user) => [user.id, user]));
-    const users: User[] = [];
-    const openIds: string[] = [];
+    if (members.length === 0) {
+      return {
+        targets: [],
+        users: [],
+        openIds: [],
+        botAppIds: [],
+        memberNames: [],
+        missingNames: [],
+      };
+    }
+    const workerIds = [...new Set(members.map((m) => m.workerId))];
+    const workers = await this.workers.find({
+      where: { id: In(workerIds) },
+    });
+    const workerById = new Map(workers.map((worker) => [worker.id, worker]));
+    const humanUserIds = [
+      ...new Set(
+        workers
+          .filter((worker) => worker.runtime === WorkerRuntime.HUMAN)
+          .map((worker) => worker.humanUserId)
+          .filter((id): id is number => id !== null),
+      ),
+    ];
+    const users = humanUserIds.length
+      ? await this.users.find({ where: { id: In(humanUserIds) } })
+      : [];
+    const userById = new Map(users.map((user) => [user.id, user]));
+
+    const targets: MemberTarget[] = [];
+    const memberUsers: User[] = [];
     const missingNames: string[] = [];
+    const seenWorker = new Set<number>();
     const seenOpenIds = new Set<string>();
-    const seenUserIds = new Set<number>();
+    const seenAppIds = new Set<string>();
+    let userCount = 0;
+    let botCount = 0;
+
     for (const member of members) {
-      const user = byId.get(member.userId);
-      if (!user || seenUserIds.has(user.id)) {
-        if (!user) missingNames.push(member.name);
-        continue;
-      }
-      seenUserIds.add(user.id);
-      const openId =
-        (await this.identities.openIdFor(official.id, user.id)) ??
-        user.feishuOpenId;
-      if (!openId || seenOpenIds.has(openId)) {
+      if (seenWorker.has(member.workerId)) continue;
+      seenWorker.add(member.workerId);
+      const worker = workerById.get(member.workerId);
+      if (!worker) {
         missingNames.push(member.name);
         continue;
       }
-      seenOpenIds.add(openId);
-      users.push(user);
-      if (openIds.length < MAX_CHAT_MEMBERS) openIds.push(openId);
+      if (worker.runtime === WorkerRuntime.HUMAN) {
+        const userId = worker.humanUserId;
+        const user = userId !== null ? userById.get(userId) : undefined;
+        if (!user || userCount >= MAX_CHAT_MEMBERS) {
+          missingNames.push(member.name);
+          continue;
+        }
+        const openId =
+          (await this.identities.openIdFor(official.id, user.id)) ??
+          user.feishuOpenId;
+        if (!openId || seenOpenIds.has(openId)) {
+          missingNames.push(member.name);
+          continue;
+        }
+        seenOpenIds.add(openId);
+        userCount += 1;
+        memberUsers.push(user);
+        targets.push({
+          workerId: worker.id,
+          kind: 'user',
+          id: openId,
+          name: user.name,
+          userId: user.id,
+        });
+        continue;
+      }
+
+      // AI 机器人：绑定独立飞书应用才可拉入群（排除官方应用自身）
+      const config = await this.configs.findEnabledWorkerConfig(worker.id);
+      if (
+        !config ||
+        config.appId === official.appId ||
+        seenAppIds.has(config.appId) ||
+        botCount >= MAX_BOT_MEMBERS
+      ) {
+        continue;
+      }
+      seenAppIds.add(config.appId);
+      botCount += 1;
+      targets.push({
+        workerId: worker.id,
+        kind: 'bot',
+        id: config.appId,
+        name: worker.name,
+      });
     }
-    return { users, openIds, missingNames };
+
+    return {
+      targets,
+      users: memberUsers,
+      openIds: targets
+        .filter((target) => target.kind === 'user')
+        .map((target) => target.id),
+      botAppIds: targets
+        .filter((target) => target.kind === 'bot')
+        .map((target) => target.id),
+      memberNames: targets.map((target) => target.name),
+      missingNames,
+    };
   }
 
-  /** 负责人机器人绑定了独立飞书应用时一并拉入群（排除官方机器人自身） */
-  private async resolveBotIds(
-    backlog: Backlog,
-    official: FeishuBotConfig,
-  ): Promise<string[]> {
-    if (!backlog.ownerWorkerId) return [];
-    const config = await this.configs.findEnabledWorkerConfig(
-      backlog.ownerWorkerId,
+  /**
+   * 成员变化后把新增成员拉进已有群（只加不减）。
+   * 由迭代项成员保存 / 负责人变化 / 需求方联动触发；无群或终态时直接返回。
+   */
+  async syncMembers(backlogId: number): Promise<void> {
+    const [backlog, row] = await Promise.all([
+      this.backlogs.findOne({ where: { id: backlogId } }),
+      this.chats.findOne({ where: { backlogId } }),
+    ]);
+    if (!backlog || !row || row.state !== 'active' || !row.chatId) return;
+    if (isBacklogTerminal(backlog.status)) return;
+    const official = await this.configs.loadEnabledWithSecrets(
+      row.officialConfigId,
     );
-    if (!config || config.appId === official.appId) return [];
-    return [config.appId];
+    if (!official) return;
+    const secrets = this.configs.secretsOf(official);
+    await this.withLock(`backlog-chat:${row.id}`, async () => {
+      const fresh = await this.chats.findOne({ where: { id: row.id } });
+      if (!fresh || fresh.state !== 'active' || !fresh.chatId) return;
+      const current = await this.backlogs.findOne({ where: { id: backlogId } });
+      if (!current) return;
+      await this.syncMembersInternal(fresh, current, official, secrets);
+    });
   }
 
-  /** 负责人机器人可能在建群后才绑定飞书应用，对账时补拉 */
-  private async syncOwnerBot(
+  /** 增量同步群成员：与已跟踪的机器人集合求差集后只补加缺失成员 */
+  private async syncMembersInternal(
     row: FeishuBotBacklogChat,
     backlog: Backlog,
     official: FeishuBotConfig,
     secrets: FeishuBotSecrets,
   ): Promise<void> {
     if (!row.chatId) return;
-    const [botId] = await this.resolveBotIds(backlog, official);
-    if (!botId || row.botIds.includes(botId)) return;
-    try {
-      await this.client.addChatMembers(
-        row.officialConfigId,
-        secrets,
-        row.chatId,
-        [botId],
-      );
-      const botIds = [...row.botIds, botId];
-      await this.chats.update(row.id, { botIds });
-      row.botIds = botIds;
-    } catch (error) {
-      this.logger.warn(
-        `迭代沟通群补拉负责人机器人失败（${backlog.code}, ${botId}）: ${(error as Error).message}`,
-      );
+    const resolved = await this.resolveMembers(official, backlog);
+    const added = new Set(row.memberWorkerIds ?? []);
+
+    // 存量群首次同步（升级前无跟踪）：视为当前成员已入群，仅补建跟踪避免重复拉人
+    if (added.size === 0) {
+      const seed = resolved.targets.map((target) => target.workerId);
+      if (seed.length === 0) return;
+      await this.chats.update(row.id, { memberWorkerIds: seed });
+      row.memberWorkerIds = seed;
+      return;
     }
+
+    const newTargets = resolved.targets.filter(
+      (target) => !added.has(target.workerId),
+    );
+    if (newTargets.length === 0) return;
+
+    const addedWorkerIds = new Set(added);
+    const newNames = new Set(row.memberNames ?? []);
+    const newUserIds = new Set(row.memberUserIds ?? []);
+    const newBotIds = new Set(row.botIds ?? []);
+
+    const userTargets = newTargets.filter((target) => target.kind === 'user');
+    if (userTargets.length > 0) {
+      try {
+        await this.client.addChatUsers(
+          row.officialConfigId,
+          secrets,
+          row.chatId,
+          userTargets.map((target) => target.id),
+        );
+        for (const target of userTargets) {
+          addedWorkerIds.add(target.workerId);
+          newNames.add(target.name);
+          if (target.userId) newUserIds.add(target.userId);
+        }
+      } catch (error) {
+        this.logger.warn(
+          `迭代沟通群补拉成员失败（${backlog.code}）: ${(error as Error).message}`,
+        );
+      }
+    }
+
+    const botTargets = newTargets.filter((target) => target.kind === 'bot');
+    if (botTargets.length > 0) {
+      try {
+        await this.client.addChatMembers(
+          row.officialConfigId,
+          secrets,
+          row.chatId,
+          botTargets.map((target) => target.id),
+        );
+        for (const target of botTargets) {
+          addedWorkerIds.add(target.workerId);
+          newNames.add(target.name);
+          newBotIds.add(target.id);
+        }
+      } catch (error) {
+        this.logger.warn(
+          `迭代沟通群补拉机器人失败（${backlog.code}）: ${(error as Error).message}`,
+        );
+      }
+    }
+
+    const memberWorkerIds = [...addedWorkerIds];
+    const memberNames = [...newNames];
+    const memberUserIds = [...newUserIds];
+    const botIds = [...newBotIds];
+    await this.chats.update(row.id, {
+      memberWorkerIds,
+      memberNames,
+      memberUserIds,
+      botIds,
+      lastError: null,
+    });
+    Object.assign(row, {
+      memberWorkerIds,
+      memberNames,
+      memberUserIds,
+      botIds,
+    });
   }
 
   /** 终态固定解散时间，所有终态统一保留 7 天 */

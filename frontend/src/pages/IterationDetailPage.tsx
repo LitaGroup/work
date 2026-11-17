@@ -331,7 +331,7 @@ export function IterationDetailPage() {
                       )}
                       {members.map((member) => (
                         <span
-                          key={`${member.role}:${member.userId}`}
+                          key={`${member.role}:${member.workerId}`}
                           title={member.role}
                         >
                           {member.name}

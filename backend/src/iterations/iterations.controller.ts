@@ -242,8 +242,12 @@ export class BacklogsController {
   @Get(':id')
   findOne(
     @Param('id', ParseIntPipe) id: number,
+    @Req() req: AuthedRequest,
   ): ReturnType<BacklogsService['getDetail']> {
-    return this.backlogsService.getDetail(id);
+    return this.backlogsService.getDetail(
+      id,
+      req.user ? iterationActor(req) : undefined,
+    );
   }
 
   /** 状态流转（成员或管理员）：备注可空，写入事件流 */

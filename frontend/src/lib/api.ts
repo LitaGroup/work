@@ -51,9 +51,13 @@ export type IterationStatus = (typeof ITERATION_STATUSES)[number]
 export const BACKLOG_STATUSES = ['等待', '执行', '测试', '发布', '完成', '取消'] as const
 export type BacklogStatus = (typeof BACKLOG_STATUSES)[number]
 
-/** 迭代项成员角色（与后端 BacklogMemberRole 对应） */
+/** 迭代项成员角色（可手动维护，与后端 MANUAL_BACKLOG_MEMBER_ROLES 对应） */
 export const BACKLOG_MEMBER_ROLES = ['产品', '业务', '项目', '前端', '后端', '测试', '客户端'] as const
-export type BacklogMemberRole = (typeof BACKLOG_MEMBER_ROLES)[number]
+/** 系统自动列入的成员角色（负责人/需求方，不可手动添加/移除） */
+export const AUTO_BACKLOG_MEMBER_ROLES = ['负责人', '需求方'] as const
+export type BacklogMemberRole =
+  | (typeof BACKLOG_MEMBER_ROLES)[number]
+  | (typeof AUTO_BACKLOG_MEMBER_ROLES)[number]
 
 /** APP 自动化测试目标应用（与后端 AppTarget 对应，app_versions 用） */
 export const APP_TARGETS = ['lita', 'lita lite'] as const
@@ -749,10 +753,10 @@ export interface IterationGroup {
   items: Project[]
 }
 
-/** 迭代项成员（角色 + 平台用户 + 姓名快照） */
+/** 迭代项成员（角色 + 机器人 + 名称快照；真人用真人机器人，AI 用普通机器人） */
 export interface BacklogMember {
   role: BacklogMemberRole
-  userId: number
+  workerId: number
   name: string
 }
 
@@ -851,6 +855,8 @@ export interface BacklogDetail extends Backlog {
   iteration: { id: number; code: string; type: IterationType } | null
   releaseWorkflow: BacklogReleaseWorkflow | null
   feishuChat: BacklogFeishuChat | null
+  /** 当前查看者是否可操作（管理员或手动成员；自动列入的负责人/需求方不计） */
+  canOperate: boolean
 }
 
 /** 迭代项关联文档摘要（不含正文大字段） */
@@ -2682,7 +2688,11 @@ export const api = {
     items: Array<{
       projectId: number
       ownerWorkerId: number | null
-      members?: Array<{ role: BacklogMemberRole; userId: number }>
+      members?: Array<{
+        role: BacklogMemberRole
+        workerId?: number
+        userId?: number
+      }>
     }>,
   ) =>
     request<Backlog[]>(`/iterations/${iterationId}/backlogs`, {
@@ -2776,10 +2786,14 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ iterationId }),
     }),
-  /** 更新迭代项成员（仅管理员） */
+  /** 更新迭代项成员（仅管理员）；成员为机器人：workerId 直接选机器人，或 userId 选真人自动映射 */
   updateBacklogMembers: (
     id: number,
-    members: Array<{ role: BacklogMemberRole; userId: number }>,
+    members: Array<{
+      role: BacklogMemberRole
+      workerId?: number
+      userId?: number
+    }>,
   ) =>
     request<Backlog>(`/backlogs/${id}/members`, {
       method: 'PATCH',

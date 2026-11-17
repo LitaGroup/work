@@ -52,6 +52,10 @@ export class FeishuBotBacklogChat {
   @Column({ type: 'simple-json', default: '[]' })
   memberUserIds: number[];
 
+  /** 已拉入群的机器人（workers.id，真人或 AI）；用于只加不减的增量同步 */
+  @Column({ type: 'simple-json', default: '[]' })
+  memberWorkerIds: number[];
+
   /** 建群时成功解析的群成员姓名快照 */
   @Column({ type: 'simple-json', default: '[]' })
   memberNames: string[];

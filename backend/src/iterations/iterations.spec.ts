@@ -55,12 +55,22 @@ function makeService(row: Backlog) {
   const chat = {
     notifyBacklog: jest.fn().mockResolvedValue(undefined),
     describe: jest.fn().mockResolvedValue(null),
+    syncMembers: jest.fn().mockResolvedValue(undefined),
+  };
+  // 成员统一为机器人：真人 userId 映射其真人机器人（测试里取同 id）
+  const workers = {
+    findOne: jest.fn((args?: { where?: { humanUserId?: number } }) =>
+      Promise.resolve(
+        args?.where?.humanUserId ? { id: args.where.humanUserId } : null,
+      ),
+    ),
+    find: jest.fn().mockResolvedValue([]),
   };
   const service = new BacklogsService(
     repository,
     {} as never,
     {} as never,
-    {} as never,
+    workers as never,
     {} as never,
     {} as never,
     events,
@@ -75,7 +85,7 @@ function makeService(row: Backlog) {
     chat as never,
     {} as never,
   );
-  return { service, save, tasks, chat, events };
+  return { service, save, tasks, chat, events, workers };
 }
 
 describe('summarizeBacklogs', () => {
@@ -356,7 +366,7 @@ describe('BacklogsService.updateStatus', () => {
 
   it('成员可推进状态', async () => {
     const { service } = makeService(
-      backlogRow({ members: [{ role: '产品', userId: 7, name: '小明' }] }),
+      backlogRow({ members: [{ role: '产品', workerId: 7, name: '小明' }] }),
     );
     const updated = await service.updateStatus(
       1,
@@ -408,7 +418,7 @@ describe('BacklogsService.updateStatus', () => {
 describe('BacklogsService.updateBacklog', () => {
   it('成员可设置预期上线时间', async () => {
     const { service, save } = makeService(
-      backlogRow({ members: [{ role: '产品', userId: 7, name: '小明' }] }),
+      backlogRow({ members: [{ role: '产品', workerId: 7, name: '小明' }] }),
     );
     const updated = await service.updateBacklog(
       1,
@@ -422,7 +432,7 @@ describe('BacklogsService.updateBacklog', () => {
   it('传 null 清空预期上线时间', async () => {
     const { service } = makeService(
       backlogRow({
-        members: [{ role: '产品', userId: 7, name: '小明' }],
+        members: [{ role: '产品', workerId: 7, name: '小明' }],
         expectedOnlineAt: new Date(),
       }),
     );
@@ -436,7 +446,7 @@ describe('BacklogsService.updateBacklog', () => {
 
   it('非法时间格式返回 400', async () => {
     const { service } = makeService(
-      backlogRow({ members: [{ role: '产品', userId: 7, name: '小明' }] }),
+      backlogRow({ members: [{ role: '产品', workerId: 7, name: '小明' }] }),
     );
     await expect(
       service.updateBacklog(1, { expectedOnlineAt: 'not-a-date' }, actor()),
@@ -658,7 +668,7 @@ describe('BacklogsService 指定/改派负责人', () => {
   it('非管理员不可指定负责人', async () => {
     const fixture = makeOwnerFixture({
       row: backlogRow({
-        members: [{ role: '产品', userId: 7, name: '小明' }],
+        members: [{ role: '产品', workerId: 7, name: '小明' }],
       }),
     });
     await expect(
@@ -685,6 +695,8 @@ describe('BacklogsService 成员更新（MCP / 网页）', () => {
     row?: Backlog;
     users?: Array<{ id: number; name: string; enabled?: boolean }>;
     humanWorker?: { id: number; humanUserId: number } | null;
+    /** 原始需求的需求方（projects.owner），用于验证自动列入 */
+    projectOwner?: string | null;
   }) {
     const row = options?.row ?? backlogRow();
     const users = options?.users ?? [
@@ -702,6 +714,11 @@ describe('BacklogsService 成员更新（MCP / 网页）', () => {
     const events = {
       create: jest.fn().mockImplementation((value: unknown) => value),
       save: jest.fn().mockResolvedValue(undefined),
+    };
+    const projectsRepo = {
+      findOne: jest
+        .fn()
+        .mockResolvedValue({ id: 100, owner: options?.projectOwner ?? null }),
     };
     const usersRepo = {
       find: jest.fn(
@@ -730,13 +747,44 @@ describe('BacklogsService 成员更新（MCP / 网页）', () => {
         },
       ),
     };
+    // 真人 userId ↔ 真人机器人 workerId 取同 id，便于断言
+    const humans = users.map((user) => ({
+      id: user.id,
+      humanUserId: user.id,
+      name: user.name,
+      humanUserName: user.name,
+    }));
     const workersRepo = {
       findOne: jest.fn().mockResolvedValue(options?.humanWorker ?? null),
+      find: jest.fn(
+        (args?: {
+          where?: {
+            id?: { value: number[] };
+            humanUserId?: { value: number[] };
+          };
+        }) => {
+          const where = args?.where ?? {};
+          if (where.humanUserId) {
+            return Promise.resolve(
+              humans.filter((human) =>
+                where.humanUserId!.value.includes(human.humanUserId),
+              ),
+            );
+          }
+          if (where.id) {
+            return Promise.resolve(
+              humans.filter((human) => where.id!.value.includes(human.id)),
+            );
+          }
+          return Promise.resolve([]);
+        },
+      ),
     };
+    const chatRepo = { syncMembers: jest.fn().mockResolvedValue(undefined) };
     const service = new BacklogsService(
       repository as never,
       {} as never,
-      {} as never,
+      projectsRepo as never,
       workersRepo as never,
       usersRepo as never,
       {} as never,
@@ -749,16 +797,16 @@ describe('BacklogsService 成员更新（MCP / 网页）', () => {
       {} as never,
       {} as never,
       {} as never,
-      {} as never,
+      chatRepo as never,
       {} as never,
     );
-    return { service, save, events, usersRepo, workersRepo };
+    return { service, save, events, usersRepo, workersRepo, chatRepo };
   }
 
   it('管理员按 userId 整体替换成员并记录 members 事件', async () => {
     const fixture = makeMembersFixture({
       row: backlogRow({
-        members: [{ role: '产品', userId: 7, name: '小明' }],
+        members: [{ role: '产品', workerId: 7, name: '小明' }],
       }),
     });
     const updated = await fixture.service.updateMembers(
@@ -766,8 +814,10 @@ describe('BacklogsService 成员更新（MCP / 网页）', () => {
       [{ role: '前端', userId: 8 }],
       { userId: 1, userName: '管理员', isAdmin: true },
     );
+    // 手动成员 + 自动列入的负责人
     expect(updated.members).toEqual([
-      { role: '前端', userId: 8, name: '小红' },
+      { role: '前端', workerId: 8, name: '小红' },
+      { role: '负责人', workerId: 2, name: '机器人 A' },
     ]);
     expect(fixture.events.save).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -775,8 +825,8 @@ describe('BacklogsService 成员更新（MCP / 网页）', () => {
         type: 'members',
         operator: '管理员',
         payload: {
-          from: [{ role: '产品', userId: 7, name: '小明' }],
-          to: [{ role: '前端', userId: 8, name: '小红' }],
+          from: [{ role: '产品', workerId: 7, name: '小明' }],
+          to: updated.members,
         },
       }),
     );
@@ -790,8 +840,25 @@ describe('BacklogsService 成员更新（MCP / 网页）', () => {
       { userId: 1, userName: '管理员', isAdmin: true },
     );
     expect(updated.members).toEqual([
-      { role: '测试', userId: 7, name: '小明' },
-      { role: '测试', userId: 8, name: '小红' },
+      { role: '测试', workerId: 7, name: '小明' },
+      { role: '测试', workerId: 8, name: '小红' },
+      { role: '负责人', workerId: 2, name: '机器人 A' },
+    ]);
+  });
+
+  it('需求方自动列入成员（projects.owner → 真人机器人）', async () => {
+    const fixture = makeMembersFixture({
+      row: backlogRow({ ownerWorkerId: null, ownerName: null }),
+      projectOwner: '小明、小红',
+    });
+    const updated = await fixture.service.updateMembers(1, [], {
+      userId: 1,
+      userName: '管理员',
+      isAdmin: true,
+    });
+    expect(updated.members).toEqual([
+      { role: '需求方', workerId: 7, name: '小明' },
+      { role: '需求方', workerId: 8, name: '小红' },
     ]);
   });
 
@@ -806,10 +873,12 @@ describe('BacklogsService 成员更新（MCP / 网页）', () => {
     ).rejects.toThrow(/不存在的人/);
   });
 
-  it('空数组清空成员', async () => {
+  it('空数组清空手动成员（无负责人/需求方时为空）', async () => {
     const fixture = makeMembersFixture({
       row: backlogRow({
-        members: [{ role: '产品', userId: 7, name: '小明' }],
+        members: [{ role: '产品', workerId: 7, name: '小明' }],
+        ownerWorkerId: null,
+        ownerName: null,
       }),
     });
     const updated = await fixture.service.updateMembers(1, [], {
@@ -830,7 +899,8 @@ describe('BacklogsService 成员更新（MCP / 网页）', () => {
       { userId: null, userName: '机器人 A', isAdmin: false, workerId: 2 },
     );
     expect(updated.members).toEqual([
-      { role: '后端', userId: 9, name: '小刚' },
+      { role: '后端', workerId: 9, name: '小刚' },
+      { role: '负责人', workerId: 2, name: '机器人 A' },
     ]);
   });
 
@@ -845,7 +915,8 @@ describe('BacklogsService 成员更新（MCP / 网页）', () => {
       { userId: 7, userName: '小明', isAdmin: false },
     );
     expect(updated.members).toEqual([
-      { role: '后端', userId: 8, name: '小红' },
+      { role: '后端', workerId: 8, name: '小红' },
+      { role: '负责人', workerId: 9, name: '机器人 A' },
     ]);
   });
 

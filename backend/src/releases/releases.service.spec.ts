@@ -9,6 +9,7 @@ import { Project } from '../projects/project.entity';
 import { User } from '../auth/user.entity';
 import { Task } from '../tasks/task.entity';
 import { TaskWorkerInboxService } from '../tasks/task-worker-inbox.service';
+import { Worker } from '../workers/worker.entity';
 import { ProjectRelease } from './project-release.entity';
 import { ReleasesService } from './releases.service';
 
@@ -85,10 +86,19 @@ describe('ReleasesService', () => {
               {
                 id: 1,
                 members: [
-                  { role: '前端', userId: 2, name: '张三' },
-                  { role: '后端', userId: 3, name: '李四' },
+                  { role: '前端', workerId: 2, name: '张三' },
+                  { role: '后端', workerId: 3, name: '李四' },
                 ],
               },
+            ]),
+          },
+        },
+        {
+          provide: getRepositoryToken(Worker),
+          useValue: {
+            find: jest.fn().mockResolvedValue([
+              { id: 2, humanUserId: 2, humanUserName: '张三', name: '张三' },
+              { id: 3, humanUserId: 3, humanUserName: '李四', name: '李四' },
             ]),
           },
         },
@@ -124,7 +134,7 @@ describe('ReleasesService', () => {
     ]);
     expect(release.testers).toEqual(['王五']);
     expect(release.status).toBe(ReleaseStatus.PENDING);
-    await Promise.resolve(); // 放行 fire-and-forget 通知
+    await new Promise((r) => setTimeout(r, 0)); // 放行 fire-and-forget 通知
     expect(sendUserCard).toHaveBeenCalledTimes(3); // 张三/李四/王五 去重后
   });
 
@@ -191,6 +201,10 @@ describe('ReleasesService', () => {
         { provide: getRepositoryToken(User), useValue: { find: usersFind } },
         {
           provide: getRepositoryToken(Backlog),
+          useValue: { find: jest.fn().mockResolvedValue([]) },
+        },
+        {
+          provide: getRepositoryToken(Worker),
           useValue: { find: jest.fn().mockResolvedValue([]) },
         },
         {
@@ -354,6 +368,10 @@ describe('ReleasesService', () => {
         { provide: getRepositoryToken(User), useValue: { find: usersFind } },
         {
           provide: getRepositoryToken(Backlog),
+          useValue: { find: jest.fn().mockResolvedValue([]) },
+        },
+        {
+          provide: getRepositoryToken(Worker),
           useValue: { find: jest.fn().mockResolvedValue([]) },
         },
         {

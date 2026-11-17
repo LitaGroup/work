@@ -6,6 +6,7 @@ import { Backlog } from '../iterations/backlog.entity';
 import { Project } from '../projects/project.entity';
 import { Task } from '../tasks/task.entity';
 import { TasksModule } from '../tasks/tasks.module';
+import { Worker } from '../workers/worker.entity';
 import { ProjectRelease } from './project-release.entity';
 import {
   ReleaseRecordsController,
@@ -16,7 +17,14 @@ import { ReleasesService } from './releases.service';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([ProjectRelease, Project, User, Task, Backlog]),
+    TypeOrmModule.forFeature([
+      ProjectRelease,
+      Project,
+      User,
+      Task,
+      Backlog,
+      Worker,
+    ]),
     FeishuModule,
     TasksModule,
   ],
