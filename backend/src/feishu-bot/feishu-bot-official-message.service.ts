@@ -13,6 +13,7 @@ import { UserRole } from '../common/enums';
 import type { Worker } from '../workers/worker.entity';
 import type { FeishuReceiveIdType } from './feishu-bot-client.service';
 import { FeishuBotConfigService } from './feishu-bot-config.service';
+import { feishuGroupSendPaused } from './feishu-bot-group-pause';
 import { FeishuBotIdentityService } from './feishu-bot-identity.service';
 import { FeishuBotMessageService } from './feishu-bot-message.service';
 import {
@@ -149,6 +150,12 @@ export class FeishuBotOfficialMessageService {
     }
 
     try {
+      // 指定群 chat_id 属于群外发：暂停期间直接拒绝并记审计失败（target 为私聊时照常发送）
+      if (target.type === 'chat' && feishuGroupSendPaused()) {
+        throw new ServiceUnavailableException(
+          '平台已暂停飞书群消息发送（FEISHU_GROUP_SEND_PAUSED），恢复后再试',
+        );
+      }
       const results = await this.messages.sendMarkdown(
         config.id,
         this.configs.secretsOf(config),

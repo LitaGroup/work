@@ -19,6 +19,7 @@ import type {
   FeishuBotSecrets,
 } from './feishu-bot-config.entity';
 import { FeishuBotConfigService } from './feishu-bot-config.service';
+import { feishuGroupSendPaused } from './feishu-bot-group-pause';
 import { FeishuBotIdentityService } from './feishu-bot-identity.service';
 import { markdownCard } from './feishu-bot-message.service';
 import {
@@ -155,6 +156,11 @@ export class FeishuBotBacklogChatService
     if (!official) {
       throw new BadRequestException('平台官方机器人未配置，暂不能创建飞书群');
     }
+    if (feishuGroupSendPaused()) {
+      throw new BadRequestException(
+        '平台已暂停飞书群消息与建群（FEISHU_GROUP_SEND_PAUSED），恢复后再试',
+      );
+    }
 
     let row = await this.chats.findOne({ where: { backlogId } });
     if (!row) {
@@ -224,6 +230,8 @@ export class FeishuBotBacklogChatService
     const row = await this.chats.findOne({ where: { backlogId } });
     if (!row || row.state !== 'active' || !row.chatId) return;
     if (row.lastStatus === backlog.status) return;
+    // 暂停期间不推送状态卡片；恢复后由对账补发一次最新状态
+    if (feishuGroupSendPaused()) return;
     const official = await this.configs.loadEnabledWithSecrets(
       row.officialConfigId,
     );
@@ -253,6 +261,10 @@ export class FeishuBotBacklogChatService
 
   private async reconcileOnce(): Promise<void> {
     const official = await this.configs.loadEnabledOfficial();
+    const paused = feishuGroupSendPaused();
+    if (paused) {
+      this.logger.debug('飞书群消息已暂停：跳过迭代沟通群建群、拉人与状态卡片');
+    }
     const rows = await this.chats.find();
     const backlogIds = rows.map((row) => row.backlogId);
     const backlogs = backlogIds.length
@@ -274,6 +286,7 @@ export class FeishuBotBacklogChatService
         const fresh = await this.chats.findOne({ where: { id: row.id } });
         if (!fresh || fresh.state === 'destroyed') return;
         if (
+          !paused &&
           (!fresh.chatId ||
             fresh.state === 'creating' ||
             fresh.state === 'error') &&
@@ -285,11 +298,11 @@ export class FeishuBotBacklogChatService
         if (fresh.state !== 'active' || !fresh.chatId) return;
         if (!(await this.ensureChatAlive(fresh, secrets))) return;
 
-        if (!isBacklogTerminal(backlog.status)) {
+        if (!isBacklogTerminal(backlog.status) && !paused) {
           await this.syncMembersInternal(fresh, backlog, official, secrets);
         }
         await this.markFinished(fresh, backlog);
-        if (fresh.lastStatus !== backlog.status) {
+        if (fresh.lastStatus !== backlog.status && !paused) {
           await this.sendStatusCard(fresh, backlog, official, secrets);
         }
         if (fresh.destroyAfter && fresh.destroyAfter.getTime() <= Date.now()) {
@@ -306,6 +319,7 @@ export class FeishuBotBacklogChatService
     secrets: FeishuBotSecrets,
     backlog: Backlog,
   ): Promise<void> {
+    if (feishuGroupSendPaused()) return;
     const resolved = await this.resolveMembers(official, backlog);
     const botAppIds = resolved.botAppIds;
     try {
@@ -574,6 +588,8 @@ export class FeishuBotBacklogChatService
    * 由迭代项成员保存 / 负责人变化 / 需求方联动触发；无群或终态时直接返回。
    */
   async syncMembers(backlogId: number): Promise<void> {
+    // 暂停期间不拉人；恢复后由对账按当前成员补齐
+    if (feishuGroupSendPaused()) return;
     const [backlog, row] = await Promise.all([
       this.backlogs.findOne({ where: { id: backlogId } }),
       this.chats.findOne({ where: { backlogId } }),
@@ -606,7 +622,7 @@ export class FeishuBotBacklogChatService
     official: FeishuBotConfig,
     secrets: FeishuBotSecrets,
   ): Promise<void> {
-    if (!row.chatId) return;
+    if (!row.chatId || feishuGroupSendPaused()) return;
     const resolved = await this.resolveMembers(official, backlog);
     const added = new Set(row.memberWorkerIds ?? []);
     const newTargets = resolved.targets.filter(
@@ -701,6 +717,7 @@ export class FeishuBotBacklogChatService
     secrets: FeishuBotSecrets,
   ): Promise<void> {
     if (!row.chatId || row.state !== 'active') return;
+    if (feishuGroupSendPaused()) return;
     const terminal = isBacklogTerminal(backlog.status);
     if (terminal && row.finishedNotified) return;
     try {

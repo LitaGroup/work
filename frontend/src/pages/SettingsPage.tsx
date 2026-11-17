@@ -191,6 +191,16 @@ export function SettingsPage() {
                 hint="FEISHU_PROJECT_SOURCE_URL（未配置用内置默认）"
               />
               <div className="flex items-center justify-between gap-2">
+                <span className="text-sm">飞书群消息（运维止血开关）</span>
+                <Badge
+                  variant={settings.feishuGroupSendPaused ? 'soft' : 'success'}
+                >
+                  {settings.feishuGroupSendPaused
+                    ? '已暂停 FEISHU_GROUP_SEND_PAUSED'
+                    : '正常'}
+                </Badge>
+              </div>
+              <div className="flex items-center justify-between gap-2">
                 <span className="text-sm">飞书官方机器人（登录与通知统一凭据）</span>
                 <Badge
                   variant={

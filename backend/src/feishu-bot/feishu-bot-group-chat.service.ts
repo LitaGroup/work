@@ -50,6 +50,7 @@ import {
   FeishuBotFeedbackService,
   type CollectedTopicFeedback,
 } from './feishu-bot-feedback.service';
+import { feishuGroupSendPaused } from './feishu-bot-group-pause';
 import {
   FeishuBotMessageService,
   mapTextAnswer,
@@ -759,9 +760,10 @@ export class FeishuBotGroupChatService {
       );
       if (history) content = `${history}\n${content}`;
     }
-    // 仅被 @ 策略给触发消息加「敲键盘」表情；智能模式不给每条消息加回应，避免刷屏
+    // 仅被 @ 策略给触发消息加「敲键盘」表情；智能模式不给每条消息加回应，避免刷屏；
+    // 飞书群消息暂停期间也不加（否则出现「处理中」却始终无回复）
     const reaction =
-      policy === 'at'
+      policy === 'at' && !feishuGroupSendPaused()
         ? await this.client.react(
             config.id,
             secrets,
@@ -1838,6 +1840,8 @@ export class FeishuBotGroupChatService {
     groups: McpBotQuestionGroup[],
     sentQuestionIds: Set<string>,
   ): Promise<void> {
+    // 暂停期间不发群提问卡片（不创建待答卡片，避免恢复后出现无主卡片）
+    if (feishuGroupSendPaused()) return;
     for (const group of groups) {
       if (sentQuestionIds.has(group.id)) continue;
       sentQuestionIds.add(group.id);
@@ -1907,6 +1911,20 @@ export class FeishuBotGroupChatService {
           run.incomingMessageId,
           run.reactionId,
         );
+      }
+      // 飞书群消息暂停：本轮回复不外发，按 AI 静默记录（恢复后不补发历史回复）
+      if (feishuGroupSendPaused()) {
+        this.logger.log(
+          `飞书群消息已暂停，本轮回复未外发（chat=${run.chatId}）`,
+        );
+        if (run.recordId) {
+          await this.markDecision(run.recordId, 'silent');
+        }
+        for (const recordId of run.recordIds ?? []) {
+          await this.markDecision(recordId, 'silent');
+        }
+        this.scheduleChatBatchFlush(run.configId, run.chatId);
+        return;
       }
       // 智能/反馈模式且无错误、回复仅为静默标记：不发群消息，记为 AI 静默
       if (
@@ -1997,6 +2015,8 @@ export class FeishuBotGroupChatService {
     replyToMessageId: string | null,
     text: string,
   ): Promise<void> {
+    // 飞书群消息暂停：外部群回执/提示全部不外发（机器人照常执行与记录）
+    if (feishuGroupSendPaused()) return;
     if (replyToMessageId) {
       await this.client
         .replyText(configId, secrets, replyToMessageId, text)

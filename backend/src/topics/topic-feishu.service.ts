@@ -20,6 +20,7 @@ import {
   type FeishuBotSecrets,
 } from '../feishu-bot/feishu-bot-config.entity';
 import { FeishuBotConfigService } from '../feishu-bot/feishu-bot-config.service';
+import { feishuGroupSendPaused } from '../feishu-bot/feishu-bot-group-pause';
 import { FeishuBotIdentityService } from '../feishu-bot/feishu-bot-identity.service';
 import {
   imageKeysOf,
@@ -126,6 +127,10 @@ export class TopicFeishuService implements OnModuleInit, OnModuleDestroy {
     if (!topic || topic.feishuChatId || topic.feishuRootMessageId) return;
     const binding = await this.resolveChat(topic.subjectType, topic.subjectId);
     if (!binding) return;
+    if (feishuGroupSendPaused()) {
+      this.logger.debug(`话题 #${topic.id} 未同步飞书群：已暂停飞书群消息`);
+      return;
+    }
     const config = await this.configs.loadEnabledOfficial();
     if (!config) {
       this.logger.warn(
@@ -176,6 +181,8 @@ export class TopicFeishuService implements OnModuleInit, OnModuleDestroy {
 
   /** 平台帖子同步到已绑定话题（未绑定时先补建根卡片） */
   private async syncPost(topicId: number, post: TopicPost): Promise<void> {
+    // 暂停期间不回帖落群；恢复后新帖子会继续同步
+    if (feishuGroupSendPaused()) return;
     let topic = await this.topicRepo.findOne({ where: { id: topicId } });
     if (!topic) return;
     if (!topic.feishuRootMessageId) {

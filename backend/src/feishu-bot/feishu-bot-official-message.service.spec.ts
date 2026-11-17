@@ -190,4 +190,44 @@ describe('FeishuBotOfficialMessageService', () => {
       service.send({ chatId: 'oc_group', content: '你好' }, sender),
     ).resolves.toMatchObject({ messageIds: ['om_1', 'om_2'] });
   });
+
+  describe('飞书群消息暂停（FEISHU_GROUP_SEND_PAUSED）', () => {
+    const original = process.env.FEISHU_GROUP_SEND_PAUSED;
+
+    afterEach(() => {
+      if (original === undefined) delete process.env.FEISHU_GROUP_SEND_PAUSED;
+      else process.env.FEISHU_GROUP_SEND_PAUSED = original;
+    });
+
+    it('指定 chat_id 时拒绝发送并记失败审计', async () => {
+      process.env.FEISHU_GROUP_SEND_PAUSED = 'true';
+      const { service, messages, audits } = setup();
+      await expect(
+        service.send({ chatId: 'oc_group', content: '群通知' }, sender),
+      ).rejects.toThrow('已暂停飞书群消息发送');
+      expect(messages.sendMarkdown).not.toHaveBeenCalled();
+      expect(audits.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: 'failed',
+          targetType: 'chat',
+          targetId: 'oc_group',
+        }),
+      );
+    });
+
+    it('私聊目标不受暂停影响', async () => {
+      process.env.FEISHU_GROUP_SEND_PAUSED = 'true';
+      const { service, messages } = setup();
+      await service.send({ userId: 7, content: '私聊通知' }, sender);
+      expect(messages.sendMarkdown).toHaveBeenCalledWith(
+        1,
+        expect.anything(),
+        'open_id',
+        'ou_official',
+        '私聊通知',
+        undefined,
+        undefined,
+      );
+    });
+  });
 });

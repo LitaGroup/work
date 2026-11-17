@@ -14,6 +14,7 @@ import type {
   FeishuBotSecrets,
 } from './feishu-bot-config.entity';
 import { FeishuBotConfigService } from './feishu-bot-config.service';
+import { feishuGroupSendPaused } from './feishu-bot-group-pause';
 import {
   FeishuBotIdentityService,
   type FeishuSenderId,
@@ -90,6 +91,7 @@ export class FeishuBotTaskChatService {
 
   private async reconcileOnce(): Promise<void> {
     const official = await this.configs.loadEnabledOfficial();
+    const paused = feishuGroupSendPaused();
     const rows = await this.chats.find();
     const taskIds = rows.map((row) => row.taskId);
     const taskMap = new Map<number, Task>();
@@ -142,7 +144,8 @@ export class FeishuBotTaskChatService {
           !row.finishedNotified &&
           row.state === 'active' &&
           row.chatId &&
-          secrets
+          secrets &&
+          !paused
         ) {
           await this.sendFinishCard(row, task, secrets);
         }
@@ -160,7 +163,12 @@ export class FeishuBotTaskChatService {
       }
     }
 
-    if (!official) return;
+    if (!official || paused) {
+      if (paused) {
+        this.logger.debug('飞书群消息已暂停：跳过任务群建群与重试');
+      }
+      return;
+    }
     const secrets = this.configs.secretsOf(official);
     const bound = new Set(rows.map((row) => row.taskId));
     const candidates = await this.tasks.find({
@@ -248,6 +256,8 @@ export class FeishuBotTaskChatService {
     existing: FeishuBotTaskChat | null,
     parties?: TaskParties,
   ): Promise<void> {
+    // 建群与拉人同样属于群外发，暂停期间直接跳过（不写绑定、不消耗重试次数）
+    if (feishuGroupSendPaused()) return;
     let row = existing;
     if (!row) {
       if (!parties) return;
@@ -427,40 +437,31 @@ export class FeishuBotTaskChatService {
       return;
     }
     if (message.messageType !== 'text') {
-      await this.client
-        .sendText(
-          config.id,
-          secrets,
-          'chat_id',
-          message.chatId,
-          '任务群暂只支持文本消息（图片/文件请到任务详情页上传）。',
-        )
-        .catch(() => {});
+      await this.sendGroupText(
+        config.id,
+        secrets,
+        message.chatId,
+        '任务群暂只支持文本消息（图片/文件请到任务详情页上传）。',
+      );
       return;
     }
     const user = await this.identities.resolve(config, sender);
     if (!user) {
-      await this.client
-        .sendText(
-          config.id,
-          secrets,
-          'chat_id',
-          message.chatId,
-          '未识别平台账号：请先用当前飞书账号登录平台一次后重试。',
-        )
-        .catch(() => {});
+      await this.sendGroupText(
+        config.id,
+        secrets,
+        message.chatId,
+        '未识别平台账号：请先用当前飞书账号登录平台一次后重试。',
+      );
       return;
     }
     if (user.id !== row.humanUserId) {
-      await this.client
-        .sendText(
-          config.id,
-          secrets,
-          'chat_id',
-          message.chatId,
-          '仅任务参与人可与任务 AI 对话。',
-        )
-        .catch(() => {});
+      await this.sendGroupText(
+        config.id,
+        secrets,
+        message.chatId,
+        '仅任务参与人可与任务 AI 对话。',
+      );
       return;
     }
     let text = '';
@@ -481,28 +482,40 @@ export class FeishuBotTaskChatService {
         text,
         perspective,
       );
-      await this.client.sendCard(
-        config.id,
-        secrets,
-        'chat_id',
-        message.chatId,
-        markdownCard(
-          [
-            `**已转达给任务 AI**（${row.taskCode}，状态：${task.status}-${task.subStatus}）`,
-            `> ${text.slice(0, 500)}${text.length > 500 ? '\n…' : ''}`,
-          ].join('\n'),
-        ),
-      );
-    } catch (error) {
-      await this.client
-        .sendText(
+      if (!feishuGroupSendPaused()) {
+        await this.client.sendCard(
           config.id,
           secrets,
           'chat_id',
           message.chatId,
-          `消息转达失败：${(error as Error).message}`,
-        )
-        .catch(() => {});
+          markdownCard(
+            [
+              `**已转达给任务 AI**（${row.taskCode}，状态：${task.status}-${task.subStatus}）`,
+              `> ${text.slice(0, 500)}${text.length > 500 ? '\n…' : ''}`,
+            ].join('\n'),
+          ),
+        );
+      }
+    } catch (error) {
+      await this.sendGroupText(
+        config.id,
+        secrets,
+        message.chatId,
+        `消息转达失败：${(error as Error).message}`,
+      );
     }
+  }
+
+  /** 任务群文本外发：飞书群消息暂停期间跳过（任务流转不受影响） */
+  private async sendGroupText(
+    configId: number,
+    secrets: FeishuBotSecrets,
+    chatId: string,
+    text: string,
+  ): Promise<void> {
+    if (feishuGroupSendPaused()) return;
+    await this.client
+      .sendText(configId, secrets, 'chat_id', chatId, text)
+      .catch(() => {});
   }
 }

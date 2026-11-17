@@ -1231,6 +1231,8 @@ export interface Settings {
   litaApiHost: string
   /** 项目同步源多维表格地址（FEISHU_PROJECT_SOURCE_URL，未配置用内置默认） */
   feishuProjectSourceUrl: string
+  /** 飞书群消息是否已暂停（FEISHU_GROUP_SEND_PAUSED，运维止血开关） */
+  feishuGroupSendPaused: boolean
   /** 平台官方机器人（飞书统一凭据：tenant token 与 OAuth 登录）配置状态 */
   feishuOfficialBot: {
     configured: boolean

@@ -231,4 +231,34 @@ describe('FeishuBotBacklogChatService', () => {
 
     expect(chat()?.state).toBe('active');
   });
+
+  describe('飞书群消息暂停（FEISHU_GROUP_SEND_PAUSED）', () => {
+    const original = process.env.FEISHU_GROUP_SEND_PAUSED;
+
+    beforeEach(() => {
+      process.env.FEISHU_GROUP_SEND_PAUSED = 'true';
+    });
+
+    afterEach(() => {
+      if (original === undefined) delete process.env.FEISHU_GROUP_SEND_PAUSED;
+      else process.env.FEISHU_GROUP_SEND_PAUSED = original;
+    });
+
+    it('对账暂停拉人与状态卡片，且不消耗建群重试次数', async () => {
+      const { service, client, chats } = setup();
+
+      await service.reconcile();
+
+      expect(client.addChatUsers).not.toHaveBeenCalled();
+      expect(client.sendCard).not.toHaveBeenCalled();
+      expect(chats.increment).not.toHaveBeenCalled();
+    });
+
+    it('手动建群在暂停期间明确拒绝', async () => {
+      const { service } = setup(null);
+      await expect(service.createForBacklog(2)).rejects.toThrow(
+        '已暂停飞书群消息与建群',
+      );
+    });
+  });
 });

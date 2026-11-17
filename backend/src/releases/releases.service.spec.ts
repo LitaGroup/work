@@ -21,6 +21,9 @@ describe('ReleasesService', () => {
   let tasksFindOne: jest.Mock;
   let sendUserCard: jest.Mock;
   let enqueueReleaseStatus: jest.Mock;
+  let fetchMock: jest.Mock;
+  const realFetch = globalThis.fetch;
+  const realPause = process.env.FEISHU_GROUP_SEND_PAUSED;
 
   const project = (over: Partial<Project> = {}): Project =>
     ({
@@ -30,37 +33,9 @@ describe('ReleasesService', () => {
       ...over,
     }) as Project;
 
-  beforeEach(async () => {
-    releasesSave = jest.fn();
-    releasesSave.mockImplementation((v: Partial<ProjectRelease>) =>
-      Promise.resolve({ id: 9, createdAt: new Date(), ...v } as ProjectRelease),
-    );
-    releasesFindOne = jest.fn();
-    // where.name 为 TypeORM In() FindOperator，取其 .value 还原姓名数组
-    usersFind = jest.fn();
-    usersFind.mockImplementation((args?: { where?: unknown }) => {
-      const where = args?.where;
-      const conditions = Array.isArray(where) ? where : where ? [where] : [];
-      const names = new Set<string>();
-      for (const cond of conditions as Array<{
-        name?: { value?: string[] };
-      }>) {
-        for (const name of cond?.name?.value ?? []) names.add(name);
-      }
-      return Promise.resolve(
-        [...names].map((name) => ({
-          id: names.size,
-          name,
-          feishuOpenId: `ou_${name}`,
-        })),
-      );
-    });
-    tasksFindOne = jest.fn();
-    sendUserCard = jest.fn();
-    sendUserCard.mockResolvedValue(undefined);
-    enqueueReleaseStatus = jest.fn().mockResolvedValue(null);
-
-    const moduleRef = await Test.createTestingModule({
+  /** 标准依赖装配；releaseWebhook 模拟 ConfigService 的 RELEASE_WEBHOOK_URL */
+  const buildModule = (config: { releaseWebhook?: string } = {}) =>
+    Test.createTestingModule({
       providers: [
         ReleasesService,
         {
@@ -111,13 +86,67 @@ describe('ReleasesService', () => {
           provide: TaskWorkerInboxService,
           useValue: { enqueueReleaseStatus },
         },
-        { provide: ConfigService, useValue: { get: () => undefined } },
+        {
+          provide: ConfigService,
+          useValue: {
+            get: (key: string) =>
+              key === 'RELEASE_WEBHOOK_URL' ? config.releaseWebhook : undefined,
+          },
+        },
       ],
     }).compile();
+
+  beforeEach(async () => {
+    releasesSave = jest.fn();
+    releasesSave.mockImplementation((v: Partial<ProjectRelease>) =>
+      Promise.resolve({ id: 9, createdAt: new Date(), ...v } as ProjectRelease),
+    );
+    releasesFindOne = jest.fn();
+    // where.name 为 TypeORM In() FindOperator，取其 .value 还原姓名数组
+    usersFind = jest.fn();
+    usersFind.mockImplementation((args?: { where?: unknown }) => {
+      const where = args?.where;
+      const conditions = Array.isArray(where) ? where : where ? [where] : [];
+      const names = new Set<string>();
+      for (const cond of conditions as Array<{
+        name?: { value?: string[] };
+      }>) {
+        for (const name of cond?.name?.value ?? []) names.add(name);
+      }
+      return Promise.resolve(
+        [...names].map((name) => ({
+          id: names.size,
+          name,
+          feishuOpenId: `ou_${name}`,
+        })),
+      );
+    });
+    tasksFindOne = jest.fn();
+    sendUserCard = jest.fn();
+    sendUserCard.mockResolvedValue(undefined);
+    enqueueReleaseStatus = jest.fn().mockResolvedValue(null);
+    // 群机器人 webhook 打桩：单测不应出网
+    fetchMock = jest.fn();
+    fetchMock.mockImplementation(() =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ code: 0 }),
+      } as Response),
+    );
+    globalThis.fetch = fetchMock;
+
+    const moduleRef = await buildModule();
     service = moduleRef.get(ReleasesService);
   });
 
-  it('提测成功：创建记录（待冒烟）+ 测试人员与迭代项成员私聊通知', async () => {
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    if (realPause === undefined) delete process.env.FEISHU_GROUP_SEND_PAUSED;
+    else process.env.FEISHU_GROUP_SEND_PAUSED = realPause;
+  });
+
+  it('提测成功：创建记录（待冒烟）+ 提测群 + 测试人员与迭代项成员私聊通知', async () => {
     const release = await service.submit(1, {
       content: ' 修复了登录问题 ',
       urls: [' https://staging.example.com ', ''],
@@ -135,7 +164,40 @@ describe('ReleasesService', () => {
     expect(release.testers).toEqual(['王五']);
     expect(release.status).toBe(ReleaseStatus.PENDING);
     await new Promise((r) => setTimeout(r, 0)); // 放行 fire-and-forget 通知
+    // 群机器人 webhook：默认提测群地址 + msg_type 信封（与机器人 API 卡片不同）
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain('/open-apis/bot/v2/hook/819b2008-');
+    const payload = JSON.parse(init.body as string) as {
+      msg_type?: string;
+      card?: { elements?: unknown };
+    };
+    expect(payload.msg_type).toBe('interactive');
+    expect(Array.isArray(payload.card?.elements)).toBe(true);
     expect(sendUserCard).toHaveBeenCalledTimes(3); // 张三/李四/王五 去重后
+  });
+
+  it('配置 RELEASE_WEBHOOK_URL 时推送到自定义群（开发调试群）', async () => {
+    const moduleRef = await buildModule({
+      releaseWebhook:
+        'https://open.feishu.cn/open-apis/bot/v2/hook/1a32d26a-dev',
+    });
+    const svc = moduleRef.get(ReleasesService);
+    await svc.submit(1, { testers: ['王五'] });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://open.feishu.cn/open-apis/bot/v2/hook/1a32d26a-dev',
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
+  it('FEISHU_GROUP_SEND_PAUSED 暂停时跳过提测群推送，私聊照发', async () => {
+    process.env.FEISHU_GROUP_SEND_PAUSED = 'true';
+    const release = await service.submit(1, { testers: ['王五'] });
+    expect(release.id).toBe(9);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(sendUserCard).toHaveBeenCalledTimes(3);
   });
 
   it('机器人提测：记录机器人身份并自动关联当前执行中的任务', async () => {

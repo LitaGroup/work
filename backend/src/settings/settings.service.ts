@@ -8,6 +8,7 @@ import { AgentGateway } from '../agent/agent.gateway';
 import { DEFAULT_PROJECT_SOURCE_URL } from '../projects/project-sync.service';
 import { ScriptLibrarySyncService } from '../scripts/script-library-sync.service';
 import { FeishuBotConfig } from '../feishu-bot/feishu-bot-config.entity';
+import { feishuGroupSendPaused } from '../feishu-bot/feishu-bot-group-pause';
 
 export interface Settings {
   /** 运行环境（NODE_ENV） */
@@ -26,6 +27,8 @@ export interface Settings {
   litaApiHost: string;
   /** 项目同步源多维表格地址（FEISHU_PROJECT_SOURCE_URL，未配置用内置默认） */
   feishuProjectSourceUrl: string;
+  /** 飞书群消息是否已暂停（FEISHU_GROUP_SEND_PAUSED，运维止血开关） */
+  feishuGroupSendPaused: boolean;
   /** 平台官方机器人（飞书统一凭据：tenant token 与 OAuth 登录）配置状态 */
   feishuOfficialBot: {
     configured: boolean;
@@ -116,6 +119,7 @@ export class SettingsService {
       apiUrl: this.apiUrl,
       litaApiHost: this.litaApiHost,
       feishuProjectSourceUrl: this.feishuProjectSourceUrl,
+      feishuGroupSendPaused: feishuGroupSendPaused(),
       feishuOfficialBot: {
         configured: Boolean(official),
         appId: official?.appId ?? null,
@@ -169,6 +173,7 @@ export class SettingsService {
       `- 前端地址：${s.appUrl}`,
       `- 接口地址：${s.apiUrl}`,
       `- Lita API：${s.litaApiHost}`,
+      `- 飞书群消息：${s.feishuGroupSendPaused ? '已暂停（FEISHU_GROUP_SEND_PAUSED，重启生效）' : '正常'}`,
       `- 飞书官方机器人（tenant token 与登录统一凭据）：${
         s.feishuOfficialBot.configured
           ? `\`${s.feishuOfficialBot.appId ?? '-'}\`（${

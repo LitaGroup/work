@@ -400,4 +400,63 @@ describe('FeishuBotProjectChatService', () => {
       lastError: 'feishu down',
     });
   });
+
+  describe('飞书群消息暂停（FEISHU_GROUP_SEND_PAUSED）', () => {
+    const original = process.env.FEISHU_GROUP_SEND_PAUSED;
+
+    beforeEach(() => {
+      process.env.FEISHU_GROUP_SEND_PAUSED = 'true';
+    });
+
+    afterEach(() => {
+      if (original === undefined) delete process.env.FEISHU_GROUP_SEND_PAUSED;
+      else process.env.FEISHU_GROUP_SEND_PAUSED = original;
+    });
+
+    it('暂停期间不建群、不写绑定、不拉人', async () => {
+      const { service, chat, client, chats } = setup();
+
+      await service.ensureForProjectTask(3708, 42);
+      await service.reconcile();
+
+      expect(client.createChat).not.toHaveBeenCalled();
+      expect(client.sendCard).not.toHaveBeenCalled();
+      expect(client.addChatMembers).not.toHaveBeenCalled();
+      expect(chats.createQueryBuilder).not.toHaveBeenCalled();
+      expect(chats.increment).not.toHaveBeenCalled();
+      expect(chat()).toBeNull();
+    });
+
+    it('暂停期间已有群不推送状态卡片与补拉机器人', async () => {
+      const assigned = root({ agentId: 1001 });
+      const existing = {
+        id: 1,
+        projectId: 3708,
+        taskId: 42,
+        officialConfigId: 1,
+        chatId: 'oc_project',
+        state: 'active',
+        name: 'LitaWork-需求-登录改版 沟通群',
+        projectName: '登录改版',
+        memberUserIds: [],
+        memberNames: [],
+        botIds: [],
+        lastStatuses: {},
+        finishedAt: null,
+        finishedNotified: false,
+        destroyAfter: null,
+        attempts: 0,
+        lastError: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      } as FeishuBotProjectChat;
+      const { service, client, configs } = setup(existing, assigned);
+      configs.findEnabledWorkerConfig.mockResolvedValue({ appId: 'cli_agent' });
+
+      await service.reconcile();
+
+      expect(client.sendCard).not.toHaveBeenCalled();
+      expect(client.addChatMembers).not.toHaveBeenCalled();
+    });
+  });
 });

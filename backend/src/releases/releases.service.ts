@@ -16,6 +16,7 @@ import {
 import { splitMemberNames } from '../common/names';
 import { beijingTime, mdFrontmatter } from '../common/frontmatter';
 import { FeishuService } from '../feishu/feishu.service';
+import { feishuGroupSendPaused } from '../feishu-bot/feishu-bot-group-pause';
 import { Backlog } from '../iterations/backlog.entity';
 import { Project } from '../projects/project.entity';
 import { User } from '../auth/user.entity';
@@ -23,6 +24,10 @@ import { Task } from '../tasks/task.entity';
 import { TaskWorkerInboxService } from '../tasks/task-worker-inbox.service';
 import { Worker } from '../workers/worker.entity';
 import { ProjectRelease, ReleaseBranch } from './project-release.entity';
+
+/** 提测群机器人 webhook 默认地址（「H5 Release | 提测上线」群），可用 RELEASE_WEBHOOK_URL 覆盖 */
+const DEFAULT_RELEASE_WEBHOOK =
+  'https://open.feishu.cn/open-apis/bot/v2/hook/819b2008-2cb9-4a2d-a44a-92d01cea83d9';
 
 /** 卡片内提测内容截断长度（lark_md 卡片过长会被飞书折叠/截断） */
 const CONTENT_CARD_MAX = 800;
@@ -59,6 +64,8 @@ export type ReleaseActorInput = ReleaseActor | string | null | undefined;
 export class ReleasesService {
   private readonly logger = new Logger(ReleasesService.name);
   private readonly appUrl: string;
+  /** 提测群 webhook（RELEASE_WEBHOOK_URL 非空则覆盖默认群，调试时可指向测试群） */
+  private readonly releaseWebhook: string;
 
   constructor(
     @InjectRepository(ProjectRelease)
@@ -78,12 +85,15 @@ export class ReleasesService {
     config: ConfigService,
   ) {
     this.appUrl = config.get<string>('APP_URL') ?? 'http://localhost:5273';
+    this.releaseWebhook =
+      (config.get<string>('RELEASE_WEBHOOK_URL') ?? '').trim() ||
+      DEFAULT_RELEASE_WEBHOOK;
   }
 
   /**
    * 提测：创建提测记录并把项目状态流转为「测试中」。
    * 测试人员至少 1 人且均须存在于用户系统（users 表，飞书登录落库），否则 400。
-   * 通知（测试人员 + 迭代项成员私聊）异步发送，失败仅告警不阻断提测。
+   * 通知（提测群 + 测试人员与迭代项成员私聊）异步发送，失败仅告警不阻断提测。
    */
   async submit(
     projectId: number,
@@ -126,7 +136,7 @@ export class ReleasesService {
     );
 
     // 状态由平台按迭代项/创建时间推导，提测不再修改需求状态（重复提测仅追加记录）
-    // 通知不阻断提测（私聊失败仅告警）
+    // 通知不阻断提测（群机器人 / 私聊失败仅告警）
     void this.notify(release, project);
     return release;
   }
@@ -260,7 +270,7 @@ export class ReleasesService {
       }`,
       `- 提测内容：${release.content ? '已记录（见项目详情）' : '—'}`,
       `- 提测状态：**${releaseStatusOf(release.status)}**（待冒烟 / 进行中 / 已通过 / 未通过）`,
-      `- 已通知：测试人员与迭代项成员私聊（发送失败仅告警，不影响提测）`,
+      `- 已通知：提测群「H5 Release | 提测上线」+ 测试人员与迭代项成员私聊（发送失败仅告警，不影响提测）`,
       `- 阅读地址：GET /api/requirements/${release.projectId}.md`,
       `- 提测记录：GET /api/releases.md?projectId=${release.projectId}`,
       release.workerId
@@ -390,7 +400,7 @@ export class ReleasesService {
   }
 
   /**
-   * 提测通知：测试人员 + 该需求全部未取消迭代项成员（去重）机器人私聊卡片。
+   * 提测通知：提测群 webhook + 测试人员与迭代项成员（去重）机器人私聊卡片。
    * 人员按姓名在 users 表查 openId，查不到的跳过并告警。
    */
   private async notify(
@@ -398,7 +408,10 @@ export class ReleasesService {
     project: Project,
   ): Promise<void> {
     const card = this.buildCard(release, project);
-    await this.notifyMembers(release, project, card);
+    await Promise.all([
+      this.sendGroupWebhook(release.projectId, card),
+      this.notifyMembers(release, project, card),
+    ]);
   }
 
   private buildCard(
@@ -437,6 +450,47 @@ export class ReleasesService {
         { tag: 'div', text: { tag: 'lark_md', content: lines.join('\n') } },
       ],
     };
+  }
+
+  /**
+   * 提测群 webhook 推送。
+   * 群机器人 webhook 免签，卡片需外层包 msg_type 信封（与机器人 API 的裸 card 不同，不得混用）；
+   * 业务失败也可能 HTTP 200，必须校验响应体 code。
+   * FEISHU_GROUP_SEND_PAUSED 暂停期间跳过（提测记录照常创建，恢复后不补发历史提测）。
+   */
+  private async sendGroupWebhook(
+    projectId: number,
+    card: Record<string, unknown>,
+  ): Promise<void> {
+    if (feishuGroupSendPaused()) {
+      this.logger.debug(
+        `提测群通知已暂停（FEISHU_GROUP_SEND_PAUSED）：project=${projectId}`,
+      );
+      return;
+    }
+    try {
+      const res = await fetch(this.releaseWebhook, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ msg_type: 'interactive', card }),
+      });
+      const body = (await res.json().catch(() => null)) as {
+        code?: number;
+        StatusCode?: number;
+        msg?: string;
+        StatusMessage?: string;
+      } | null;
+      const code = body?.code ?? body?.StatusCode ?? (res.ok ? 0 : -1);
+      if (!res.ok || code !== 0) {
+        this.logger.warn(
+          `提测群推送失败（HTTP ${res.status}, code ${code}: ${body?.msg ?? body?.StatusMessage ?? '-'}）: project=${projectId}`,
+        );
+      }
+    } catch (e) {
+      this.logger.warn(
+        `提测群推送异常: ${(e as Error).message}（project=${projectId}）`,
+      );
+    }
   }
 
   /** 测试人员 + 该需求全部未取消迭代项的成员 去重后逐个私聊卡片 */

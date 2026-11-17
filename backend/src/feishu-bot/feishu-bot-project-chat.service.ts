@@ -23,6 +23,7 @@ import type {
   FeishuBotSecrets,
 } from './feishu-bot-config.entity';
 import { FeishuBotConfigService } from './feishu-bot-config.service';
+import { feishuGroupSendPaused } from './feishu-bot-group-pause';
 import { FeishuBotIdentityService } from './feishu-bot-identity.service';
 import { markdownCard } from './feishu-bot-message.service';
 import { FeishuBotProjectChat } from './feishu-bot-project-chat.entity';
@@ -131,6 +132,8 @@ export class FeishuBotProjectChatService
    * 建群失败不回滚任务，保留绑定供定时对账重试。
    */
   async ensureForProjectTask(projectId: number, taskId: number): Promise<void> {
+    // 暂停期间不建群、不写绑定；恢复后由对账补建
+    if (feishuGroupSendPaused()) return;
     const [project, task, official] = await Promise.all([
       this.projects.findOne({ where: { id: projectId } }),
       this.tasks.findOne({ where: { id: taskId } }),
@@ -198,6 +201,10 @@ export class FeishuBotProjectChatService
 
   private async reconcileOnce(): Promise<void> {
     const official = await this.configs.loadEnabledOfficial();
+    const paused = feishuGroupSendPaused();
+    if (paused) {
+      this.logger.debug('飞书群消息已暂停：跳过项目沟通群建群、拉人与状态卡片');
+    }
     const rows = await this.chats.find();
     const rootIds = rows.map((row) => row.taskId);
     const [roots, projects, children] = await Promise.all([
@@ -240,6 +247,7 @@ export class FeishuBotProjectChatService
         const fresh = await this.chats.findOne({ where: { id: row.id } });
         if (!fresh || fresh.state === 'destroyed') return;
         if (
+          !paused &&
           (!fresh.chatId ||
             fresh.state === 'creating' ||
             fresh.state === 'error') &&
@@ -251,10 +259,12 @@ export class FeishuBotProjectChatService
         if (fresh.state !== 'active' || !fresh.chatId) return;
 
         await this.markRootFinished(fresh, root);
-        await this.syncAgentBot(fresh, root, official, secrets);
-        await this.notifyTaskStatus(fresh, root, root, secrets);
-        for (const child of childrenMap.get(root.id) ?? []) {
-          await this.notifyTaskStatus(fresh, child, root, secrets);
+        if (!paused) {
+          await this.syncAgentBot(fresh, root, official, secrets);
+          await this.notifyTaskStatus(fresh, root, root, secrets);
+          for (const child of childrenMap.get(root.id) ?? []) {
+            await this.notifyTaskStatus(fresh, child, root, secrets);
+          }
         }
         if (fresh.destroyAfter && fresh.destroyAfter.getTime() <= Date.now()) {
           await this.dissolve(fresh, secrets);
@@ -287,6 +297,8 @@ export class FeishuBotProjectChatService
     project: Project,
     root: Task,
   ): Promise<void> {
+    // 建群与拉人属于群外发，暂停期间直接跳过（不写绑定、不消耗重试次数）
+    if (feishuGroupSendPaused()) return;
     const members = await this.resolveMembers(official, project);
     const botIds = await this.resolveBotIds(root, official);
     try {
@@ -511,6 +523,8 @@ export class FeishuBotProjectChatService
     await this.withLock(`chat:${row.id}`, async () => {
       const fresh = await this.chats.findOne({ where: { id: row.id } });
       if (!fresh || fresh.state !== 'active' || !fresh.chatId) return;
+      // 暂停期间不推送实时状态卡片（终态计时由对账补记）
+      if (feishuGroupSendPaused()) return;
       const official = await this.configs.loadEnabledWithSecrets(
         fresh.officialConfigId,
       );
@@ -537,7 +551,7 @@ export class FeishuBotProjectChatService
     official: FeishuBotConfig,
     secrets: FeishuBotSecrets,
   ): Promise<void> {
-    if (!row.chatId) return;
+    if (!row.chatId || feishuGroupSendPaused()) return;
     const [botId] = await this.resolveBotIds(root, official);
     if (!botId || row.botIds.includes(botId)) return;
     try {
@@ -578,6 +592,7 @@ export class FeishuBotProjectChatService
     secrets: FeishuBotSecrets,
   ): Promise<void> {
     if (!row.chatId || row.state !== 'active') return;
+    if (feishuGroupSendPaused()) return;
     const key = taskStatusKey(task);
     const isRoot = task.id === row.taskId;
     if (isRoot && task.status === TaskStatus.FINISHED) {
