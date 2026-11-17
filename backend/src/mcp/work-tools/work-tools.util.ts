@@ -52,6 +52,18 @@ export function requireWorkerPrincipal(principal: McpWorkPrincipal): Worker {
   return principal.worker;
 }
 
+/** 仅真人身份可执行的动作：登录用户或绑定真人的机器人令牌 */
+export function requireUserPrincipal(
+  principal: McpWorkPrincipal,
+): NonNullable<McpWorkPrincipal['user']> {
+  if (!principal.user) {
+    throw new ForbiddenException(
+      '该操作需要登录用户身份（机器人令牌需绑定真人）',
+    );
+  }
+  return principal.user;
+}
+
 /**
  * 统一工具执行包装：成功/失败都落调试日志，失败转 toolError 结果，
  * 避免单个工具异常中断整个 MCP 会话。

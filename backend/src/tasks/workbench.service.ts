@@ -149,7 +149,7 @@ export function normalizeAgentPageContext(
 }
 
 /** 每个详情页一个稳定且较短的会话范围（路径等长 ID 先取哈希） */
-function agentPageScope(context: AgentPageContext): string {
+export function agentPageScope(context: AgentPageContext): string {
   const hash = createHash('sha1')
     .update(`${context.type}:${context.id}`)
     .digest('hex')

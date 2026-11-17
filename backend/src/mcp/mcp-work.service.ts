@@ -15,6 +15,7 @@ import { WorkTicketTools } from './work-tools/work-ticket.tools';
 import { WorkTopicTools } from './work-tools/work-topic.tools';
 import { WorkAgentTools } from './work-tools/work-agent.tools';
 import { WorkIterationTools } from './work-tools/work-iteration.tools';
+import { WorkWakeupTools } from './work-tools/work-wakeup.tools';
 import type {
   McpWorkPrincipal,
   WorkToolRegistrar,
@@ -49,6 +50,7 @@ export class McpWorkService {
     agentTools: WorkAgentTools,
     feishuTools: WorkFeishuTools,
     iterationTools: WorkIterationTools,
+    wakeupTools: WorkWakeupTools,
   ) {
     this.registrars = [
       projectTools,
@@ -65,6 +67,7 @@ export class McpWorkService {
       agentTools,
       feishuTools,
       iterationTools,
+      wakeupTools,
     ];
   }
 

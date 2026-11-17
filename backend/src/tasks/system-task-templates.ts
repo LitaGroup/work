@@ -51,6 +51,7 @@ export const DEVELOPMENT_OPERATION_GUIDE = [
   '### 其他',
   '',
   '- 平台设置：`GET /api/settings.md`；脚本仓库更新：`POST /api/settings/scripts/pull.md`。',
+  '- 定时唤醒：等待人工确认/答复、等待工单审批或脚本运行结果时，可用 `lita-work` MCP `schedule_task_wakeup` 设置下次跟进时间（到期自动唤醒本任务），然后结束本轮；不要用轮询占用执行容量。',
   '- `lita-work` MCP 工具可直接执行上述大部分操作（需求详情、文档读写、脚本运行、缺陷、提测等）。',
 ].join('\n');
 
