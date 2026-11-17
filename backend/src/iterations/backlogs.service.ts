@@ -868,7 +868,8 @@ export class BacklogsService implements OnModuleInit {
 
   /**
    * 迭代项新建任务：
-   * - 已有交付任务（backlog.taskId）：作为该交付任务的子任务创建，出现在任务树；
+   * - 已有交付任务（backlog.taskId）：作为该交付任务的子任务创建，出现在任务树，
+   *   描述自动附带迭代上下文（ID/标识/描述）与任务上下文（父任务、兄弟任务）；
    * - 无交付任务：按所选执行机器人创建交付任务并登记为迭代项负责人（仅管理员）。
    */
   async createTask(
@@ -885,14 +886,24 @@ export class BacklogsService implements OnModuleInit {
     const description = input.description?.trim()
       ? input.description.trim()
       : null;
+    const iteration = await this.iterations.findOne({
+      where: { id: backlog.iterationId },
+    });
 
     if (backlog.taskId) {
       if (!actor.isAdmin && !(await this.isMember(backlog, actor))) {
         throw new ForbiddenException('仅迭代项成员或管理员可新建任务');
       }
+      const context = await this.buildSubtaskContext(
+        backlog,
+        backlog.taskId,
+        iteration,
+      );
       return this.tasks.create({
         title: input.title,
-        description,
+        description: description
+          ? `${description}\n\n---\n\n${context}`
+          : context,
         projectId: backlog.projectId,
         templateId: input.templateId ?? null,
         agentId: input.agentId ?? null,
@@ -922,19 +933,12 @@ export class BacklogsService implements OnModuleInit {
       throw new BadRequestException(`负责人机器人 #${workerId} 不存在`);
     }
     this.assertAssignableWorker(worker, workerId);
-    const iteration = await this.iterations.findOne({
-      where: { id: backlog.iterationId },
-    });
     const task = await this.tasks.create({
       title: input.title?.trim() || `迭代任务-${projectName}`.slice(0, 200),
       description:
         description ??
         [
-          `迭代：${
-            iteration
-              ? `${iteration.code}（${iteration.type}）`
-              : `#${backlog.iterationId}`
-          }`,
+          `迭代：${this.iterationLabel(iteration, backlog.iterationId)}`,
           `原始需求：${projectName}（#${backlog.projectId}）`,
           '',
           `需求详情：GET /api/requirements/${backlog.projectId}.md`,
@@ -961,6 +965,62 @@ export class BacklogsService implements OnModuleInit {
     );
     await this.syncChatMembers(backlog);
     return task;
+  }
+
+  /**
+   * 迭代标签：`#id 标识（类型）`，描述非空时以「——」拼接，供任务描述引用。
+   * 迭代不存在时降级为 `#id`。
+   */
+  private iterationLabel(
+    iteration: Iteration | null,
+    iterationId: number,
+  ): string {
+    const label = iteration
+      ? `#${iteration.id} ${iteration.code}（${iteration.type}）`
+      : `#${iterationId}`;
+    const description = iteration?.description?.trim();
+    return description ? `${label}——${description}` : label;
+  }
+
+  /**
+   * 子任务上下文：迭代（ID/标识/描述）与任务（父任务、兄弟任务 ID 和标题）。
+   * 追加在用户填写描述之后，随任务派发进入执行机器人提示词；
+   * 兄弟任务取同一交付任务下的直接子任务（含终态），上限 50 条。
+   */
+  private async buildSubtaskContext(
+    backlog: Backlog,
+    parentTaskId: number,
+    iteration: Iteration | null,
+  ): Promise<string> {
+    const lines = [
+      '## 上下文（系统附加）',
+      `- 迭代：${this.iterationLabel(iteration, backlog.iterationId)}（迭代详情：\`GET /api/iterations/${backlog.iterationId}.md\`）`,
+    ];
+    const [parent, siblings] = await Promise.all([
+      this.taskRows.findOne({
+        where: { id: parentTaskId },
+        select: { id: true, title: true },
+      }),
+      this.taskRows.find({
+        where: { parentId: parentTaskId },
+        select: { id: true, title: true },
+        order: { id: 'ASC' },
+        take: 50,
+      }),
+    ]);
+    if (parent) {
+      lines.push(
+        `- 父任务：#${parent.id} ${parent.title}（任务详情：\`GET /api/tasks/${parent.id}.md\`）`,
+      );
+    }
+    if (siblings.length > 0) {
+      lines.push(
+        `- 兄弟任务：${siblings
+          .map((task) => `#${task.id} ${task.title}`)
+          .join('；')}`,
+      );
+    }
+    return lines.join('\n');
   }
 
   /**

@@ -210,7 +210,7 @@ export class WorkIterationTools implements WorkToolRegistrar {
       {
         title: '新建迭代项任务',
         description:
-          '迭代项「任务」分区新建任务：已有交付任务时创建其子任务（成员或管理员）；无交付任务时按所选执行机器人创建交付任务并登记负责人（仅管理员）。返回新建任务 ID 与迭代项详情。',
+          '迭代项「任务」分区新建任务：已有交付任务时创建其子任务（成员或管理员；任务描述自动附带迭代上下文与父/兄弟任务上下文）；无交付任务时按所选执行机器人创建交付任务并登记负责人（仅管理员）。返回新建任务 ID 与迭代项详情。',
         inputSchema: {
           backlogId: z.number().int().positive().describe('迭代项 ID'),
           title: z.string().optional().describe('任务标题'),

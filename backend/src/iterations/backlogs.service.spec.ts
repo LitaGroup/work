@@ -134,6 +134,10 @@ function buildTaskService() {
     create: jest.fn((row: unknown) => row),
   };
   const tasks = { create: jest.fn() };
+  const taskRows = {
+    findOne: jest.fn().mockResolvedValue({ id: 500, title: '交付礼包改版' }),
+    find: jest.fn().mockResolvedValue([]),
+  };
   const chat = {
     describe: jest.fn().mockResolvedValue(null),
     createForBacklog: jest
@@ -149,7 +153,7 @@ function buildTaskService() {
     {} as never,
     backlogEvents as never,
     {} as never,
-    {} as never,
+    taskRows as never,
     {} as never,
     {} as never,
     {} as never,
@@ -159,20 +163,40 @@ function buildTaskService() {
     chat as never,
     {} as never,
   );
-  return { service, backlogs, workers, tasks, backlogEvents, chat };
+  return {
+    service,
+    backlogs,
+    workers,
+    tasks,
+    taskRows,
+    iterations,
+    backlogEvents,
+    chat,
+  };
 }
 
 const memberActor = { userId: 21, userName: '李四', isAdmin: false };
 const adminActor = { userId: 1, userName: '管理员', isAdmin: true };
 
 describe('BacklogsService.createTask', () => {
-  it('已有交付任务时作为其子任务创建（成员可操作）', async () => {
-    const { service, backlogs, tasks } = buildTaskService();
+  it('已有交付任务时作为其子任务创建，描述附带迭代与任务上下文（成员可操作）', async () => {
+    const { service, backlogs, tasks, taskRows, iterations } =
+      buildTaskService();
     backlogs.findOne.mockResolvedValue({
       ...backlogRow,
       taskId: 500,
       members: [{ role: '产品', workerId: 21, name: '李四' }],
     });
+    iterations.findOne.mockResolvedValue({
+      id: 3,
+      code: '2026W47',
+      type: IterationType.T7,
+      description: '本周礼包迭代',
+    });
+    taskRows.find.mockResolvedValue([
+      { id: 501, title: '前端页面拆分' },
+      { id: 502, title: '后端接口开发' },
+    ]);
     tasks.create.mockResolvedValue({ id: 600, code: 'TK-0600' });
 
     const task = await service.createTask(
@@ -187,11 +211,47 @@ describe('BacklogsService.createTask', () => {
         parentId: 500,
         projectId: 7,
         title: '拆分页面',
-        description: '按模块拆分',
         createdById: 21,
       }),
     );
+    const [[input]] = tasks.create.mock.calls as [[{ description: string }]];
+    expect(input.description.startsWith('按模块拆分\n\n---\n\n')).toBe(true);
+    expect(input.description).toContain('迭代：#3 2026W47（T7）——本周礼包迭代');
+    expect(input.description).toContain('迭代详情：`GET /api/iterations/3.md`');
+    expect(input.description).toContain('父任务：#500 交付礼包改版');
+    expect(input.description).toContain(
+      '兄弟任务：#501 前端页面拆分；#502 后端接口开发',
+    );
     expect(backlogs.save).not.toHaveBeenCalled();
+  });
+
+  it('子任务无兄弟任务时省略兄弟行，描述缺省时直接用上下文', async () => {
+    const { service, backlogs, tasks, taskRows, iterations } =
+      buildTaskService();
+    backlogs.findOne.mockResolvedValue({
+      ...backlogRow,
+      taskId: 500,
+      members: [{ role: '产品', workerId: 21, name: '李四' }],
+    });
+    iterations.findOne.mockResolvedValue({
+      id: 3,
+      code: '2026W47',
+      type: IterationType.T7,
+      description: null,
+    });
+    taskRows.find.mockResolvedValue([]);
+    taskRows.findOne.mockResolvedValue(null);
+    tasks.create.mockResolvedValue({ id: 600, code: 'TK-0600' });
+
+    await service.createTask(12, { title: '拆分页面' }, memberActor);
+
+    const [[input]] = tasks.create.mock.calls as [[{ description: string }]];
+    // 无描述时为纯上下文块，迭代无描述不带「——」后缀
+    expect(input.description.startsWith('## 上下文（系统附加）')).toBe(true);
+    expect(input.description).toContain('- 迭代：#3 2026W47（T7）（迭代详情');
+    expect(input.description).not.toContain('——');
+    expect(input.description).not.toContain('父任务');
+    expect(input.description).not.toContain('兄弟任务');
   });
 
   it('已有交付任务但非成员非管理员时拒绝', async () => {
@@ -239,6 +299,9 @@ describe('BacklogsService.createTask', () => {
     expect(backlogs.save).toHaveBeenCalledWith(
       expect.objectContaining({ taskId: 600, ownerWorkerId: 1001 }),
     );
+    const [[input]] = tasks.create.mock.calls as [[{ description: string }]];
+    expect(input.description).toContain('迭代：#3 2026W47（T7）');
+    expect(input.description).toContain('原始需求：礼包改版（#7）');
     expect(backlogEvents.save).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'owner' }),
     );

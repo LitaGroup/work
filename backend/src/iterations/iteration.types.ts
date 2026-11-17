@@ -56,13 +56,13 @@ export interface CreateBacklogItemInput {
 
 /**
  * 迭代项新建任务：
- * - 已有交付任务：作为交付任务的子任务创建；
+ * - 已有交付任务：作为交付任务的子任务创建，描述自动附带迭代与父/兄弟任务上下文；
  * - 无交付任务：按执行机器人创建交付任务，并登记为迭代项负责人（仅管理员）。
  */
 export interface CreateBacklogTaskInput {
   /** 标题（可空，缺省按描述首行生成；交付任务缺省用「迭代任务-{需求名}」） */
   title?: string;
-  /** 任务描述（必填；交付任务缺省写入迭代与需求上下文） */
+  /** 任务描述（子任务必填；交付任务缺省写入迭代与需求上下文） */
   description?: string | null;
   /** 任务定义（可空；交付任务缺省用系统「迭代-Backlog交付」） */
   templateId?: number | null;
