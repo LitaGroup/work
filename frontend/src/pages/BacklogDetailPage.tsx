@@ -1573,78 +1573,7 @@ export function BacklogDetailPage() {
                   成员以机器人表示（真人用其真人机器人，AI 用普通机器人）；负责人、需求方自动列入（不可手动移除，不授予成员操作权限）
                 </CardDescription>
               </CardHeader>
-              {isAdmin && (
-                <div className="flex flex-wrap items-end gap-2 px-4 pb-3">
-                  <label className="flex flex-col gap-1 text-sm">
-                    角色
-                    <Select
-                      value={addRole}
-                      onValueChange={(v) => setAddRole(v as BacklogMemberRole)}
-                      items={ROLE_ITEMS}
-                    >
-                      <SelectTrigger className="w-32">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {BACKLOG_MEMBER_ROLES.map((role) => (
-                          <SelectItem key={role} value={role}>
-                            {role}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </label>
-                  <label className="flex flex-col gap-1 text-sm">
-                    成员
-                    <Combobox
-                      items={memberTargetOptions}
-                      value={addTarget ?? null}
-                      onValueChange={(value) =>
-                        setAddTarget(value == null ? undefined : String(value))
-                      }
-                      filter={(option: { key: string; label: string; name: string }, query: string) =>
-                        matchesPinyinSearch(query, [option.name])
-                      }
-                      icon={false}
-                    >
-                      <ComboboxTrigger aria-label="成员">
-                        <ComboboxValue placeholder="选择真人或 AI 机器人" />
-                      </ComboboxTrigger>
-                      <ComboboxContent>
-                        <div className="px-2 pb-2 group-data-empty/combobox-content:pt-2">
-                          <ComboboxInput
-                            placeholder="搜索成员（真人或 AI 机器人）"
-                            aria-label="搜索成员"
-                          />
-                        </div>
-                        <ScrollArea className="max-h-64">
-                          <ComboboxEmpty>
-                            {users === null || workers === null
-                              ? '加载中…'
-                              : '没有匹配的成员'}
-                          </ComboboxEmpty>
-                          <ComboboxList className="overflow-y-visible">
-                            {(option: { key: string; label: string; name: string }) => (
-                              <ComboboxItem key={option.key} value={option.key}>
-                                <span className="truncate">{option.label}</span>
-                              </ComboboxItem>
-                            )}
-                          </ComboboxList>
-                        </ScrollArea>
-                      </ComboboxContent>
-                    </Combobox>
-                  </label>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={addMember}
-                    disabled={savingMembers || !addTarget}
-                  >
-                    {savingMembers ? '保存中…' : '添加'}
-                  </Button>
-                </div>
-              )}
-              <div className="flex flex-wrap gap-2 px-4 pb-4">
+              <div className="flex flex-wrap gap-2 px-4 pb-3">
                 {(backlog.members ?? []).length === 0 && (
                   <span className="text-sm text-foreground-muted">暂无成员</span>
                 )}
@@ -1678,6 +1607,73 @@ export function BacklogDetailPage() {
                   )
                 })}
               </div>
+              {isAdmin && (
+                <div className="flex flex-wrap items-end gap-2 px-4 pb-4">
+                  <label className="flex flex-col gap-1 text-sm">
+                    角色
+                    <Select
+                      value={addRole}
+                      onValueChange={(v) => setAddRole(v as BacklogMemberRole)}
+                      items={ROLE_ITEMS}
+                    >
+                      <SelectTrigger className="w-32">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {BACKLOG_MEMBER_ROLES.map((role) => (
+                          <SelectItem key={role} value={role}>
+                            {role}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </label>
+                  <label className="flex flex-col gap-1 text-sm">
+                    成员
+                    <Combobox
+                      items={memberTargetOptions}
+                      value={addTarget ?? null}
+                      onValueChange={(value) =>
+                        setAddTarget(value == null ? undefined : String(value))
+                      }
+                      filter={(option: { key: string; label: string; name: string }, query: string) =>
+                        matchesPinyinSearch(query, [option.name])
+                      }
+                      icon={false}
+                    >
+                      <ComboboxInput
+                        className="w-64"
+                        placeholder="搜索并选择真人或 AI 机器人"
+                        aria-label="成员"
+                      />
+                      <ComboboxContent>
+                        <ScrollArea className="max-h-64">
+                          <ComboboxEmpty>
+                            {users === null || workers === null
+                              ? '加载中…'
+                              : '没有匹配的成员'}
+                          </ComboboxEmpty>
+                          <ComboboxList className="overflow-y-visible">
+                            {(option: { key: string; label: string; name: string }) => (
+                              <ComboboxItem key={option.key} value={option.key}>
+                                <span className="truncate">{option.label}</span>
+                              </ComboboxItem>
+                            )}
+                          </ComboboxList>
+                        </ScrollArea>
+                      </ComboboxContent>
+                    </Combobox>
+                  </label>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={addMember}
+                    disabled={savingMembers || !addTarget}
+                  >
+                    {savingMembers ? '保存中…' : '添加'}
+                  </Button>
+                </div>
+              )}
             </Card>
           </TabsContent>
         </Tabs>
