@@ -125,9 +125,15 @@ function buildRunMarkdown(run: TestRun): string {
 
 /** 缺陷详情：预期/实际 + 图片 + 测试运行结果 + 变更记录；属性只保留 端/预期/实际/图片/用例脚本/状态 */
 export function DefectDetailPage() {
-  const { id, defectId } = useParams<{ id: string; defectId: string }>()
+  const { id, defectId, topicId } = useParams<{
+    id: string
+    defectId: string
+    topicId?: string
+  }>()
   const projectId = Number(id)
   const defectIdNum = Number(defectId)
+  /** 话题详情深链：定位到「讨论」中的焦点话题 */
+  const focusTopicId = topicId ? Number(topicId) : undefined
 
   const [defect, setDefect] = useState<Defect | null>(null)
   const [records, setRecords] = useState<DefectChangeRecord[]>([])
@@ -401,6 +407,7 @@ export function DefectDetailPage() {
           subjectType="缺陷"
           subjectId={defect.id}
           subjectTitle={defect.expected.split('\n')[0] || `缺陷 ${defect.id}`}
+          focusTopicId={focusTopicId}
         />
       </section>
 

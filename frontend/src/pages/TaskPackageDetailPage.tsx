@@ -67,8 +67,14 @@ const TASK_CONTENT_TABS: Array<[TaskContentTab, string]> = [
  * 正文「会话」只读实时展示多方交互，右侧按当前用户身份参与任务。
  */
 export function TaskPackageDetailPage() {
-  const { id } = useParams<{ id: string }>()
-  return <TaskDetailView taskId={Number(id)} collapsibleCollaboration />
+  const { id, topicId } = useParams<{ id: string; topicId?: string }>()
+  return (
+    <TaskDetailView
+      taskId={Number(id)}
+      collapsibleCollaboration
+      focusTopicId={topicId ? Number(topicId) : undefined}
+    />
+  )
 }
 
 /**
@@ -85,6 +91,7 @@ export function TaskDetailView({
   collapsibleCollaboration = false,
   onTaskChange,
   onOpenTask,
+  focusTopicId,
 }: {
   taskId: number
   breadcrumb?: Crumb[]
@@ -100,6 +107,8 @@ export function TaskDetailView({
   onTaskChange?: () => void | Promise<void>
   /** 打开关联任务：普通详情默认跳转任务中心，工作台可切换当前任务 */
   onOpenTask?: (taskId: number) => void
+  /** 话题详情深链（/tasks/{id}/topics/{topicId}）：默认打开话题分区并定位 */
+  focusTopicId?: number
 }) {
   const navigate = useNavigate()
   const [task, setTask] = useState<TaskPackage | null>(null)
@@ -117,7 +126,9 @@ export function TaskDetailView({
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [contentTab, setContentTab] = useState<TaskContentTab>('requirement')
+  const [contentTab, setContentTab] = useState<TaskContentTab>(
+    focusTopicId ? 'topics' : 'requirement',
+  )
   const [handoffDoc, setHandoffDoc] = useState<TaskHandoffDocument | null>(null)
   const [reviewDoc, setReviewDoc] = useState<TaskDocumentContent | null>(null)
   const [documents, setDocuments] = useState<TaskDocumentsView | null>(null)
@@ -775,6 +786,7 @@ export function TaskDetailView({
                 subjectType="任务"
                 subjectId={currentTask.id}
                 subjectTitle={currentTask.title}
+                focusTopicId={focusTopicId}
               />
             )}
           </div>

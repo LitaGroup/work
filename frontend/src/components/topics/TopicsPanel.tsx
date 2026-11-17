@@ -23,6 +23,8 @@ interface TopicsPanelProps {
   subjectTitle: string
   /** 话题数量变化回调（供页签等外部展示计数） */
   onCountChange?: (count: number) => void
+  /** 焦点话题（话题详情深链）：自动展开并滚动定位 */
+  focusTopicId?: number
 }
 
 /** 主体详情页的「话题」分区：卡片 + 折叠话题列表，与信息/文档等分区样式一致 */
@@ -31,6 +33,7 @@ export function TopicsPanel({
   subjectId,
   subjectTitle,
   onCountChange,
+  focusTopicId,
 }: TopicsPanelProps) {
   const label = TOPIC_TAB_LABELS[subjectType]
   const [topics, setTopics] = useState<Topic[] | null>(null)
@@ -111,6 +114,7 @@ export function TopicsPanel({
           loading={topics === null}
           emptyText={`暂无${label}，点击「新建${label}」发起讨论`}
           onChanged={reload}
+          focusId={focusTopicId}
         />
       </div>
       <TopicCreateDialog

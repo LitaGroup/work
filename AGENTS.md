@@ -312,7 +312,7 @@
 
 ### 话题
 
-- 话题（`topics`）是挂在主体（迭代项/缺陷/任务/工单/需求）下的讨论串，主体为 `subjectType + subjectId` 应用层软引用；缺陷/需求页展示为「讨论」，其余展示为「话题」，不新增业务分区导航入口（从主体详情与 `/topics` 深链进入）。
+- 话题（`topics`）是挂在主体（迭代项/缺陷/任务/工单/需求）下的讨论串，主体为 `subjectType + subjectId` 应用层软引用；缺陷/需求页展示为「讨论」，其余展示为「话题」，不新增业务分区导航入口（从主体详情与 `/topics` 深链进入）。话题详情深链为 `/{主体}/{主体ID}/topics/{话题ID}`（`backlogs` / `requirements` / `tasks` / `tickets` / `defects`，飞书卡片统一使用，由后端 `topicWebPath` 生成）：前端落在主体详情页的「话题/讨论」分区并自动展开定位焦点话题；缺陷短链由前端解析所属需求后跳到 `/projects/{projectId}/defects/{defectId}/topics/{topicId}`，旧链接 `/topics/{话题ID}` 按主体解析后重定向，不提供独立话题详情页。
 - 标题可空：创建时用正文首行兜底，后台用 `title-naming` 场景异步生成 `「TP-{id}」+ 标题`（乐观条件更新不覆盖人工修改）；优先级 高/中/低（默认中）；标签自由输入（最多 10 个，前端联想已有标签）。
 - 正文与帖子输入为纯文本（不提供 Markdown 编辑，图片随编辑器上传一并下线），展示侧按 Markdown 渲染；帖子 append-only，平铺楼层 + `replyToPostId` 引用；状态 开放/已解决/已关闭，已关闭禁止新帖，创建人或管理员可流转；删除话题/帖子仅管理员，应用层清理帖子、关注、机器人收件箱与飞书绑定。
 - @ 机器人记录 `workers.id` 数组：@ 真人机器人给其绑定真人发官方机器人私聊卡片；@ AI 机器人写 `topic_worker_inbox`，`TopicLoopService` 用一次性会话（与任务需求方共用 per-worker 互斥锁）读取 `/api/topics/{id}.md` 后经 MCP `reply_topic` 回帖，未回帖按 2/10/30 分钟退避、5 次后置 dead。

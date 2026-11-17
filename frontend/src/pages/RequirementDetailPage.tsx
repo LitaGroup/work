@@ -82,11 +82,13 @@ const REQUIREMENT_DETAIL_TABS: RequirementDetailTab[] = [
   'ops',
 ]
 
-function readTabFromHash(): RequirementDetailTab {
+function readTabFromHash(
+  fallback: RequirementDetailTab = 'details',
+): RequirementDetailTab {
   const key = window.location.hash.replace(/^#/, '')
   return REQUIREMENT_DETAIL_TABS.includes(key as RequirementDetailTab)
     ? (key as RequirementDetailTab)
-    : 'details'
+    : fallback
 }
 
 /**
@@ -95,8 +97,10 @@ function readTabFromHash(): RequirementDetailTab {
  * 研发过程数据（检查/测试/缺陷等）不再在此页展示，操作入口见任务中心与对应列表页。
  */
 export function RequirementDetailPage() {
-  const { id } = useParams<{ id: string }>()
+  const { id, topicId } = useParams<{ id: string; topicId?: string }>()
   const projectId = Number(id)
+  /** 话题详情深链（/requirements/{id}/topics/{topicId}）：默认打开讨论分区并定位 */
+  const focusTopicId = topicId ? Number(topicId) : undefined
   const navigate = useNavigate()
   const [project, setProject] = useState<Project | null>(null)
   const [backlogs, setBacklogs] = useState<BacklogSummary[] | null>(null)
@@ -105,7 +109,9 @@ export function RequirementDetailPage() {
   const [aiUnread, setAiUnread] = useState(0)
 
   // 内容分区 tab（与 URL hash 同步，支持 /requirements/2#topics 直达）
-  const [tab, setTab] = useState<RequirementDetailTab>(readTabFromHash)
+  const [tab, setTab] = useState<RequirementDetailTab>(() =>
+    readTabFromHash(focusTopicId ? 'topics' : 'details'),
+  )
 
   // 话题计数（TopicsPanel 加载后回调）
   const [topicsCount, setTopicsCount] = useState(0)
@@ -126,10 +132,11 @@ export function RequirementDetailPage() {
 
   // 分区与 URL hash 双向同步：支持 /requirements/2#topics 直达，切换分区时更新 hash
   useEffect(() => {
-    const sync = () => setTab(readTabFromHash())
+    const sync = () =>
+      setTab(readTabFromHash(focusTopicId ? 'topics' : 'details'))
     window.addEventListener('hashchange', sync)
     return () => window.removeEventListener('hashchange', sync)
-  }, [])
+  }, [focusTopicId])
 
   const changeTab = (value: string) => {
     const next = value as RequirementDetailTab
@@ -383,6 +390,7 @@ export function RequirementDetailPage() {
               subjectId={project.id}
               subjectTitle={project.name}
               onCountChange={setTopicsCount}
+              focusTopicId={focusTopicId}
             />
           </TabsContent>
 

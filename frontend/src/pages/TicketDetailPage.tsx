@@ -83,7 +83,12 @@ function latestTaskId(workflow: TicketWorkflowView | null | undefined) {
 
 /** 工单详情：新模型展示工作流进度与节点任务；历史工单继续复用任务详情 */
 export function TicketDetailPage() {
-  const { ticketId } = useParams<{ ticketId: string }>()
+  const { ticketId, topicId } = useParams<{
+    ticketId: string
+    topicId?: string
+  }>()
+  /** 话题详情深链（/tickets/{id}/topics/{topicId}）：默认打开话题分区并定位 */
+  const focusTopicId = topicId ? Number(topicId) : undefined
   const [searchParams, setSearchParams] = useSearchParams()
   const navigate = useNavigate()
   const { user: currentUser } = useAuth()
@@ -99,7 +104,9 @@ export function TicketDetailPage() {
   const [error, setError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [acting, setActing] = useState<'accept' | 'reject' | null>(null)
-  const [contentTab, setContentTab] = useState<TicketContentTab>('current')
+  const [contentTab, setContentTab] = useState<TicketContentTab>(
+    focusTopicId ? 'topics' : 'current',
+  )
   const [collaborationOpen, setCollaborationOpen] = useState(false)
   const [collaborationUnread, setCollaborationUnread] = useState(0)
 
@@ -802,6 +809,7 @@ export function TicketDetailPage() {
                 subjectType="工单"
                 subjectId={ticket.id}
                 subjectTitle={ticket.title}
+                focusTopicId={focusTopicId}
               />
             )}
           </div>

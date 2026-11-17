@@ -203,11 +203,13 @@ const BACKLOG_DETAIL_TABS: BacklogDetailTab[] = [
   'members',
 ]
 
-function readTabFromHash(): BacklogDetailTab {
+function readTabFromHash(
+  fallback: BacklogDetailTab = 'info',
+): BacklogDetailTab {
   const key = window.location.hash.replace(/^#/, '')
   return BACKLOG_DETAIL_TABS.includes(key as BacklogDetailTab)
     ? (key as BacklogDetailTab)
-    : 'info'
+    : fallback
 }
 
 /**
@@ -216,8 +218,13 @@ function readTabFromHash(): BacklogDetailTab {
  * 成员或管理员可推进状态（弹窗 + 备注）、发起提测（创建提测工单），管理员可编辑成员/移动迭代。
  */
 export function BacklogDetailPage() {
-  const { backlogId } = useParams<{ backlogId: string }>()
+  const { backlogId, topicId } = useParams<{
+    backlogId: string
+    topicId?: string
+  }>()
   const id = Number(backlogId)
+  /** 话题详情深链（/backlogs/{id}/topics/{topicId}）：默认打开话题分区并定位 */
+  const focusTopicId = topicId ? Number(topicId) : undefined
   const navigate = useNavigate()
   const { user } = useAuth()
   const isAdmin = user?.role === '管理员'
@@ -232,7 +239,9 @@ export function BacklogDetailPage() {
   const [aiUnread, setAiUnread] = useState(0)
 
   // 内容分区 tab（与 URL hash 同步，支持 /backlogs/2#topics 直达）
-  const [tab, setTab] = useState<BacklogDetailTab>(readTabFromHash)
+  const [tab, setTab] = useState<BacklogDetailTab>(() =>
+    readTabFromHash(focusTopicId ? 'topics' : 'info'),
+  )
 
   // 话题计数（TopicsPanel 加载后回调）
   const [topicsCount, setTopicsCount] = useState(0)
@@ -373,11 +382,12 @@ export function BacklogDetailPage() {
 
   // 分区与 URL hash 双向同步：支持 /backlogs/2#topics 直达，切换分区时更新 hash
   useEffect(() => {
-    const sync = () => setTab(readTabFromHash())
+    const sync = () =>
+      setTab(readTabFromHash(focusTopicId ? 'topics' : 'info'))
     sync()
     window.addEventListener('hashchange', sync)
     return () => window.removeEventListener('hashchange', sync)
-  }, [id])
+  }, [id, focusTopicId])
 
   const changeTab = (value: string) => {
     const next = value as BacklogDetailTab
@@ -1459,6 +1469,7 @@ export function BacklogDetailPage() {
               subjectId={backlog.id}
               subjectTitle={backlog.title}
               onCountChange={setTopicsCount}
+              focusTopicId={focusTopicId}
             />
           </TabsContent>
 

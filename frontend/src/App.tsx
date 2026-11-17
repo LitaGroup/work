@@ -1,7 +1,8 @@
-import { lazy, Suspense } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { BrowserRouter, Navigate, Outlet, Route, Routes, useParams } from 'react-router-dom'
 import { Layout } from './components/Layout'
 import { useAuth } from './context/AuthContext'
+import { api, type TopicSubjectType } from './lib/api'
 // 登录页保持同步加载：OAuth 回调跳转的兜底入口，避免懒加载失败白屏
 import { LoginPage } from './pages/LoginPage'
 
@@ -266,6 +267,90 @@ function LegacyWorkerDebugRedirect() {
   )
 }
 
+/** 话题主体类型 → 主体详情页路径前缀（与后端 topicWebPath 保持一致） */
+const TOPIC_SUBJECT_PATHS: Record<TopicSubjectType, string> = {
+  迭代项: 'backlogs',
+  需求: 'requirements',
+  任务: 'tasks',
+  工单: 'tickets',
+  缺陷: 'defects',
+}
+
+/** 话题详情跳转的加载占位 */
+function TopicRedirectLoading() {
+  return (
+    <p className="px-4 py-6 text-sm text-foreground-muted">正在打开话题…</p>
+  )
+}
+
+/**
+ * 话题详情兼容跳转：旧链接 /topics/{id} 解析主体后跳到
+ * /{主体}/{主体 ID}/topics/{话题 ID}（飞书历史消息仍可打开）
+ */
+function LegacyTopicRedirect() {
+  const { topicId } = useParams<{ topicId: string }>()
+  const [path, setPath] = useState<string | null>(null)
+  const [failed, setFailed] = useState(false)
+  useEffect(() => {
+    const id = Number(topicId)
+    if (!Number.isInteger(id) || id <= 0) {
+      setFailed(true)
+      return
+    }
+    let cancelled = false
+    api
+      .getTopic(id)
+      .then((topic) => {
+        if (cancelled) return
+        setPath(
+          `/${TOPIC_SUBJECT_PATHS[topic.subjectType]}/${topic.subjectId}/topics/${topic.id}`,
+        )
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [topicId])
+  if (failed) return <Navigate to="/topics" replace />
+  if (path) return <Navigate to={path} replace />
+  return <TopicRedirectLoading />
+}
+
+/** 缺陷话题详情：缺陷详情页在需求路径下，先解析所属需求再跳转 */
+function DefectTopicRedirect() {
+  const { defectId, topicId } = useParams<{
+    defectId: string
+    topicId: string
+  }>()
+  const [path, setPath] = useState<string | null>(null)
+  const [failed, setFailed] = useState(false)
+  useEffect(() => {
+    const id = Number(defectId)
+    if (!Number.isInteger(id) || id <= 0) {
+      setFailed(true)
+      return
+    }
+    let cancelled = false
+    api
+      .getDefect(id)
+      .then((defect) => {
+        if (cancelled) return
+        setPath(`/projects/${defect.projectId}/defects/${id}/topics/${topicId}`)
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [defectId, topicId])
+  if (failed) return <Navigate to="/defects" replace />
+  if (path) return <Navigate to={path} replace />
+  return <TopicRedirectLoading />
+}
+
 function App() {
   return (
     <Suspense
@@ -298,6 +383,28 @@ function App() {
             <Route path="/feedback" element={<FeedbackPage />} />
             <Route path="/feedback/:feedbackId" element={<FeedbackDetailPage />} />
             <Route path="/topics" element={<TopicsPage />} />
+            {/* 话题详情：/{主体}/{主体 ID}/topics/{话题 ID}，落在主体详情页并定位话题 */}
+            <Route path="/topics/:topicId" element={<LegacyTopicRedirect />} />
+            <Route
+              path="/backlogs/:backlogId/topics/:topicId"
+              element={<BacklogDetailPage />}
+            />
+            <Route
+              path="/requirements/:id/topics/:topicId"
+              element={<RequirementDetailPage />}
+            />
+            <Route
+              path="/tasks/:id/topics/:topicId"
+              element={<TaskPackageDetailPage />}
+            />
+            <Route
+              path="/tickets/:ticketId/topics/:topicId"
+              element={<TicketDetailPage />}
+            />
+            <Route
+              path="/defects/:defectId/topics/:topicId"
+              element={<DefectTopicRedirect />}
+            />
             <Route path="/workbench" element={<WorkbenchPage />} />
             <Route path="/workbench/tasks/:taskId" element={<WorkbenchPage />} />
             <Route path="/robots" element={<RobotChatPage />} />
@@ -330,6 +437,10 @@ function App() {
             />
             <Route
               path="/projects/:id/defects/:defectId"
+              element={<DefectDetailPage />}
+            />
+            <Route
+              path="/projects/:id/defects/:defectId/topics/:topicId"
               element={<DefectDetailPage />}
             />
             <Route path="/defects" element={<DefectsPage />} />

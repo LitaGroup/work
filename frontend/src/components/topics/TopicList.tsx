@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Badge } from '@appica/ui-react/badge'
 import { Button } from '@appica/ui-react/button'
 import {
@@ -39,6 +39,8 @@ interface TopicListProps {
   emptyText?: string
   /** 话题/帖子变更后通知父级刷新列表 */
   onChanged?: () => void
+  /** 焦点话题（话题详情深链）：自动展开并滚动定位 */
+  focusId?: number
 }
 
 /**
@@ -52,9 +54,24 @@ export function TopicList({
   loading = false,
   emptyText = '暂无话题',
   onChanged,
+  focusId,
 }: TopicListProps) {
-  // 同一时间只展开一个话题
-  const [openId, setOpenId] = useState<number | null>(null)
+  // 同一时间只展开一个话题（深链进入时默认展开焦点话题）
+  const [openId, setOpenId] = useState<number | null>(focusId ?? null)
+  // 已定位过的焦点话题：列表刷新（发帖/改状态）时不再重复滚动
+  const scrolledRef = useRef<number | null>(null)
+
+  // 话题异步加载完成后展开并滚动到焦点话题（旧链接跳转时 id 可能先到）
+  useEffect(() => {
+    if (focusId == null) return
+    if (!topics.some((topic) => topic.id === focusId)) return
+    setOpenId(focusId)
+    if (scrolledRef.current === focusId) return
+    scrolledRef.current = focusId
+    document
+      .getElementById(`topic-${focusId}`)
+      ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [focusId, topics])
 
   if (loading) {
     return (
@@ -73,15 +90,22 @@ export function TopicList({
   return (
     <div>
       {topics.map((topic) => (
-        <TopicListItem
+        <div
           key={topic.id}
-          topic={topic}
-          workers={workers}
-          showSubject={showSubject}
-          open={openId === topic.id}
-          onOpenChange={(next) => setOpenId(next ? topic.id : null)}
-          onChanged={onChanged}
-        />
+          id={`topic-${topic.id}`}
+          className={`scroll-mt-24 ${
+            focusId === topic.id ? 'bg-background-muted' : ''
+          }`}
+        >
+          <TopicListItem
+            topic={topic}
+            workers={workers}
+            showSubject={showSubject}
+            open={openId === topic.id}
+            onOpenChange={(next) => setOpenId(next ? topic.id : null)}
+            onChanged={onChanged}
+          />
+        </div>
       ))}
     </div>
   )

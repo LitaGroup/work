@@ -22,7 +22,7 @@ import {
   type TopicEvent,
   type TopicEventBus,
 } from './topic-events';
-import { TopicsService } from './topics.service';
+import { TopicsService, topicWebPath } from './topics.service';
 
 /** 通知正文摘要长度 */
 const EXCERPT_LIMIT = 120;
@@ -207,7 +207,7 @@ export class TopicNotifyService implements OnModuleInit, OnModuleDestroy {
         );
         return false;
       }
-      const link = `[在平台查看话题](${this.client.appUrl}/topics/${topic.id})`;
+      const link = `[在平台查看话题](${this.client.appUrl}${topicWebPath(topic.subjectType, topic.subjectId, topic.id)})`;
       await this.client.sendCard(
         config.id,
         this.configs.secretsOf(config),

@@ -39,7 +39,7 @@ import {
   type TopicEvent,
   type TopicEventBus,
 } from './topic-events';
-import { subjectLabel, TopicsService } from './topics.service';
+import { subjectLabel, topicWebPath, TopicsService } from './topics.service';
 
 /** 单条消息最多转存的图片数（与反馈一致） */
 const MAX_IMAGES = 9;
@@ -146,7 +146,7 @@ export class TopicFeishuService implements OnModuleInit, OnModuleDestroy {
           '',
           topic.content,
           '',
-          `[在平台查看话题](${this.client.appUrl}/topics/${topic.id})`,
+          `[在平台查看话题](${this.client.appUrl}${topicWebPath(topic.subjectType, topic.subjectId, topic.id)})`,
         ]
           .filter((line) => line !== null)
           .join('\n'),
@@ -199,7 +199,7 @@ export class TopicFeishuService implements OnModuleInit, OnModuleDestroy {
           '',
           post.content,
           '',
-          `[在平台查看](${this.client.appUrl}/topics/${topic.id})`,
+          `[在平台查看](${this.client.appUrl}${topicWebPath(topic.subjectType, topic.subjectId, topic.id)})`,
         ].join('\n'),
       );
       await this.client.replyCard(

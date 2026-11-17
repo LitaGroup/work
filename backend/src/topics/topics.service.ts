@@ -150,6 +150,24 @@ export function subjectLabel(type: TopicSubjectType, title: string): string {
   return `${type}·${title}`;
 }
 
+/** 主体详情页路径前缀（话题详情链接为 `{主体路径}/{主体 ID}/topics/{话题 ID}`） */
+const SUBJECT_PATH: Record<TopicSubjectType, string> = {
+  [TopicSubjectType.BACKLOG]: 'backlogs',
+  [TopicSubjectType.REQUIREMENT]: 'requirements',
+  [TopicSubjectType.TASK]: 'tasks',
+  [TopicSubjectType.TICKET]: 'tickets',
+  [TopicSubjectType.DEFECT]: 'defects',
+};
+
+/** 话题详情页站内路径：`/{主体}/{主体 ID}/topics/{话题 ID}` */
+export function topicWebPath(
+  type: TopicSubjectType,
+  subjectId: number,
+  topicId: number,
+): string {
+  return `/${SUBJECT_PATH[type]}/${subjectId}/topics/${topicId}`;
+}
+
 @Injectable()
 export class TopicsService {
   private readonly logger = new Logger(TopicsService.name);
