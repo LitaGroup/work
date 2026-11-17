@@ -290,7 +290,12 @@ export class FeishuService implements OnModuleInit {
       pageToken = data.has_more ? data.page_token : undefined;
     } while (pageToken);
     const imageUrls = await this.downloadDocxImages(blocks);
-    const body = docxBlocksToMarkdown(blocks as never, imageUrls);
+    const embeddedSheets = await this.readEmbeddedSheetTables(blocks);
+    const body = docxBlocksToMarkdown(
+      blocks as never,
+      imageUrls,
+      embeddedSheets,
+    );
     const comments = await this.docxCommentsMarkdown(documentId, fileType);
     return {
       type: 'docx',
@@ -473,6 +478,50 @@ export class FeishuService implements OnModuleInit {
       await fs.mkdir(path.dirname(absPath), { recursive: true });
       await fs.writeFile(absPath, media.buffer);
       map.set(token, `/images/${relPath}`);
+    }
+    return map;
+  }
+
+  /**
+   * 读取 docx 内嵌电子表格（block_type=30，sheet.token 为 spreadsheetToken_sheetId）
+   * → token → Markdown 表格映射。单个失败仅记录告警并跳过（转换时降级为占位文本）；
+   * 块被删除后内嵌表的取值接口会失效，同样走该降级路径。
+   */
+  private async readEmbeddedSheetTables(
+    blocks: unknown[],
+  ): Promise<Map<string, string>> {
+    const tokens = [
+      ...new Set(
+        blocks
+          .map((b) =>
+            (b as { block_type?: number; sheet?: { token?: string } })
+              .block_type === 30
+              ? (b as { sheet?: { token?: string } }).sheet?.token
+              : undefined,
+          )
+          .filter((t): t is string => !!t),
+      ),
+    ];
+    if (tokens.length === 0) return new Map();
+    const results = await Promise.all(
+      tokens.map(async (token) => {
+        const idx = token.indexOf('_');
+        const spreadsheetToken = idx > 0 ? token.slice(0, idx) : token;
+        const sheetId = idx > 0 ? token.slice(idx + 1) : undefined;
+        try {
+          const result = await this.readSheet(spreadsheetToken, sheetId);
+          return [token, result.content] as const;
+        } catch (e) {
+          this.logger.warn(
+            `docx 内嵌电子表格读取失败 ${token}: ${(e as Error).message}`,
+          );
+          return null;
+        }
+      }),
+    );
+    const map = new Map<string, string>();
+    for (const result of results) {
+      if (result) map.set(result[0], result[1]);
     }
     return map;
   }

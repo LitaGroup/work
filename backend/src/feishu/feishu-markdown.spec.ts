@@ -453,6 +453,45 @@ describe('docxBlocksToMarkdown 图片块', () => {
   });
 });
 
+describe('docxBlocksToMarkdown 内嵌电子表格块', () => {
+  const sheetBlock = (id: string, token: string): Block => ({
+    block_id: id,
+    block_type: 30,
+    sheet: { token },
+  });
+  const sheets = (token: string, md: string) => new Map([[token, md]]);
+
+  it('命中 embeddedSheets 映射时渲染为 Markdown 表格', () => {
+    const blocks: Block[] = [text('t1', '前文'), sheetBlock('s1', 'SS_abc')];
+    expect(
+      docxBlocksToMarkdown(
+        blocks,
+        undefined,
+        sheets('SS_abc', '| A | B |\n| --- | --- |\n| 1 | 2 |'),
+      ),
+    ).toBe('前文\n\n| A | B |\n| --- | --- |\n| 1 | 2 |');
+  });
+
+  it('未读取成功的内嵌表格降级占位文本', () => {
+    const blocks: Block[] = [sheetBlock('s1', 'SS_missing')];
+    expect(docxBlocksToMarkdown(blocks)).toBe('*[内嵌表格暂不导入]*');
+  });
+
+  it('引用容器内的内嵌表格渲染为引用样式', () => {
+    const blocks: Block[] = [
+      { block_id: 'q1', block_type: 34, children: ['s1'] },
+      sheetBlock('s1', 'SS_abc'),
+    ];
+    expect(
+      docxBlocksToMarkdown(
+        blocks,
+        undefined,
+        sheets('SS_abc', '| A |\n| --- |\n| 1 |'),
+      ),
+    ).toBe('> | A |\n> | --- |\n> | 1 |');
+  });
+});
+
 describe('docxBlocksToMarkdown 非表格回归', () => {
   it('标题/列表/图片/分割线行为不变', () => {
     const blocks: Block[] = [
