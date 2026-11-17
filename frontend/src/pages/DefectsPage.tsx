@@ -74,36 +74,10 @@ export function DefectsPage() {
   const priorityItems = Object.fromEntries(
     ['all', ...DEFECT_PRIORITIES].map((p) => [p, p === 'all' ? '不限优先级' : p]),
   )
-  // Markdown 视图带当前筛选参数（'all'/空串不传）
-  const mdQuery = [
-    projectFilter !== 'all' && `projectId=${projectFilter}`,
-    releaseIdFilter !== null &&
-      Number.isInteger(releaseIdFilter) &&
-      `releaseId=${releaseIdFilter}`,
-    statusFilter !== 'all' && `status=${encodeURIComponent(statusFilter)}`,
-    priorityFilter !== 'all' &&
-      `priority=${encodeURIComponent(priorityFilter)}`,
-    q && `q=${encodeURIComponent(q)}`,
-  ]
-    .filter(Boolean)
-    .join('&')
-
   return (
     <div>
       <div className="mb-4 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <h1 className="text-2xl font-semibold">缺陷</h1>
-          {/* Markdown 视图：后端 .md URL 规范（GET /api/defects.md） */}
-          <a
-            href={`/api/defects.md${mdQuery ? `?${mdQuery}` : ''}`}
-            target="_blank"
-            rel="noreferrer"
-            className="text-sm underline"
-            title="Markdown 视图"
-          >
-            MD
-          </a>
-        </div>
+        <h1 className="text-2xl font-semibold">缺陷</h1>
         <NewDefectDialog projects={projects} onCreated={reload} />
       </div>
       <Toolbar aria-label="缺陷筛选" className="mb-4">

@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState, type ReactNode } from 'react'
-import { Link, Navigate, useParams } from 'react-router-dom'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { Link, Navigate, useNavigate, useParams } from 'react-router-dom'
 import {
   Card,
   CardHeader,
@@ -42,6 +42,12 @@ import {
   TooltipContent,
 } from '@appica/ui-react/tooltip'
 import {
+  Tabs,
+  TabsList,
+  TabsTrigger,
+  TabsContent,
+} from '@appica/ui-react/tabs'
+import {
   api,
   documentSourceLabel,
   PROJECT_TYPES,
@@ -52,38 +58,57 @@ import {
   type ProjectType,
 } from '../lib/api'
 import { CreateDocumentDialog, ImportDocumentDialog } from '../components/DocumentDialogs'
-import { BacklogStatusBadge, StatusBadge } from '../components/StatusBadge'
+import { StatusBadge } from '../components/StatusBadge'
 import { PageBreadcrumb } from '../components/PageBreadcrumb'
 import { TransferToIterationButton } from '../components/TransferToIterationButton'
+import { DeleteRequirementButton } from '../components/DeleteRequirementButton'
 import { DetailPageLayout } from '../components/detail/DetailPageLayout'
 import { TopicsPanel } from '../components/topics/TopicsPanel'
 import { DetailAgentPanel } from '../components/detail/DetailAgentPanel'
 import { CountRow } from '../components/CountRow'
 import { MarkdownViewer } from '../components/MarkdownViewer'
 
-/** 预期上线时间展示到小时 */
-function formatHour(value: string | null): string {
-  if (!value) return '—'
-  const d = new Date(value)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:00`
-}
-
 /** 需求摘要字数上限（与后端 SUMMARY_MAX_CHARS 一致） */
 const SUMMARY_MAX_CHARS = 200
 
+/** 内容分区：详情 / 资料 / 讨论 / 操作 */
+type RequirementDetailTab = 'details' | 'docs' | 'topics' | 'ops'
+
+/** 页签与 URL hash 一一对应（如 /requirements/2#topics） */
+const REQUIREMENT_DETAIL_TABS: RequirementDetailTab[] = [
+  'details',
+  'docs',
+  'topics',
+  'ops',
+]
+
+function readTabFromHash(): RequirementDetailTab {
+  const key = window.location.hash.replace(/^#/, '')
+  return REQUIREMENT_DETAIL_TABS.includes(key as RequirementDetailTab)
+    ? (key as RequirementDetailTab)
+    : 'details'
+}
+
 /**
- * 需求详情：只保留需求最基本的内容——需求信息、对应的迭代、文档资料。
+ * 需求详情：内容分区为 详情（信息 / 摘要 / 详情描述）/ 资料 / 讨论 / 操作；
+ * 标题右上角为迭代入口（未进入迭代时管理员可「移入迭代」，已进入时「进入迭代」）。
  * 研发过程数据（检查/测试/缺陷等）不再在此页展示，操作入口见任务中心与对应列表页。
  */
 export function RequirementDetailPage() {
   const { id } = useParams<{ id: string }>()
   const projectId = Number(id)
+  const navigate = useNavigate()
   const [project, setProject] = useState<Project | null>(null)
   const [backlogs, setBacklogs] = useState<BacklogSummary[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [aiOpen, setAiOpen] = useState(false)
   const [aiUnread, setAiUnread] = useState(0)
+
+  // 内容分区 tab（与 URL hash 同步，支持 /requirements/2#topics 直达）
+  const [tab, setTab] = useState<RequirementDetailTab>(readTabFromHash)
+
+  // 话题计数（TopicsPanel 加载后回调）
+  const [topicsCount, setTopicsCount] = useState(0)
 
   const reload = useCallback(() => {
     if (!Number.isInteger(projectId) || projectId <= 0) return
@@ -98,6 +123,27 @@ export function RequirementDetailPage() {
   }, [projectId])
 
   useEffect(reload, [reload])
+
+  // 分区与 URL hash 双向同步：支持 /requirements/2#topics 直达，切换分区时更新 hash
+  useEffect(() => {
+    const sync = () => setTab(readTabFromHash())
+    window.addEventListener('hashchange', sync)
+    return () => window.removeEventListener('hashchange', sync)
+  }, [])
+
+  const changeTab = (value: string) => {
+    const next = value as RequirementDetailTab
+    setTab(next)
+    if (window.location.hash.replace(/^#/, '') !== next) {
+      window.history.replaceState(null, '', `#${next}`)
+    }
+  }
+
+  // 该需求当前唯一未取消的迭代项（有则右上角「进入迭代」，无则「移入迭代」）
+  const activeBacklog = useMemo(
+    () => (backlogs ?? []).find((b) => b.status !== '取消') ?? null,
+    [backlogs],
+  )
 
   if (!id || !Number.isInteger(projectId) || projectId <= 0) {
     return <Navigate to="/requirements" replace />
@@ -140,224 +186,232 @@ export function RequirementDetailPage() {
         />
       }
     >
-      <div className="flex h-full min-h-0 min-w-0 flex-col gap-6 overflow-y-auto">
-        {/* 需求信息：属性摘要置顶，每个可编辑字段点击即编辑 */}
-        <section className="order-first space-y-6">
-          <PageBreadcrumb
-            items={[{ label: '需求', to: '/requirements' }, { label: project.name }]}
-          />
-          <TooltipProvider>
+      <div className="flex h-full min-h-0 min-w-0 flex-col gap-4 overflow-y-auto pb-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <PageBreadcrumb
+              items={[{ label: '需求', to: '/requirements' }, { label: project.name }]}
+            />
+            <h1 className="mt-2 flex items-center gap-3 text-2xl font-semibold">
+              <span className="truncate">{project.name}</span>
+              <StatusBadge status={project.status} />
+            </h1>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {activeBacklog ? (
+              <Link
+                to={`/backlogs/${activeBacklog.id}`}
+                className={buttonVariants({ size: 'sm' })}
+              >
+                进入迭代
+              </Link>
+            ) : (
+              <TransferToIterationButton
+                projectId={project.id}
+                projectName={project.name}
+                onTransferred={reload}
+              />
+            )}
+          </div>
+        </div>
+
+        <Tabs
+          value={tab}
+          onValueChange={changeTab}
+          variant="line"
+          className="flex min-h-0 flex-1 flex-col gap-0"
+        >
+          <TabsList className="shrink-0">
+            <TabsTrigger value="details">详情</TabsTrigger>
+            <TabsTrigger value="docs">
+              资料 {project.documents?.length ?? 0}
+            </TabsTrigger>
+            <TabsTrigger value="topics">讨论 {topicsCount}</TabsTrigger>
+            <TabsTrigger value="ops">操作</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="details" keepMounted className="pt-4">
+            {/* 详情：信息属性、需求摘要与需求描述三个纵向块 */}
+            <TooltipProvider>
+              <Card>
+                <CardHeader>
+                  <CardTitle>详情</CardTitle>
+                  <CardDescription>
+                    需求信息、需求摘要与需求描述；点击带下划线的值即可编辑
+                  </CardDescription>
+                </CardHeader>
+                <div className="flex flex-col gap-6 px-4 pb-4">
+                  <section className="flex flex-col gap-2 text-sm">
+                    <h3 className="text-sm font-medium text-foreground-intense">信息</h3>
+                    <dl className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                      <div className="flex items-center justify-between">
+                        <dt>类型</dt>
+                        <dd>
+                          <ProjectTypeSelect project={project} onChanged={reload} />
+                        </dd>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <dt>状态</dt>
+                        <dd>
+                          {/* 状态为推导值（是否进入迭代 + 创建时间），不可手改 */}
+                          <StatusBadge status={project.status} />
+                        </dd>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <dt>预期发布</dt>
+                        <dd>
+                          <ExpectedReleaseInput project={project} onChanged={reload} />
+                        </dd>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <dt>计划周(w)</dt>
+                        <dd>
+                          <ProjectDictSelect
+                            project={project}
+                            field="iterationCycle"
+                            suggestionsKey="iterations"
+                            onChanged={reload}
+                          />
+                        </dd>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <dt>优先级</dt>
+                        <dd>
+                          <ProjectDictSelect
+                            project={project}
+                            field="priority"
+                            suggestionsKey="priorities"
+                            onChanged={reload}
+                          />
+                        </dd>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <dt>需求方</dt>
+                        <dd>
+                          <OwnerInput project={project} onChanged={reload} />
+                        </dd>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <dt>涉及方</dt>
+                        <dd>
+                          <InvolvedPartiesInput project={project} onChanged={reload} />
+                        </dd>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <dt>备注</dt>
+                        <dd>
+                          <RemarkInput project={project} onChanged={reload} />
+                        </dd>
+                      </div>
+                      <div className="flex justify-between">
+                        <dt>来源</dt>
+                        <dd>{project.feishuRecordId ? '飞书同步' : '手动创建'}</dd>
+                      </div>
+                      <div className="flex justify-between">
+                        <dt>资源</dt>
+                        <dd>—</dd>
+                      </div>
+                      <div className="flex justify-between">
+                        <dt>更新时间</dt>
+                        <dd>{new Date(project.updatedAt).toLocaleString()}</dd>
+                      </div>
+                    </dl>
+                  </section>
+
+                  <section className="flex flex-col gap-2 border-t border-border pt-4">
+                    <div className="flex flex-wrap items-baseline gap-2">
+                      <h3 className="text-sm font-medium text-foreground-intense">摘要</h3>
+                      <span className="text-xs text-foreground-muted">
+                        ≤{SUMMARY_MAX_CHARS} 字，模型生成，可编辑
+                      </span>
+                    </div>
+                    <div className="text-sm">
+                      <EditSummaryDialog project={project} onSaved={reload} />
+                    </div>
+                  </section>
+
+                  <section className="flex flex-col gap-2 border-t border-border pt-4">
+                    <div className="flex flex-wrap items-baseline gap-2">
+                      <h3 className="text-sm font-medium text-foreground-intense">详情</h3>
+                      <span className="text-xs text-foreground-muted">
+                        Markdown 需求描述，点击编辑
+                      </span>
+                    </div>
+                    <div className="text-sm">
+                      <EditDescriptionDialog project={project} onSaved={reload} />
+                    </div>
+                  </section>
+                </div>
+              </Card>
+            </TooltipProvider>
+          </TabsContent>
+
+          <TabsContent value="docs" keepMounted className="pt-4">
+            {/* 资料：需求的文档清单与新建/导入/同步 */}
             <Card>
               <CardHeader>
-                <CardTitle className="flex items-center justify-between gap-2">
-                  <span className="truncate">{project.name}</span>
-                  {/* Markdown 视图：GET /api/requirements/:id.md */}
-                  <a
-                    href={`/api/requirements/${project.id}.md`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-sm font-normal underline"
-                    title="Markdown 视图"
-                  >
-                    MD
-                  </a>
-                </CardTitle>
-                <CardDescription>
-                  <EditDescriptionDialog project={project} onSaved={reload} />
-                </CardDescription>
-                <div className="mt-2">
-                  <span className="mr-2 text-xs text-foreground-muted">
-                    摘要（≤200 字，模型生成，可编辑）
-                  </span>
-                  <EditSummaryDialog project={project} onSaved={reload} />
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="flex flex-col gap-1">
+                    <CardTitle className="flex items-center gap-2">
+                      资料
+                      <Badge variant="soft">{project.documents?.length ?? 0}</Badge>
+                    </CardTitle>
+                    <CardDescription>
+                      需求的文档资料；可新建，或从飞书 / APIPOST 导入后按来源同步
+                    </CardDescription>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Link
+                      to={`/documents?projectId=${project.id}`}
+                      className={buttonVariants({ variant: 'outline', size: 'sm' })}
+                    >
+                      查看全部
+                    </Link>
+                    <CreateDocumentDialog projectId={project.id} onCreated={reload} />
+                    <ImportDocumentDialog projectId={project.id} onImported={reload} />
+                  </div>
                 </div>
               </CardHeader>
-              <dl className="grid gap-3 px-6 pb-6 text-sm sm:grid-cols-2 xl:grid-cols-4">
-                <div className="flex items-center justify-between">
-                  <dt>类型</dt>
-                  <dd>
-                    <ProjectTypeSelect project={project} onChanged={reload} />
-                  </dd>
-                </div>
-                <div className="flex items-center justify-between">
-                  <dt>状态</dt>
-                  <dd>
-                    {/* 状态为推导值（是否进入迭代 + 创建时间），不可手改 */}
-                    <StatusBadge status={project.status} />
-                  </dd>
-                </div>
-                <div className="flex items-center justify-between">
-                  <dt>预期发布</dt>
-                  <dd>
-                    <ExpectedReleaseInput project={project} onChanged={reload} />
-                  </dd>
-                </div>
-                <div className="flex items-center justify-between">
-                  <dt>计划周(w)</dt>
-                  <dd>
-                    <ProjectDictSelect
-                      project={project}
-                      field="iterationCycle"
-                      suggestionsKey="iterations"
-                      onChanged={reload}
-                    />
-                  </dd>
-                </div>
-                <div className="flex items-center justify-between">
-                  <dt>优先级</dt>
-                  <dd>
-                    <ProjectDictSelect
-                      project={project}
-                      field="priority"
-                      suggestionsKey="priorities"
-                      onChanged={reload}
-                    />
-                  </dd>
-                </div>
-                <div className="flex items-center justify-between">
-                  <dt>需求方</dt>
-                  <dd>
-                    <OwnerInput project={project} onChanged={reload} />
-                  </dd>
-                </div>
-                <div className="flex items-center justify-between">
-                  <dt>备注</dt>
-                  <dd>
-                    <RemarkInput project={project} onChanged={reload} />
-                  </dd>
-                </div>
-                <div className="flex justify-between">
-                  <dt>来源</dt>
-                  <dd>{project.feishuRecordId ? '飞书同步' : '手动创建'}</dd>
-                </div>
-                <div className="flex justify-between">
-                  <dt>资源</dt>
-                  <dd>—</dd>
-                </div>
-                <div className="flex justify-between">
-                  <dt>更新时间</dt>
-                  <dd>{new Date(project.updatedAt).toLocaleString()}</dd>
-                </div>
-              </dl>
+              <DocumentsPanel project={project} onChanged={reload} />
             </Card>
-          </TooltipProvider>
-        </section>
+          </TabsContent>
 
-        {/* 对应的迭代：该需求的全部迭代项（含已取消历史） */}
-        <section>
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-xl font-semibold">
-              对应的迭代
-              <span className="ml-2 text-sm font-normal text-foreground-muted">
-                {backlogs?.length ?? 0} 项
-              </span>
-            </h2>
-            <TransferToIterationButton
-              projectId={project.id}
-              projectName={project.name}
+          <TabsContent value="topics" keepMounted className="pt-4">
+            {/* 讨论：与迭代项「话题」分区一致的折叠话题列表 */}
+            <TopicsPanel
+              subjectType="需求"
+              subjectId={project.id}
+              subjectTitle={project.name}
+              onCountChange={setTopicsCount}
             />
-          </div>
-          <BacklogsPanel backlogs={backlogs ?? []} />
-        </section>
+          </TabsContent>
 
-        {/* 文档资料：需求的文档清单与新建/导入/同步 */}
-        <section>
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-xl font-semibold">文档资料</h2>
-            <div className="flex gap-2">
-              <Link
-                to={`/documents?projectId=${project.id}`}
-                className={buttonVariants({ variant: 'outline', size: 'sm' })}
-              >
-                查看全部
-              </Link>
-              <CreateDocumentDialog projectId={project.id} onCreated={reload} />
-              <ImportDocumentDialog projectId={project.id} onImported={reload} />
-            </div>
-          </div>
-          <DocumentsPanel project={project} onChanged={reload} />
-        </section>
-
-        {/* 讨论：需求下的话题 */}
-        <section>
-          <h2 className="mb-3 text-xl font-semibold">讨论</h2>
-          <TopicsPanel
-            subjectType="需求"
-            subjectId={project.id}
-            subjectTitle={project.name}
-          />
-        </section>
+          <TabsContent value="ops" keepMounted className="pt-4">
+            {/* 操作：删除需求（状态为推导值，不可手改，只读展示在信息区） */}
+            <Card>
+              <CardHeader>
+                <CardTitle>操作</CardTitle>
+                <CardDescription>
+                  需求状态由迭代项与创建时间自动推导，不可手动修改；这里提供不可逆操作
+                </CardDescription>
+              </CardHeader>
+              <div className="flex flex-wrap items-center justify-between gap-3 px-4 pb-4">
+                <div className="flex flex-col gap-1 text-sm">
+                  <span className="font-medium text-foreground-intense">删除需求</span>
+                  <span className="text-foreground-muted">
+                    其下的文档、资源、提测、缺陷等关联数据会一并清理，且不可恢复。
+                  </span>
+                </div>
+                <DeleteRequirementButton
+                  project={project}
+                  onDeleted={() => navigate('/requirements')}
+                />
+              </div>
+            </Card>
+          </TabsContent>
+        </Tabs>
       </div>
     </DetailPageLayout>
-  )
-}
-
-/** 需求对应的迭代项：迭代 code 链到迭代详情，迭代项标题链到迭代项详情 */
-function BacklogsPanel({ backlogs }: { backlogs: BacklogSummary[] }) {
-  const displayed = backlogs.slice(0, 20)
-  return (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          <TableHead className="w-32">迭代</TableHead>
-          <TableHead>迭代项</TableHead>
-          <TableHead className="w-28 text-center">状态</TableHead>
-          <TableHead className="w-32">负责人</TableHead>
-          <TableHead className="w-40 text-center">预期上线</TableHead>
-          <TableHead className="w-44">更新时间</TableHead>
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {displayed.map((b) => (
-          <TableRow key={b.id}>
-            <TableCell>
-              {b.iteration ? (
-                <Link
-                  to={`/iterations/${b.iteration.id}`}
-                  className="underline"
-                >
-                  <Badge variant="secondary">{b.iteration.code}</Badge>
-                </Link>
-              ) : (
-                `#${b.iterationId}`
-              )}
-            </TableCell>
-            <TableCell className="max-w-md truncate">
-              <Link to={`/backlogs/${b.id}`} className="underline" title={b.title}>
-                {b.title}
-              </Link>
-            </TableCell>
-            <TableCell className="text-center">
-              <BacklogStatusBadge status={b.status} />
-            </TableCell>
-            <TableCell className="max-w-32 truncate" title={b.ownerName ?? ''}>
-              {b.ownerName ?? '—'}
-            </TableCell>
-            <TableCell className="text-center">
-              {formatHour(b.expectedOnlineAt)}
-            </TableCell>
-            <TableCell
-              className="text-xs text-foreground-muted"
-              title={new Date(b.updatedAt).toLocaleString()}
-            >
-              {new Date(b.updatedAt).toLocaleString()}
-            </TableCell>
-          </TableRow>
-        ))}
-        {backlogs.length === 0 && (
-          <TableRow>
-            <TableCell colSpan={6}>
-              暂未进入迭代，可由管理员点击「转入迭代」创建迭代项
-            </TableCell>
-          </TableRow>
-        )}
-        <CountRow
-          colSpan={6}
-          total={backlogs.length}
-          displayed={displayed.length}
-        />
-      </TableBody>
-    </Table>
   )
 }
 
@@ -697,6 +751,77 @@ function OwnerInput({
         <EditableValue onClick={startEditing}>
           <span className="block max-w-40 truncate" title={project.owner ?? undefined}>
             {project.owner || '—'}
+          </span>
+        </EditableValue>
+      )}
+      {error && <span className="text-xs">{error}</span>}
+    </span>
+  )
+}
+
+/** 展示涉及方（飞书「涉及方」多选同步）；点击值展开输入框，Enter / 失焦保存，Esc 取消（顿号/逗号分隔，空串清除） */
+function InvolvedPartiesInput({
+  project,
+  onChanged,
+}: {
+  project: Project
+  onChanged: () => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [value, setValue] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const current = project.involvedParties?.join('、') ?? ''
+
+  const startEditing = () => {
+    setValue(current)
+    setError(null)
+    setEditing(true)
+  }
+
+  const save = () => {
+    if (!editing || submitting) return
+    const next = value.trim()
+    if (next === current) {
+      setEditing(false)
+      return
+    }
+    setSubmitting(true)
+    setError(null)
+    api
+      .updateProject(project.id, { involvedParties: next })
+      .then(() => {
+        setEditing(false)
+        onChanged()
+      })
+      .catch((e: Error) => setError(e.message))
+      .finally(() => setSubmitting(false))
+  }
+
+  return (
+    <span className="flex flex-col items-end gap-1">
+      {editing ? (
+        <Input
+          autoFocus
+          inputSize="sm"
+          className="w-48"
+          value={value}
+          disabled={submitting}
+          placeholder="如 Android、iOS、Backend"
+          onChange={(e) => setValue(e.target.value)}
+          onBlur={save}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') save()
+            if (e.key === 'Escape') {
+              setEditing(false)
+              setError(null)
+            }
+          }}
+        />
+      ) : (
+        <EditableValue onClick={startEditing}>
+          <span className="block max-w-40 truncate" title={current || undefined}>
+            {current || '—'}
           </span>
         </EditableValue>
       )}

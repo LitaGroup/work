@@ -22,15 +22,18 @@ import { useAuth } from '../context/AuthContext'
 const SUCCESS_STAY_MS = 2_000
 
 /**
- * 需求详情「转入迭代」：选择一个进行中的迭代（T0 / T7 / Tx）与负责人机器人，
+ * 需求详情「移入迭代」：选择一个进行中的迭代（T0 / T7 / Tx）与负责人机器人，
  * 把当前需求转成该迭代的 backlog。仅管理员可见。
  */
 export function TransferToIterationButton({
   projectId,
   projectName,
+  onTransferred,
 }: {
   projectId: number
   projectName: string
+  /** 转入成功后的回调（如刷新需求详情页的迭代入口） */
+  onTransferred?: () => void
 }) {
   const { user } = useAuth()
   const isAdmin = user?.role === '管理员'
@@ -93,7 +96,8 @@ export function TransferToIterationButton({
         { projectId, ownerWorkerId: targetOwner },
       ])
       .then(() => {
-        setSuccess(`已将「${projectName}」转入迭代`)
+        setSuccess(`已将「${projectName}」移入迭代`)
+        onTransferred?.()
         timerRef.current = setTimeout(() => {
           setSuccess(null)
           setOpen(false)
@@ -113,12 +117,12 @@ export function TransferToIterationButton({
           load()
         }}
       >
-        转入迭代
+        移入迭代
       </Button>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>转入迭代</DialogTitle>
+            <DialogTitle>移入迭代</DialogTitle>
           </DialogHeader>
           <DialogBody>
             <div className="flex flex-col gap-3">
@@ -179,7 +183,7 @@ export function TransferToIterationButton({
               onClick={submit}
               disabled={pending || success !== null}
             >
-              {pending ? '转入中…' : '确认转入'}
+              {pending ? '移入中…' : '确认移入'}
             </Button>
           </DialogFooter>
         </DialogContent>

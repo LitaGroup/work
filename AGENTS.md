@@ -138,7 +138,7 @@
 ### 业务分区导航
 
 - 顶级分区「业务」（原「项目」）左侧只保留五个业务栏目：需求 `/requirements`、迭代 `/iterations`、灵感 `/ideas`、调研（占位，未启用）、反馈 `/feedback`；落地页 `/` 重定向到需求池，概览页仅保留 `/overview` 路由不挂导航。
-- 需求池复用项目实体（飞书需求池单向同步 + 平台内新建）。需求详情页为 `/requirements/{id}`，只保留三块内容：**需求信息**（类型/状态/预期发布/计划周(w)/优先级/需求方/备注等行内编辑）、**对应的迭代**（该需求全部迭代项，含已取消历史，管理员可「转入迭代」）、**文档资料**；不再展示任务/资源/节点/检查/测试/缺陷等研发过程数据，也没有「安排项目机器人」「提测」按钮（分别走 `POST /api/projects/{id}/delivery-task` 与迭代项详情提测）。需求不维护成员，只保留需求方（`projects.owner`），人员/成员统一由迭代项 `backlogs.members` 维护。
+- 需求池复用项目实体（飞书需求池单向同步 + 平台内新建）。需求详情页为 `/requirements/{id}`，内容分区与 URL hash 一一对应：**详情**（`#details`，信息属性、需求摘要、需求描述三个纵向块，均可编辑）、**资料**（`#docs`，文档清单与新建/导入/按来源同步）、**讨论**（`#topics`，`TopicsPanel` 与迭代项「话题」一致并显示计数）、**操作**（`#ops`，仅删除需求）。迭代入口在标题右上角：存在未取消迭代项时「进入迭代」直达 `/backlogs/{id}`，否则管理员可见「移入迭代」（`TransferToIterationButton`）；需求状态为推导值，不可手动修改。不再展示任务/资源/节点/检查/测试/缺陷等研发过程数据，也没有「安排项目机器人」「提测」按钮（分别走 `POST /api/projects/{id}/delivery-task` 与迭代项详情提测）。需求不维护成员，只保留需求方（`projects.owner`），人员/成员统一由迭代项 `backlogs.members` 维护。
 - 需求 Agent 视图：`GET /api/requirements/{id}.md`（基本信息 + 对应迭代 + 文档资料 + 少量需求级 AI 操作）、`GET /api/requirements/search.md`、`POST /api/requirements/{id}/update.md`；旧 `/api/projects/{id}.md`、`/api/projects/search.md`、`/api/projects/{id}/update.md` 视图已下线。JSON 接口仍为 `/api/projects*`，提测操作端点仍为 `POST /api/projects/{id}/release[.md]`。`/projects` 重定向到 `/requirements`，项目子路由（`/projects/:id/...`）保留；`/projects/:id` 详情路由已移除。
 - 研发类操作指南（脚本运行、节点、代码分支、提测、缺陷）随系统任务定义 ID=7 / ID=9 的说明下发给执行机器人（`system-task-templates.ts` 的 `DEVELOPMENT_OPERATION_GUIDE`），不再放在需求详情 .md 中。
 - 迭代独立建模（`iterations` + `backlogs`，见「迭代与 Backlog」）；`projects.iterationCycle` 仅保留为飞书同步的参考字段与需求筛选值（界面统一展示为「计划周(w)」，字段名不变），旧分组接口 `GET /api/projects/iterations` 不再作为迭代页数据源。
@@ -161,9 +161,10 @@
 - 任务与工单面板：`GET /api/backlogs/{id}/tasks` 返回交付任务为根的任务树（含全部子任务）与相关工单（`tickets.backlogId` ∪ `tickets.taskId` ∪ `ticket_workflow_runs.taskId` 去重）。
 - 提测：迭代项详情页「提测」按钮按系统工作流 `release-ticket`（代码预置，启动与迁移均按规范定义幂等发布 v1）创建工单，描述自动填入迭代项上下文、人工可补充；`tickets.backlogId` 记录关联，创建成功写 `release-ticket` 事件。提测不与迭代项/迭代状态绑定，同一迭代项可多次发起提测工单（完成、取消后仍可提测）。
 - 新建任务：迭代项详情页「任务」分区「新建任务」按 `POST /api/backlogs/{id}/tasks` 处理——已有交付任务时创建其子任务（成员或管理员）；无交付任务时按所选执行机器人创建交付任务（系统任务定义「迭代-Backlog交付」）并登记迭代项负责人（仅管理员，等价于指定负责人）。
-- 迭代项详情页为标准双栏布局 + 右下角可收起 AI 面板（⌥A）；内容分区为 信息 / 文档 / 任务（任务树 + 相关工单）/ 缺陷（按 `backlogId` 关联，支持页内新建）/ 事件 / 成员；AI 页面上下文类型 `backlog`（`agent:page:backlog:*`），`contextReadUrl` 固定 `/api/backlogs/{id}.md`。
+- 迭代项详情页为标准双栏布局 + 右下角可收起 AI 面板（⌥A）；内容分区为 信息 / 文档 / 任务（任务树 + 相关工单）/ 缺陷（按 `backlogId` 关联，支持页内新建）/ 话题 / 事件 / 成员，分区与 URL hash 一一对应（如 `/backlogs/{id}#topics` 直达话题，切换分区同步 `history.replaceState`）；「话题」页签显示话题数（其他页面的 `TopicsPanel` 卡片标题也显示计数）。AI 页面上下文类型 `backlog`（`agent:page:backlog:*`），`contextReadUrl` 固定 `/api/backlogs/{id}.md`。
+- 迭代项成员在详情页「成员」分区内直接维护（管理员）：角色 + 用户选择后「添加」、每个成员「移除」，均立即调用 `PATCH /api/backlogs/{id}/members`（整体替换语义），不再有「编辑成员」弹窗。
 - 支持向已有迭代追加需求、移动 backlog 到其它迭代（移动不重建交付任务与沟通群）；周迭代到期未完成的 backlog 留在原迭代，由管理员手动结转到新迭代。
-- 每个 backlog 创建后自动建立飞书沟通群（`LitaWork-迭代-{标题} 沟通群`），拉入成员真人与负责人机器人绑定的飞书应用（无负责人时先建群，指定后由对账补拉机器人）；完成/取消后保留 7 天自动解散，建群失败不阻断、定时对账重试。
+- backlog 不再自动建立飞书沟通群：由成员或管理员在迭代项详情页手动「飞书建群」（`POST /api/backlogs/{id}/feishu-chat`，群名 `LitaWork-迭代-{标题} 沟通群`），拉入成员真人与负责人机器人绑定的飞书应用（负责人后续绑定由对账补拉）；已建群直接「打开飞书群」（Feishu AppLink `applink.feishu.cn/client/chat/open?openChatId=...`，仅能打开已加入的群）；完成/取消后保留 7 天自动解散，建群失败保留绑定并由对账重试（每分钟、上限 30 次），终态不再建群；迁移清理从未建成群的残留绑定。
 - Agent 视图：`GET /api/iterations.md`、`GET /api/iterations/{id}.md`、`GET /api/backlogs/{id}.md`。
 
 ### 项目、文档与项目资料
@@ -178,6 +179,7 @@
 - 需求描述（`projects.description`）：需求创建/飞书同步后，或「需求」类文档新增/更新后，若描述为空且无进行中的生成，后台按「需求名称 + 需求类文档正文」调用 `requirement-description` 模型场景生成结构化 Markdown 描述（`projects/project-description.service.ts`，进程内去重、失败只告警、条件更新不覆盖人工填写）。**同步只补空值、不清空不覆盖**：飞书「需求」列只有标题时保留平台已有描述，只有源侧提供了额外正文才覆盖。
 - 项目人员（原 `projects.resources`）已下线：需求只保留需求方 `projects.owner`，飞书同步不再写入人员字段。资源实体关系 `projectResources` 是独立概念（需求方提供的素材/信息登记），与人员无关，禁止混用。
 - 需求方 `projects.owner`：从需求池「需求方」人员字段单向同步（多姓名顿号连接），平台内可编辑（同样校验用户系统内），下次同步被飞书侧覆盖。
+- 涉及方 `projects.involvedParties`：从需求池「涉及方」多选字段（Android/iOS/H5/Backend/Admin/Data）单向同步为字符串数组，平台内可编辑（顿号/逗号分隔，不做选项校验），下次同步被飞书侧覆盖；迭代项信息区与需求/迭代项 `.md` 视图实时引用展示，不落库到 `backlogs`。
 - 需求备注 `projects.remark`：由飞书「排期优先级」+「排期备注」同步合成（单行、分号分隔，均为空时清空）；平台内可编辑，下次同步覆盖；迭代项信息区只读展示该备注（实时引用需求，不落库）。
 - 资源类型：配置 / 多语言 / 文件资源 / UI / 其它；状态：缺失 / 草稿 / 确认 / 废弃。「废弃」是软删除，`DELETE` 是硬删除。配置与多语言凭据未提供时只能为「缺失」或「废弃」。
 - 节点状态不落库，由达成标记、实际达成日期和计划日期按北京时间日粒度推导；`achieved=yes` 自动记录实际达成日期，撤销或取消时清除。
@@ -316,7 +318,7 @@
 - 关注（`topic_follows`）：新帖以官方机器人私聊卡片通知关注人（排除发帖人），个人中心「我关注的话题」可查；同一条帖子对同一用户只发一次（@ 优先）。
 - 飞书双向同步：主体有群（迭代沟通群/任务群/需求项目沟通群；缺陷与工单无群）时，首楼作为群内话题根卡片，平台帖子以回复落入同一话题（图片上传为 image_key，失败降级链接）；绑定话题内的群消息回流为 `topic_posts`（来源=飞书群，按 `(topicId, sourceMessageId)` 去重，**不再回传**），@ 机器人同样触发通知/答复；机器人自身消息与飞书来源帖子不回传，防回声。
 - 机器人身份：普通 AI 机器人以自身身份参与（`creatorWorkerId`/`authorWorkerId`）；个人 AGENT 与真人机器人落到绑定真人（`creatorUserId`/`authorUserId`）。
-- Agent 视图：`GET /api/topics.md`、`GET /api/topics/{id}.md`，主体 `.md` 视图附话题清单；`lita-work` MCP 提供 `list_topics` / `get_topic` / `create_topic` / `reply_topic` / `update_topic`。前端话题列表为折叠式：展开后展示首楼、缩进帖子与行内回复框，关注/编辑/删除在折叠区内完成，不提供独立话题详情页。
+- Agent 视图：`GET /api/topics.md`、`GET /api/topics/{id}.md`，主体 `.md` 视图附话题清单；`lita-work` MCP 提供 `list_topics` / `get_topic` / `create_topic` / `reply_topic` / `update_topic`。前端话题列表为折叠式：展开后展示首楼、缩进帖子与行内回复框，关注/编辑/删除在折叠区内完成，不提供独立话题详情页；`TopicsPanel` 卡片标题与迭代项详情页「话题」页签均显示话题计数（`onCountChange` 回调）。
 
 ### GitHub 与凭证网关
 

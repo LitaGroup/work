@@ -1016,6 +1016,9 @@ export class ProjectsService {
       meta.push(`- 计划周(w)：${project.iterationCycle}`);
     }
     if (project.owner) meta.push(`- 需求方：${project.owner}`);
+    if (project.involvedParties?.length) {
+      meta.push(`- 涉及方：${project.involvedParties.join('、')}`);
+    }
     if (project.remark) meta.push(`- 备注：${project.remark}`);
     if (project.scriptsPath) meta.push(`- 脚本目录：${project.scriptsPath}`);
     meta.push(`- 更新时间：${project.updatedAt.toISOString()}`);
@@ -1077,10 +1080,10 @@ export class ProjectsService {
       '',
       '搜索需求：`GET /api/requirements/search.md?q={名称关键词}`（匹配度 + 创建时间倒序，前 5）',
       '',
-      '修改需求配置（仅本地字段：脚本目录 / 描述 / 需求方 / 备注，空串清除）：',
+      '修改需求配置（仅本地字段：脚本目录 / 描述 / 需求方 / 涉及方 / 备注，空串清除）：',
       '',
       '```bash',
-      `curl -X POST /api/requirements/${project.id}/update.md -H 'Content-Type: application/json' -d '{"scriptsPath": "projects/xxx", "owner": "张三", "remark": "排期优先级：P0；排期备注：xxx"}'`,
+      `curl -X POST /api/requirements/${project.id}/update.md -H 'Content-Type: application/json' -d '{"scriptsPath": "projects/xxx", "owner": "张三", "involvedParties": "Android、iOS、Backend", "remark": "排期优先级：P0；排期备注：xxx"}'`,
       '```',
       '',
       '写入/更新需求文档（按 projectId + fileName 判重 upsert；type 可选 需求/功能/测试/技术/接口/配置，缺省"技术"）：',
@@ -1107,7 +1110,7 @@ export class ProjectsService {
     return lines.join('\n');
   }
 
-  /** 更新项目可编辑字段：类型/优先级/迭代周期/预期发布时间/需求方 + 脚本目录（scriptsPath）、描述（description）、摘要（summary），空串清除。状态为推导值不可手改。注意：飞书同步项目的同步字段（类型/优先级/迭代/预期发布/需求方）会在下次同步时被飞书侧覆盖 */
+  /** 更新项目可编辑字段：类型/优先级/迭代周期/预期发布时间/需求方/涉及方 + 脚本目录（scriptsPath）、描述（description）、摘要（summary），空串清除。状态为推导值不可手改。注意：飞书同步项目的同步字段（类型/优先级/迭代/预期发布/需求方/涉及方）会在下次同步时被飞书侧覆盖 */
   async update(
     id: number,
     input: {
@@ -1116,6 +1119,8 @@ export class ProjectsService {
       iterationCycle?: string;
       expectedReleaseAt?: string;
       owner?: string | null;
+      /** 涉及方（飞书「涉及方」多选同步；平台内可编辑，下次同步覆盖），空串清除 */
+      involvedParties?: string | null;
       /** 备注（飞书「排期优先级」+「排期备注」同步合成；平台内可编辑，下次同步覆盖），空串清除 */
       remark?: string | null;
       scriptsPath?: string;
@@ -1158,6 +1163,11 @@ export class ProjectsService {
       }
       project.owner = owner;
     }
+    if (input.involvedParties !== undefined) {
+      // 涉及方为多选值（端/侧），支持顿号/逗号/空格分隔，空串清除
+      const parties = splitMemberNames(input.involvedParties ?? '');
+      project.involvedParties = parties.length ? parties : null;
+    }
     if (input.remark !== undefined) {
       project.remark = this.normalizeShortText(
         input.remark ?? '',
@@ -1184,7 +1194,7 @@ export class ProjectsService {
   }
 
   /**
-   * AI 用：仅本地字段更新（脚本目录/描述/需求方/备注），返回 Markdown 结果。
+   * AI 用：仅本地字段更新（脚本目录/描述/需求方/涉及方/备注），返回 Markdown 结果。
    * 刻意不含飞书同步字段（类型/优先级/迭代/预期发布），状态为推导值不可改。
    */
   async updateMarkdown(
@@ -1193,6 +1203,8 @@ export class ProjectsService {
       scriptsPath?: string;
       description?: string;
       owner?: string | null;
+      /** 涉及方（飞书「涉及方」多选同步；平台内可编辑，下次同步覆盖），空串清除 */
+      involvedParties?: string | null;
       remark?: string | null;
     },
   ): Promise<string> {
@@ -1208,6 +1220,11 @@ export class ProjectsService {
     }
     if (input.owner !== undefined) {
       lines.push(`- 需求方：${project.owner ?? '已清除'}`);
+    }
+    if (input.involvedParties !== undefined) {
+      lines.push(
+        `- 涉及方：${project.involvedParties?.join('、') ?? '已清除'}`,
+      );
     }
     if (input.remark !== undefined) {
       lines.push(`- 备注：${project.remark ?? '已清除'}`);

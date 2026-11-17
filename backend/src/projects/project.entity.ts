@@ -50,6 +50,10 @@ export class Project {
   @Column({ type: 'varchar', length: 200, nullable: true })
   owner: string | null;
 
+  /** 涉及方（飞书「涉及方」多选字段同步，如 Android/iOS/H5/Backend/Admin/Data；平台内可编辑，下次同步覆盖） */
+  @Column({ type: 'simple-json', nullable: true })
+  involvedParties: string[] | null;
+
   /** 备注：由飞书「排期优先级」「排期备注」同步合成（单行分号分隔）；平台内可编辑，下次同步覆盖 */
   @Column({ type: 'text', nullable: true })
   remark: string | null;

@@ -117,6 +117,13 @@ const EVENT_LABELS: Record<string, string> = {
   moved: '移动迭代',
   'release-ticket': '发起提测',
   owner: '负责人变更',
+  members: '成员变更',
+  'feishu-chat': '飞书群',
+}
+
+/** 飞书群 AppLink（仅能打开当前用户已加入的群） */
+function feishuChatAppLink(chatId: string): string {
+  return `https://applink.feishu.cn/client/chat/open?openChatId=${encodeURIComponent(chatId)}`
 }
 
 function formatTime(value: string | null): string {
@@ -147,6 +154,7 @@ function eventSummary(event: BacklogEvent): string {
     migratedDocuments?: number
     toIterationCode?: string
     ticketCode?: string
+    state?: string
   }
   const parts: string[] = []
   if (event.type === 'status' && payload.from && payload.to) {
@@ -161,6 +169,15 @@ function eventSummary(event: BacklogEvent): string {
   if (event.type === 'release-ticket' && payload.ticketCode) {
     parts.push(`工单 ${payload.ticketCode}`)
   }
+  if (event.type === 'feishu-chat') {
+    parts.push(
+      payload.state === 'active'
+        ? '群已创建'
+        : payload.state === 'error'
+          ? '建群失败'
+          : '建群中',
+    )
+  }
   if (event.type === 'created' && payload.migratedDocuments !== undefined) {
     parts.push(
       payload.migratedDocuments > 0
@@ -172,8 +189,26 @@ function eventSummary(event: BacklogEvent): string {
   return parts.join(' · ')
 }
 
-/** 内容分区：信息 / 文档 / 任务 / 缺陷 / 事件 / 成员 */
+/** 内容分区：信息 / 文档 / 任务 / 缺陷 / 话题 / 事件 / 成员 */
 type BacklogDetailTab = 'info' | 'docs' | 'tasks' | 'defects' | 'events' | 'members' | 'topics'
+
+/** 页签与 URL hash 一一对应（如 /backlogs/2#topics） */
+const BACKLOG_DETAIL_TABS: BacklogDetailTab[] = [
+  'info',
+  'docs',
+  'tasks',
+  'defects',
+  'topics',
+  'events',
+  'members',
+]
+
+function readTabFromHash(): BacklogDetailTab {
+  const key = window.location.hash.replace(/^#/, '')
+  return BACKLOG_DETAIL_TABS.includes(key as BacklogDetailTab)
+    ? (key as BacklogDetailTab)
+    : 'info'
+}
 
 /**
  * 迭代项详情：基本信息（需求方/备注/预期上线时间）、文档（转入时自需求迁入）、
@@ -196,8 +231,14 @@ export function BacklogDetailPage() {
   const [aiOpen, setAiOpen] = useState(false)
   const [aiUnread, setAiUnread] = useState(0)
 
-  // 内容分区 tab
-  const [tab, setTab] = useState<BacklogDetailTab>('info')
+  // 内容分区 tab（与 URL hash 同步，支持 /backlogs/2#topics 直达）
+  const [tab, setTab] = useState<BacklogDetailTab>(readTabFromHash)
+
+  // 话题计数（TopicsPanel 加载后回调）
+  const [topicsCount, setTopicsCount] = useState(0)
+
+  // 飞书沟通群（手动建群/打开群）
+  const [creatingChat, setCreatingChat] = useState(false)
 
   // 属性编辑
   const [timeOpen, setTimeOpen] = useState(false)
@@ -249,12 +290,8 @@ export function BacklogDetailPage() {
   const [releaseSupplement, setReleaseSupplement] = useState('')
   const [releasing, setReleasing] = useState(false)
 
-  // 成员编辑（管理员）
+  // 成员维护（管理员）：成员 Tab 内直接添加/移除
   const [users, setUsers] = useState<PlatformUser[] | null>(null)
-  const [memberDrafts, setMemberDrafts] = useState<
-    Array<{ role: BacklogMemberRole; userId: number }>
-  >([])
-  const [memberOpen, setMemberOpen] = useState(false)
   const [addRole, setAddRole] = useState<BacklogMemberRole>('产品')
   const [addUserId, setAddUserId] = useState<string | undefined>(undefined)
   const [savingMembers, setSavingMembers] = useState(false)
@@ -303,6 +340,11 @@ export function BacklogDetailPage() {
       .listDefects(undefined, undefined, backlogId)
       .then(setDefects)
       .catch(() => setDefects([]))
+    // 话题计数：面板未挂载（未展开分区）时也能在页签上展示
+    api
+      .listTopics({ subjectType: '迭代项', subjectId: backlogId })
+      .then((rows) => setTopicsCount(rows.length))
+      .catch(() => {})
   }, [])
 
   const load = useCallback(() => {
@@ -328,6 +370,22 @@ export function BacklogDetailPage() {
   }, [id, loadSidepanels])
 
   useEffect(load, [load])
+
+  // 分区与 URL hash 双向同步：支持 /backlogs/2#topics 直达，切换分区时更新 hash
+  useEffect(() => {
+    const sync = () => setTab(readTabFromHash())
+    sync()
+    window.addEventListener('hashchange', sync)
+    return () => window.removeEventListener('hashchange', sync)
+  }, [id])
+
+  const changeTab = (value: string) => {
+    const next = value as BacklogDetailTab
+    setTab(next)
+    if (window.location.hash.replace(/^#/, '') !== next) {
+      window.history.replaceState(null, '', `#${next}`)
+    }
+  }
 
   // 任务树：交付任务 + 全部子任务，交给 TaskTreePanel 组装父子关系
   const taskStages = useMemo(
@@ -370,6 +428,16 @@ export function BacklogDetailPage() {
       }),
     [taskWorkers],
   )
+
+  // 进入「成员」分区才加载用户列表（供添加成员选择）
+  useEffect(() => {
+    if (tab !== 'members' || users) return
+    api
+      .listUsers()
+      .then(setUsers)
+      .catch((e: Error) => setError(e.message))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab])
 
   if (!Number.isInteger(id) || id <= 0) {
     return <Navigate to="/iterations" replace />
@@ -426,25 +494,85 @@ export function BacklogDetailPage() {
       ? '仅迭代项成员或管理员可新建任务'
       : null
 
-  const userMap = new Map((users ?? []).map((u) => [u.id, u.name]))
-
-  const loadUsers = () => {
-    if (users) return
+  /** 成员保存：整体替换语义，前端在现有列表上增删后立即保存 */
+  const persistMembers = (
+    next: Array<{ role: BacklogMemberRole; userId: number }>,
+    successMessage: string,
+    after?: () => void,
+  ) => {
+    if (savingMembers) return
+    setSavingMembers(true)
     api
-      .listUsers()
-      .then(setUsers)
-      .catch((e: Error) => setError(e.message))
+      .updateBacklogMembers(id, next)
+      .then((row) => {
+        setBacklog((prev) =>
+          prev ? { ...prev, ...row, releaseWorkflow: prev.releaseWorkflow } : prev,
+        )
+        showFeedback({ kind: 'success', message: successMessage }, SUCCESS_STAY_MS, after)
+      })
+      .catch((e: Error) =>
+        showFeedback(
+          { kind: 'failure', message: e.message || '保存失败' },
+          FAILURE_STAY_MS,
+        ),
+      )
+      .finally(() => setSavingMembers(false))
   }
 
-  const openMembers = () => {
-    loadUsers()
-    setMemberDrafts(
-      (backlog.members ?? []).map((member) => ({
-        role: member.role,
-        userId: member.userId,
-      })),
+  const addMember = () => {
+    const userId = Number(addUserId)
+    if (!Number.isInteger(userId) || userId <= 0) {
+      showFeedback({ kind: 'failure', message: '请选择成员' }, FAILURE_STAY_MS)
+      return
+    }
+    const current = (backlog.members ?? []).map((m) => ({ role: m.role, userId: m.userId }))
+    if (current.some((m) => m.role === addRole && m.userId === userId)) {
+      showFeedback(
+        { kind: 'failure', message: '该成员已有相同角色' },
+        FAILURE_STAY_MS,
+      )
+      return
+    }
+    persistMembers([...current, { role: addRole, userId }], '成员已添加', () =>
+      setAddUserId(undefined),
     )
-    setMemberOpen(true)
+  }
+
+  const removeMember = (target: { role: BacklogMemberRole; userId: number }) => {
+    const next = (backlog.members ?? [])
+      .map((m) => ({ role: m.role, userId: m.userId }))
+      .filter((m) => !(m.role === target.role && m.userId === target.userId))
+    persistMembers(next, '成员已移除')
+  }
+
+  const createFeishuChat = () => {
+    if (creatingChat) return
+    setCreatingChat(true)
+    api
+      .createBacklogFeishuChat(id)
+      .then((info) => {
+        setBacklog((prev) => (prev ? { ...prev, feishuChat: info } : prev))
+        if (info?.state === 'active') {
+          showFeedback({ kind: 'success', message: '飞书群已创建' }, SUCCESS_STAY_MS)
+        } else if (info?.state === 'error') {
+          showFeedback(
+            { kind: 'failure', message: info.lastError || '建群失败，请稍后重试' },
+            FAILURE_STAY_MS,
+          )
+        } else {
+          showFeedback(
+            { kind: 'success', message: '飞书群创建中，稍后刷新查看' },
+            SUCCESS_STAY_MS,
+          )
+        }
+      })
+      .catch((e: Error) =>
+        showFeedback(
+          { kind: 'failure', message: e.message || '建群失败' },
+          FAILURE_STAY_MS,
+        ),
+      )
+      .finally(() => setCreatingChat(false))
   }
 
   const openCreateTask = () => {
@@ -505,33 +633,6 @@ export function BacklogDetailPage() {
         ),
       )
       .finally(() => setSavingTask(false))
-  }
-
-  const addMember = () => {
-    const userId = Number(addUserId)
-    if (!Number.isInteger(userId) || userId <= 0) return
-    if (memberDrafts.some((m) => m.role === addRole && m.userId === userId)) return
-    setMemberDrafts([...memberDrafts, { role: addRole, userId }])
-    setAddUserId(undefined)
-  }
-
-  const saveMembers = () => {
-    if (savingMembers) return
-    setSavingMembers(true)
-    api
-      .updateBacklogMembers(id, memberDrafts)
-      .then((row) => {
-        setBacklog({ ...backlog, ...row, releaseWorkflow: backlog.releaseWorkflow })
-        setMemberOpen(false)
-        showFeedback({ kind: 'success', message: '成员已保存' }, SUCCESS_STAY_MS)
-      })
-      .catch((e: Error) =>
-        showFeedback(
-          { kind: 'failure', message: e.message || '保存失败' },
-          FAILURE_STAY_MS,
-        ),
-      )
-      .finally(() => setSavingMembers(false))
   }
 
   const iterationItems = Object.fromEntries(
@@ -746,6 +847,50 @@ export function BacklogDetailPage() {
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            {backlog.feishuChat?.state === 'active' && backlog.feishuChat.chatId && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  window.open(
+                    feishuChatAppLink(backlog.feishuChat!.chatId!),
+                    '_blank',
+                    'noopener',
+                  )
+                }
+                title="在飞书客户端打开迭代沟通群"
+              >
+                打开飞书群
+              </Button>
+            )}
+            {canOperate && !terminal && !backlog.feishuChat && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={createFeishuChat}
+                disabled={creatingChat}
+              >
+                {creatingChat ? '建群中…' : '飞书建群'}
+              </Button>
+            )}
+            {canOperate &&
+              !terminal &&
+              backlog.feishuChat?.state === 'creating' && (
+                <Button variant="outline" size="sm" disabled>
+                  建群中…
+                </Button>
+              )}
+            {canOperate && !terminal && backlog.feishuChat?.state === 'error' && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={createFeishuChat}
+                disabled={creatingChat}
+                title="上次建群失败，点击重试"
+              >
+                {creatingChat ? '重试中…' : '重试建群'}
+              </Button>
+            )}
             {canOperate && (
               <>
                 <Button
@@ -776,96 +921,6 @@ export function BacklogDetailPage() {
             )}
             {isAdmin && (
               <>
-                <Dialog
-                  open={memberOpen}
-                  onOpenChange={(open) => (open ? openMembers() : setMemberOpen(false))}
-                >
-                  <DialogTrigger render={<Button variant="outline" size="sm" />}>
-                    编辑成员
-                  </DialogTrigger>
-                  <DialogContent className="max-w-2xl">
-                    <DialogHeader>
-                      <DialogTitle>编辑成员</DialogTitle>
-                    </DialogHeader>
-                    <DialogBody>
-                      <div className="flex flex-col gap-3">
-                        <div className="flex flex-wrap gap-2">
-                          {memberDrafts.length === 0 && (
-                            <span className="text-sm text-foreground-muted">暂无成员</span>
-                          )}
-                          {memberDrafts.map((member, index) => (
-                            <span
-                              key={`${member.role}:${member.userId}`}
-                              className="inline-flex items-center gap-2 rounded-md border border-border px-2 py-1 text-sm"
-                            >
-                              {member.role}：{userMap.get(member.userId) ?? `#${member.userId}`}
-                              <button
-                                type="button"
-                                className="text-foreground-muted underline"
-                                onClick={() =>
-                                  setMemberDrafts(memberDrafts.filter((_, i) => i !== index))
-                                }
-                              >
-                                移除
-                              </button>
-                            </span>
-                          ))}
-                        </div>
-                        <div className="flex items-end gap-2">
-                          <label className="flex flex-col gap-1 text-sm">
-                            角色
-                            <Select
-                              value={addRole}
-                              onValueChange={(v) => setAddRole(v as BacklogMemberRole)}
-                              items={ROLE_ITEMS}
-                            >
-                              <SelectTrigger className="w-32">
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {BACKLOG_MEMBER_ROLES.map((role) => (
-                                  <SelectItem key={role} value={role}>
-                                    {role}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                          </label>
-                          <label className="flex flex-col gap-1 text-sm">
-                            成员
-                            <Select
-                              value={addUserId}
-                              onValueChange={(v) => setAddUserId(v as string)}
-                              items={userItems}
-                            >
-                              <SelectTrigger className="w-48">
-                                <SelectValue placeholder="选择用户" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {(users ?? []).map((u) => (
-                                  <SelectItem key={u.id} value={String(u.id)}>
-                                    {u.name}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                          </label>
-                          <Button variant="outline" size="sm" onClick={addMember}>
-                            添加
-                          </Button>
-                        </div>
-                      </div>
-                    </DialogBody>
-                    <DialogFooter>
-                      <DialogClose>
-                        <Button variant="outline" size="sm">取消</Button>
-                      </DialogClose>
-                      <Button size="sm" onClick={saveMembers} disabled={savingMembers}>
-                        {savingMembers ? '保存中…' : '保存'}
-                      </Button>
-                    </DialogFooter>
-                  </DialogContent>
-                </Dialog>
                 {!terminal && (
                   <Dialog open={moveOpen} onOpenChange={(open) => (open ? openMove() : setMoveOpen(false))}>
                     <DialogTrigger render={<Button variant="outline" size="sm" />}>
@@ -946,7 +1001,7 @@ export function BacklogDetailPage() {
 
         <Tabs
           value={tab}
-          onValueChange={(value) => setTab(value as BacklogDetailTab)}
+          onValueChange={changeTab}
           variant="line"
           className="flex min-h-0 flex-1 flex-col gap-0"
         >
@@ -955,7 +1010,7 @@ export function BacklogDetailPage() {
             <TabsTrigger value="docs">文档 {docs?.length ?? 0}</TabsTrigger>
             <TabsTrigger value="tasks">任务 {(related?.tasks ?? []).length}</TabsTrigger>
             <TabsTrigger value="defects">缺陷 {defects?.length ?? 0}</TabsTrigger>
-            <TabsTrigger value="topics">话题</TabsTrigger>
+            <TabsTrigger value="topics">话题 {topicsCount}</TabsTrigger>
             <TabsTrigger value="events">事件</TabsTrigger>
             <TabsTrigger value="members">成员 {backlog.members?.length ?? 0}</TabsTrigger>
           </TabsList>
@@ -966,7 +1021,7 @@ export function BacklogDetailPage() {
               <CardHeader>
                 <CardTitle>信息</CardTitle>
                 <CardDescription>
-                  迭代项属性、原始需求内容与关联文档
+                  迭代项属性、原始需求摘要与内容、关联文档
                 </CardDescription>
               </CardHeader>
               <div className="flex flex-col gap-6 px-4 pb-4">
@@ -984,6 +1039,9 @@ export function BacklogDetailPage() {
                       </Link>
                     </InfoRow>
                     <InfoRow label="需求方">{backlog.owner ?? '—'}</InfoRow>
+                    <InfoRow label="涉及方">
+                      {backlog.involvedParties?.join('、') || '—'}
+                    </InfoRow>
                     <InfoRow label="负责人">
                       <span className="inline-flex items-center gap-2">
                         {backlog.ownerName ?? '—'}
@@ -1026,6 +1084,23 @@ export function BacklogDetailPage() {
                     </InfoRow>
                   </section>
                 </div>
+
+                <section className="flex flex-col gap-2 border-t border-border pt-4">
+                  <h3 className="text-sm font-medium text-foreground-intense">需求摘要</h3>
+                  {projectError ? (
+                    <p className="text-sm text-foreground-muted">
+                      需求摘要加载失败：{projectError}
+                    </p>
+                  ) : project === null ? (
+                    <p className="text-sm text-foreground-muted">加载中…</p>
+                  ) : project.summary?.trim() ? (
+                    <p className="whitespace-pre-wrap text-sm">{project.summary}</p>
+                  ) : (
+                    <p className="text-sm text-foreground-muted">
+                      暂无摘要（需求或需求类文档更新后自动生成）
+                    </p>
+                  )}
+                </section>
 
                 <section className="flex flex-col gap-2 border-t border-border pt-4">
                   <h3 className="text-sm font-medium text-foreground-intense">需求内容</h3>
@@ -1383,6 +1458,7 @@ export function BacklogDetailPage() {
               subjectType="迭代项"
               subjectId={backlog.id}
               subjectTitle={backlog.title}
+              onCountChange={setTopicsCount}
             />
           </TabsContent>
 
@@ -1416,7 +1492,7 @@ export function BacklogDetailPage() {
           </TabsContent>
 
           <TabsContent value="members" keepMounted className="pt-4">
-            {/* 成员 */}
+            {/* 成员：管理员可直接添加/移除（立即保存，整体替换语义） */}
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
@@ -1427,14 +1503,82 @@ export function BacklogDetailPage() {
                   产品 / 业务 / 项目 / 技术（前端、后端、测试、客户端）；成员或管理员可推进状态与提测
                 </CardDescription>
               </CardHeader>
+              {isAdmin && (
+                <div className="flex flex-wrap items-end gap-2 px-4 pb-3">
+                  <label className="flex flex-col gap-1 text-sm">
+                    角色
+                    <Select
+                      value={addRole}
+                      onValueChange={(v) => setAddRole(v as BacklogMemberRole)}
+                      items={ROLE_ITEMS}
+                    >
+                      <SelectTrigger className="w-32">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {BACKLOG_MEMBER_ROLES.map((role) => (
+                          <SelectItem key={role} value={role}>
+                            {role}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </label>
+                  <label className="flex flex-col gap-1 text-sm">
+                    成员
+                    <Select
+                      value={addUserId}
+                      onValueChange={(v) => setAddUserId(v as string)}
+                      items={userItems}
+                    >
+                      <SelectTrigger className="w-48">
+                        <SelectValue placeholder="选择用户" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {(users ?? []).map((u) => (
+                          <SelectItem key={u.id} value={String(u.id)}>
+                            {u.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </label>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={addMember}
+                    disabled={savingMembers || !addUserId}
+                  >
+                    {savingMembers ? '保存中…' : '添加'}
+                  </Button>
+                </div>
+              )}
               <div className="flex flex-wrap gap-2 px-4 pb-4">
                 {(backlog.members ?? []).length === 0 && (
                   <span className="text-sm text-foreground-muted">暂无成员</span>
                 )}
                 {(backlog.members ?? []).map((member) => (
-                  <Badge key={`${member.role}:${member.userId}`} variant="soft">
+                  <span
+                    key={`${member.role}:${member.userId}`}
+                    className="inline-flex items-center gap-2 rounded-md border border-border px-2 py-1 text-sm"
+                  >
                     {member.role}：{member.name}
-                  </Badge>
+                    {isAdmin && (
+                      <button
+                        type="button"
+                        className="text-foreground-muted underline"
+                        disabled={savingMembers}
+                        onClick={() =>
+                          removeMember({
+                            role: member.role,
+                            userId: member.userId,
+                          })
+                        }
+                      >
+                        移除
+                      </button>
+                    )}
+                  </span>
                 ))}
               </div>
             </Card>

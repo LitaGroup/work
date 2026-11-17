@@ -18,6 +18,8 @@ class UpdateRequirementMarkdownDto {
   description?: string;
   /** 需求方（姓名，多个顿号连接；须在用户系统内），空串清除 */
   owner?: string;
+  /** 涉及方（飞书「涉及方」多选同步；平台内可编辑，下次同步覆盖；顿号/逗号分隔），空串清除 */
+  involvedParties?: string;
   /** 备注（飞书「排期优先级」+「排期备注」同步合成；平台内可编辑，下次同步覆盖），空串清除 */
   remark?: string;
 }
@@ -46,7 +48,7 @@ export class RequirementsController {
 
   /**
    * AI 用：仅本地字段更新并以 Markdown 返回结果（text/markdown）。
-   * 可改 脚本目录 / 描述 / 需求方 / 备注，空串清除；用法见需求 .md 视图。
+   * 可改 脚本目录 / 描述 / 需求方 / 涉及方 / 备注，空串清除；用法见需求 .md 视图。
    */
   @Post(':id/update.md')
   @Header('Content-Type', 'text/markdown; charset=utf-8')

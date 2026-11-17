@@ -31,6 +31,7 @@ import { WorkflowDefinition } from '../workflows/workflow-definition.entity';
 import { RELEASE_TICKET_WORKFLOW } from '../workflows/system-workflows';
 import { LlmService } from '../model-config/llm.service';
 import { FeishuBotBacklogChatService } from '../feishu-bot/feishu-bot-backlog-chat.service';
+import type { BacklogChatInfo } from '../feishu-bot/feishu-bot-backlog-chat.service';
 import { Backlog, BacklogMember } from './backlog.entity';
 import { BacklogDocument } from './backlog-document.entity';
 import { BacklogEvent } from './backlog-event.entity';
@@ -84,7 +85,7 @@ const BACKLOG_LIST_LIMIT = 1000;
 
 /**
  * 迭代项（Backlog）：从需求转入，负责人可暂不指定（指定后自动创建交付任务）；
- * 创建后自动建立飞书沟通群；状态由成员/管理员手动流转。
+ * 飞书沟通群由成员/管理员在详情页手动创建；状态由成员/管理员手动流转。
  */
 @Injectable()
 export class BacklogsService {
@@ -321,14 +322,6 @@ export class BacklogsService {
         }
       }
 
-      try {
-        await this.chat.ensureForBacklog(backlog.id);
-      } catch (error) {
-        this.logger.warn(
-          `迭代项 ${backlog.code} 沟通群创建失败：${(error as Error).message}`,
-        );
-      }
-
       // 需求文档一并迁移到迭代项（backlog_documents 关联，迁移失败不阻断）
       let migratedDocuments = 0;
       try {
@@ -528,11 +521,6 @@ export class BacklogsService {
         },
         actor.userName,
       );
-      this.chat.ensureForBacklog(saved.id).catch((error: unknown) => {
-        this.logger.warn(
-          `迭代项 ${saved.code} 沟通群同步失败：${(error as Error).message}`,
-        );
-      });
     }
     return saved;
   }
@@ -616,36 +604,43 @@ export class BacklogsService {
     return { from, to: worker.name, previousTaskId };
   }
 
-  /** 详情视图：迭代项 + 需求方（实时取自原始需求）+ 所属迭代标识 + 提测工单工作流可用性（供前端提测按钮置灰） */
+  /** 详情视图：迭代项 + 需求方/涉及方（实时取自原始需求）+ 所属迭代标识 + 提测工单工作流可用性（供前端提测按钮置灰）+ 飞书沟通群状态（供建群/打开群按钮） */
   async getDetail(id: number): Promise<
     Backlog & {
       owner: string | null;
+      /** 涉及方：实时取自原始需求 projects.involvedParties（不落库） */
+      involvedParties: string[] | null;
       iteration: {
         id: number;
         code: string;
         type: Iteration['type'];
       } | null;
       releaseWorkflow: BacklogReleaseWorkflow | null;
+      /** 飞书沟通群：未建群/已解散为 null */
+      feishuChat: BacklogChatInfo | null;
     }
   > {
     const backlog = await this.findOne(id);
-    const [project, iteration] = await Promise.all([
+    const [project, iteration, feishuChat] = await Promise.all([
       this.projects.findOne({
         where: { id: backlog.projectId },
-        select: { id: true, owner: true },
+        select: { id: true, owner: true, involvedParties: true },
       }),
       this.iterations.findOne({
         where: { id: backlog.iterationId },
         select: { id: true, code: true, type: true },
       }),
+      this.chat.describe(backlog.id),
     ]);
     return {
       ...backlog,
       owner: project?.owner ?? null,
+      involvedParties: project?.involvedParties ?? null,
       iteration: iteration
         ? { id: iteration.id, code: iteration.code, type: iteration.type }
         : null,
       releaseWorkflow: await this.releaseWorkflowInfo(),
+      feishuChat,
     };
   }
 
@@ -915,11 +910,6 @@ export class BacklogsService {
       { from, to: worker.name, taskId: task.id, previousTaskId: null },
       actor.userName,
     );
-    this.chat.ensureForBacklog(backlog.id).catch((error: unknown) => {
-      this.logger.warn(
-        `迭代项 ${backlog.code} 沟通群同步失败：${(error as Error).message}`,
-      );
-    });
     return task;
   }
 
@@ -1021,6 +1011,28 @@ export class BacklogsService {
     return lines.join('\n');
   }
 
+  /**
+   * 手动创建/重试迭代项飞书沟通群（成员或管理员）。
+   * 已建成的群直接返回现有状态；终态迭代项不再建群。
+   */
+  async createFeishuChat(
+    id: number,
+    actor: IterationActor,
+  ): Promise<BacklogChatInfo | null> {
+    const backlog = await this.findOne(id);
+    if (!actor.isAdmin && !this.isMember(backlog, actor.userId)) {
+      throw new ForbiddenException('仅迭代项成员或管理员可创建飞书群');
+    }
+    const info = await this.chat.createForBacklog(id);
+    await this.recordEvent(
+      id,
+      'feishu-chat',
+      { state: info?.state ?? null, chatId: info?.chatId ?? null },
+      actor.userName,
+    );
+    return info;
+  }
+
   /** 更新成员（管理员或迭代项负责人机器人；网页负责人真人登录同样可改） */
   async updateMembers(
     id: number,
@@ -1049,10 +1061,15 @@ export class BacklogsService {
     const backlog = await this.findOne(id);
     const [iteration, project] = await Promise.all([
       this.iterations.findOne({ where: { id: backlog.iterationId } }),
-      // 需求方/备注实时取原始需求（projects），不落库
+      // 需求方/涉及方/备注实时取原始需求（projects），不落库
       this.projects.findOne({
         where: { id: backlog.projectId },
-        select: { id: true, owner: true, remark: true },
+        select: {
+          id: true,
+          owner: true,
+          involvedParties: true,
+          remark: true,
+        },
       }),
     ]);
     const head = mdFrontmatter({
@@ -1072,6 +1089,7 @@ export class BacklogsService {
       }`,
       `- 状态：${backlog.status}`,
       `- 需求方：${project?.owner ?? '-'}`,
+      `- 涉及方：${project?.involvedParties?.join('、') || '-'}`,
       `- 备注：${project?.remark ?? '-'}`,
       `- 负责人：${backlog.ownerName ?? '-'}`,
       `- 预期上线：${

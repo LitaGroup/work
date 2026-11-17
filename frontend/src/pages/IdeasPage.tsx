@@ -102,15 +102,6 @@ export function IdeasPage() {
   const typeItems = Object.fromEntries(
     ['all', ...IDEA_TYPES].map((t) => [t, t === 'all' ? '不限类型' : t]),
   )
-  // Markdown 视图带当前筛选参数（'all'/空串不传）
-  const mdQuery = [
-    search && `q=${encodeURIComponent(search)}`,
-    statusFilter !== 'all' && `status=${encodeURIComponent(statusFilter)}`,
-    typeFilter !== 'all' && `type=${encodeURIComponent(typeFilter)}`,
-  ]
-    .filter(Boolean)
-    .join('&')
-
   const canDelete = (idea: Idea) =>
     isAdmin || (idea.creatorId === user?.id && idea.status === '构思')
 
@@ -124,15 +115,6 @@ export function IdeasPage() {
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <a
-            href={`/api/ideas.md${mdQuery ? `?${mdQuery}` : ''}`}
-            target="_blank"
-            rel="noreferrer"
-            className="text-sm underline"
-            title="Markdown 视图"
-          >
-            MD
-          </a>
           <Link to="/ideas/new" className={buttonVariants()}>
             记录灵感
           </Link>

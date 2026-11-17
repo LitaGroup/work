@@ -54,7 +54,7 @@ function makeService(row: Backlog) {
   const tasks = { cancel: jest.fn().mockResolvedValue(undefined) };
   const chat = {
     notifyBacklog: jest.fn().mockResolvedValue(undefined),
-    ensureForBacklog: jest.fn().mockResolvedValue(undefined),
+    describe: jest.fn().mockResolvedValue(null),
   };
   const service = new BacklogsService(
     repository,
@@ -506,7 +506,7 @@ function makeOwnerFixture(overrides?: {
     cancel: jest.fn().mockResolvedValue(undefined),
   };
   const chat = {
-    ensureForBacklog: jest.fn().mockResolvedValue(undefined),
+    describe: jest.fn().mockResolvedValue(null),
     notifyBacklog: jest.fn().mockResolvedValue(undefined),
   };
   const service = new BacklogsService(
@@ -603,7 +603,6 @@ describe('BacklogsService 指定/改派负责人', () => {
     expect(event.type).toBe('owner');
     expect(event.payload.to).toBe('机器人 B');
     expect(event.payload.taskId).toBe(777);
-    expect(fixture.chat.ensureForBacklog).toHaveBeenCalledWith(1);
   });
 
   it('改派时取消旧交付任务并按新负责人重建', async () => {

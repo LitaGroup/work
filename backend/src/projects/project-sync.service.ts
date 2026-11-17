@@ -134,6 +134,21 @@ export function extractHttpLinks(value: unknown): string[] {
   return links;
 }
 
+/**
+ * 多选字段（如「涉及方」）：飞书返回选项名数组（如 ["iOS","Android","Backend"]），
+ * trim、去空、去重保序；空值 / 非字符串返回 null（兼容单选返回纯字符串）。
+ */
+export function extractMultiSelect(value: unknown): string[] | null {
+  const pool: unknown[] = Array.isArray(value) ? value : [value];
+  const items: string[] = [];
+  for (const raw of pool) {
+    if (typeof raw !== 'string') continue;
+    const item = raw.trim();
+    if (item && !items.includes(item)) items.push(item);
+  }
+  return items.length ? items : null;
+}
+
 /** 人员字段：人员类型为 [{name}]，文本类型为 mention segment（text 带 @ 前缀） */
 export function extractPeople(value: unknown): string | undefined {
   if (!Array.isArray(value)) return undefined;
@@ -295,6 +310,8 @@ export class ProjectSyncService {
     project.owner = extractPeople(f['需求方']) ?? null;
     // 备注由飞书「排期优先级」「排期备注」合成（平台内展示；人工编辑会被下次同步覆盖）
     project.remark = composeScheduleRemark(f['排期优先级'], f['排期备注']);
+    // 涉及方为飞书多选字段（如 Android/iOS/Backend），空值置空，与飞书侧保持一致
+    project.involvedParties = extractMultiSelect(f['涉及方']);
     await this.projects.save(project);
     await this.syncRequirementDocuments(project.id, f['需求'], fullText);
     // 设计链接镜像同步（字段为空/无完整链接时删除同步创建的设计文档）

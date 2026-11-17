@@ -10,16 +10,7 @@ import {
   TableHead,
   TableCell,
 } from '@appica/ui-react/table'
-import {
-  AlertDialog,
-  AlertDialogTrigger,
-  AlertDialogContent,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogClose,
-} from '@appica/ui-react/alert-dialog'
+
 import {
   Dialog,
   DialogTrigger,
@@ -48,13 +39,13 @@ import {
   api,
   PROJECT_TYPES,
   PROJECT_STATUSES,
-  type Project,
   type ProjectListItem,
   type ProjectType,
   type ProjectStatus,
 } from '../lib/api'
 import { StatusBadge } from '../components/StatusBadge'
 import { TypeBadge, PriorityBadge } from '../components/ProjectBadges'
+import { DeleteRequirementButton } from '../components/DeleteRequirementButton'
 import { useAuth } from '../context/AuthContext'
 
 /**
@@ -543,34 +534,4 @@ function CreateRequirementDialog({ onCreated }: { onCreated: () => void }) {
   )
 }
 
-function DeleteRequirementButton({
-  project,
-  onDeleted,
-}: {
-  project: Project
-  onDeleted: (id: number) => void
-}) {
-  return (
-    <AlertDialog>
-      <AlertDialogTrigger render={<Button variant="outline" size="sm" />}>删除</AlertDialogTrigger>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>删除需求</AlertDialogTitle>
-          <AlertDialogDescription>
-            确定删除「{project.name}」吗？其下的文档会一并删除，且不可恢复。
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogClose>
-            <Button variant="outline" size="sm">取消</Button>
-          </AlertDialogClose>
-          <AlertDialogClose>
-            <Button variant="destructive" size="sm" onClick={() => onDeleted(project.id)}>
-              确认删除
-            </Button>
-          </AlertDialogClose>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
-  )
-}
+

@@ -699,6 +699,8 @@ export interface Project {
   priority: string | null
   /** 需求方（飞书「需求方」人员字段同步，多姓名顿号连接；平台内可编辑） */
   owner?: string | null
+  /** 涉及方（飞书「涉及方」多选字段同步，如 Android/iOS/Backend；平台内可编辑，下次同步覆盖） */
+  involvedParties?: string[] | null
   /** 备注（飞书「排期优先级」+「排期备注」同步合成；平台内可编辑，下次同步覆盖） */
   remark?: string | null
   /** 以下字段仅详情接口（GET /projects/:id）返回，列表接口（GET /projects）不包含 */
@@ -810,6 +812,8 @@ export interface Backlog {
   ownerName: string | null
   /** 需求方（实时取自原始需求 projects.owner，不落库） */
   owner: string | null
+  /** 涉及方（实时取自原始需求 projects.involvedParties，不落库） */
+  involvedParties: string[] | null
   /** 预期上线时间（到小时，北京时间展示；可空） */
   expectedOnlineAt: string | null
   members: BacklogMember[] | null
@@ -832,11 +836,21 @@ export interface BacklogReleaseWorkflow {
   enabled: boolean
 }
 
-/** 迭代项详情（GET /backlogs/:id）：迭代项 + 提测工作流信息 */
+/** 迭代项飞书沟通群状态：未建群/已解散为 null */
+export interface BacklogFeishuChat {
+  state: 'creating' | 'active' | 'error'
+  /** 飞书群 chat_id（active 时存在，供「打开飞书群」） */
+  chatId: string | null
+  /** 最近一次建群/通知/解散错误（供失败提示） */
+  lastError: string | null
+}
+
+/** 迭代项详情（GET /backlogs/:id）：迭代项 + 提测工作流信息 + 飞书沟通群状态 */
 export interface BacklogDetail extends Backlog {
   /** 所属迭代（唯一标识，供详情展示 2026WXX） */
   iteration: { id: number; code: string; type: IterationType } | null
   releaseWorkflow: BacklogReleaseWorkflow | null
+  feishuChat: BacklogFeishuChat | null
 }
 
 /** 迭代项关联文档摘要（不含正文大字段） */
@@ -2692,6 +2706,12 @@ export const api = {
   },
   /** 迭代项详情 */
   getBacklog: (id: number) => request<BacklogDetail>(`/backlogs/${id}`),
+  /** 手动创建/重试迭代项飞书沟通群（成员或管理员；已建成的群返回现有状态） */
+  createBacklogFeishuChat: (id: number) =>
+    request<BacklogFeishuChat | null>(`/backlogs/${id}/feishu-chat`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
   /** 迭代项状态流转（成员或管理员；备注可空，写入事件流） */
   updateBacklogStatus: (id: number, status: BacklogStatus, remark?: string) =>
     request<Backlog>(`/backlogs/${id}/status`, {
@@ -2784,6 +2804,8 @@ export const api = {
       expectedReleaseAt?: string
       /** 需求方（姓名，多个顿号连接，须在用户系统内），空串清除 */
       owner?: string
+      /** 涉及方（顿号/逗号分隔；飞书多选字段同步，平台内可编辑，下次同步覆盖），空串清除 */
+      involvedParties?: string
       /** 备注（飞书「排期优先级」+「排期备注」同步合成；平台内可编辑，下次同步覆盖），空串清除 */
       remark?: string
       scriptsPath?: string

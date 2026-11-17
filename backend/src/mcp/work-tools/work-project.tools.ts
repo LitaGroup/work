@@ -65,7 +65,7 @@ export class WorkProjectTools implements WorkToolRegistrar {
       {
         title: '更新项目配置',
         description:
-          '仅更新本地字段：脚本目录、Markdown 描述、需求方、备注。只更新提供的字段，空串清除；类型/状态/优先级等来自飞书同步，不要通过本工具修改。',
+          '仅更新本地字段：脚本目录、Markdown 描述、需求方、涉及方、备注。只更新提供的字段，空串清除；类型/状态/优先级等来自飞书同步，不要通过本工具修改。',
         inputSchema: {
           projectId: z.number().int().positive().describe('项目 ID'),
           scriptsPath: z
@@ -80,6 +80,12 @@ export class WorkProjectTools implements WorkToolRegistrar {
             .string()
             .optional()
             .describe('需求方（姓名，多个顿号连接，须在用户系统内），空串清除'),
+          involvedParties: z
+            .string()
+            .optional()
+            .describe(
+              '涉及方（如 Android、iOS、Backend，顿号或逗号分隔；飞书多选字段同步，平台内可编辑，下次同步覆盖），空串清除',
+            ),
           remark: z
             .string()
             .optional()

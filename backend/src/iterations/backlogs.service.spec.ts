@@ -127,7 +127,12 @@ function buildTaskService() {
     create: jest.fn((row: unknown) => row),
   };
   const tasks = { create: jest.fn() };
-  const chat = { ensureForBacklog: jest.fn().mockResolvedValue(undefined) };
+  const chat = {
+    describe: jest.fn().mockResolvedValue(null),
+    createForBacklog: jest
+      .fn()
+      .mockResolvedValue({ state: 'active', chatId: 'oc_1', lastError: null }),
+  };
   const service = new BacklogsService(
     backlogs as never,
     iterations as never,
@@ -197,7 +202,7 @@ describe('BacklogsService.createTask', () => {
   });
 
   it('无交付任务时按负责人创建交付任务并登记负责人（管理员）', async () => {
-    const { service, backlogs, workers, tasks, backlogEvents, chat } =
+    const { service, backlogs, workers, tasks, backlogEvents } =
       buildTaskService();
     backlogs.findOne.mockResolvedValue({
       ...backlogRow,
@@ -230,7 +235,6 @@ describe('BacklogsService.createTask', () => {
     expect(backlogEvents.save).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'owner' }),
     );
-    expect(chat.ensureForBacklog).toHaveBeenCalledWith(12);
   });
 
   it('无交付任务时非管理员不可创建交付任务', async () => {
@@ -241,5 +245,30 @@ describe('BacklogsService.createTask', () => {
       '仅管理员可创建迭代项交付任务',
     );
     expect(tasks.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('BacklogsService.createFeishuChat', () => {
+  it('成员触发手动建群并记录事件', async () => {
+    const { service, backlogs, backlogEvents, chat } = buildTaskService();
+    backlogs.findOne.mockResolvedValue({
+      ...backlogRow,
+      members: [{ role: '产品', userId: 21, name: '李四' }],
+    });
+    const info = await service.createFeishuChat(12, memberActor);
+    expect(chat.createForBacklog).toHaveBeenCalledWith(12);
+    expect(info).toEqual({ state: 'active', chatId: 'oc_1', lastError: null });
+    expect(backlogEvents.save).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'feishu-chat' }),
+    );
+  });
+
+  it('非成员非管理员不可建群', async () => {
+    const { service, backlogs, chat } = buildTaskService();
+    backlogs.findOne.mockResolvedValue({ ...backlogRow, members: [] });
+    await expect(service.createFeishuChat(12, memberActor)).rejects.toThrow(
+      '仅迭代项成员或管理员可创建飞书群',
+    );
+    expect(chat.createForBacklog).not.toHaveBeenCalled();
   });
 });

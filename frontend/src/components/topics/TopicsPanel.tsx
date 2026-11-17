@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Badge } from '@appica/ui-react/badge'
 import { Button } from '@appica/ui-react/button'
 import {
   Card,
@@ -20,6 +21,8 @@ interface TopicsPanelProps {
   subjectType: TopicSubjectType
   subjectId: number
   subjectTitle: string
+  /** 话题数量变化回调（供页签等外部展示计数） */
+  onCountChange?: (count: number) => void
 }
 
 /** 主体详情页的「话题」分区：卡片 + 折叠话题列表，与信息/文档等分区样式一致 */
@@ -27,6 +30,7 @@ export function TopicsPanel({
   subjectType,
   subjectId,
   subjectTitle,
+  onCountChange,
 }: TopicsPanelProps) {
   const label = TOPIC_TAB_LABELS[subjectType]
   const [topics, setTopics] = useState<Topic[] | null>(null)
@@ -34,6 +38,10 @@ export function TopicsPanel({
   const [workers, setWorkers] = useState<Worker[]>([])
   const [error, setError] = useState<string | null>(null)
   const [refresh, setRefresh] = useState(0)
+  const countRef = useRef(onCountChange)
+  useEffect(() => {
+    countRef.current = onCountChange
+  }, [onCountChange])
 
   useEffect(() => {
     let cancelled = false
@@ -61,6 +69,7 @@ export function TopicsPanel({
       .then((rows) => {
         if (cancelled) return
         setTopics(rows)
+        countRef.current?.(rows.length)
         setError(null)
       })
       .catch((e: Error) => {
@@ -77,7 +86,10 @@ export function TopicsPanel({
     <Card>
       <CardHeader>
         <CardTitle className="flex items-center justify-between gap-2">
-          <span>{label}</span>
+          <span className="flex items-center gap-2">
+            {label}
+            <Badge variant="soft">{topics?.length ?? 0}</Badge>
+          </span>
           <span className="flex items-center gap-2 text-sm font-normal">
             <Button type="button" size="sm" onClick={() => setCreateOpen(true)}>
               新建{label}

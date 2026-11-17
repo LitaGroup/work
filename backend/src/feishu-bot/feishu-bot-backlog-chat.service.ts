@@ -1,6 +1,8 @@
 import {
+  BadRequestException,
   Injectable,
   Logger,
+  NotFoundException,
   OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
@@ -19,16 +21,16 @@ import type {
 import { FeishuBotConfigService } from './feishu-bot-config.service';
 import { FeishuBotIdentityService } from './feishu-bot-identity.service';
 import { markdownCard } from './feishu-bot-message.service';
-import { FeishuBotBacklogChat } from './feishu-bot-backlog-chat.entity';
+import {
+  FeishuBotBacklogChat,
+  FeishuBotBacklogChatState,
+} from './feishu-bot-backlog-chat.entity';
 
 /** backlog 终态后保留沟通群的时间 */
 const DISSOLVE_DELAY_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** 建群失败重试上限（每分钟一轮） */
 const CREATE_MAX_ATTEMPTS = 30;
-
-/** 单次对账补检的无绑定 backlog 数上限 */
-const CANDIDATE_LIMIT = 100;
 
 /** 飞书建群单次最多邀请的用户数 */
 const MAX_CHAT_MEMBERS = 50;
@@ -61,12 +63,20 @@ interface ResolvedMembers {
   missingNames: string[];
 }
 
+/** 迭代项沟通群状态（供迭代项详情页展示建群/打开群入口） */
+export interface BacklogChatInfo {
+  state: FeishuBotBacklogChatState;
+  chatId: string | null;
+  /** 最近一次建群/通知/解散错误（供前端提示失败原因） */
+  lastError: string | null;
+}
+
 /**
- * 迭代项（Backlog）沟通群：backlog 创建后建立飞书群。
+ * 迭代项（Backlog）沟通群：由成员/管理员在迭代项详情页手动建群（不再自动创建）。
  * - 拉入 backlog 成员（产品/业务/项目/技术）与负责人机器人绑定的飞书应用；
  * - 无法匹配平台用户/未登录过平台的成员跳过并在建群卡片标注；
  * - 状态变化推送卡片，完成/取消后保留 7 天自动解散；
- * - 定时对账补建/补拉/补偿终态，建群失败不阻断 backlog 创建。
+ * - 定时对账重试失败的建群、补拉负责人机器人、补偿终态与解散，建群失败不阻断业务操作。
  */
 @Injectable()
 export class FeishuBotBacklogChatService
@@ -91,7 +101,7 @@ export class FeishuBotBacklogChatService
   ) {}
 
   onModuleInit(): void {
-    // 启动后补建一次，避免重启期间错过的建群/终态补偿
+    // 启动后对账一次，补偿重启期间错过的终态计时/解散/补拉机器人
     void this.reconcile().catch((error: Error) => {
       this.logger.warn(`迭代沟通群启动对账失败: ${error.message}`);
     });
@@ -101,13 +111,30 @@ export class FeishuBotBacklogChatService
     this.locks.clear();
   }
 
-  /** backlog 创建/更新后调用：幂等绑定并立即尝试建群（失败保留绑定等待对账） */
-  async ensureForBacklog(backlogId: number): Promise<void> {
+  /** 当前绑定行状态：未绑定或已解散返回 null */
+  async describe(backlogId: number): Promise<BacklogChatInfo | null> {
+    const row = await this.chats.findOne({ where: { backlogId } });
+    if (!row || row.state === 'destroyed') return null;
+    return { state: row.state, chatId: row.chatId, lastError: row.lastError };
+  }
+
+  /**
+   * 手动建群（迭代项详情页「飞书建群」）：成员或管理员触发，
+   * 重置重试计数后立即尝试；已建成的群直接返回现有状态。
+   * 失败保留绑定并置 error，由每分钟对账按上限继续重试。
+   */
+  async createForBacklog(backlogId: number): Promise<BacklogChatInfo | null> {
     const [backlog, official] = await Promise.all([
       this.backlogs.findOne({ where: { id: backlogId } }),
       this.configs.loadEnabledOfficial(),
     ]);
-    if (!backlog || !official) return;
+    if (!backlog) throw new NotFoundException(`Backlog ${backlogId} not found`);
+    if (isBacklogTerminal(backlog.status)) {
+      throw new BadRequestException('迭代项已结束，不再创建沟通群');
+    }
+    if (!official) {
+      throw new BadRequestException('平台官方机器人未配置，暂不能创建飞书群');
+    }
 
     let row = await this.chats.findOne({ where: { backlogId } });
     if (!row) {
@@ -118,6 +145,7 @@ export class FeishuBotBacklogChatService
         .values({
           backlogId,
           officialConfigId: official.id,
+          chatId: null,
           state: 'creating',
           name: backlogChatName(backlog.title),
           backlogTitle: backlog.title,
@@ -135,15 +163,37 @@ export class FeishuBotBacklogChatService
         .execute();
       row = await this.chats.findOne({ where: { backlogId } });
     }
-    if (!row || row.state === 'destroyed') return;
+    if (!row) return null;
+    if (row.state === 'active' && row.chatId) {
+      return { state: row.state, chatId: row.chatId, lastError: null };
+    }
+
+    // 重置为可创建状态：允许用户重试历史上失败/被解散的绑定
+    await this.chats.update(row.id, {
+      officialConfigId: official.id,
+      state: 'creating',
+      chatId: null,
+      name: backlogChatName(backlog.title),
+      backlogTitle: backlog.title,
+      lastStatus: null,
+      finishedAt: null,
+      finishedNotified: false,
+      destroyAfter: null,
+      attempts: 0,
+      lastError: null,
+    });
+
     await this.withLock(`backlog-chat:${row.id}`, async () => {
       const fresh = await this.chats.findOne({ where: { id: row.id } });
-      if (!fresh || fresh.state === 'destroyed') return;
-      if (!fresh.chatId && fresh.attempts < CREATE_MAX_ATTEMPTS) {
-        const secrets = this.configs.secretsOf(official);
-        await this.createGroupChat(fresh, official, secrets, backlog);
-      }
+      if (!fresh || fresh.state === 'destroyed' || fresh.chatId) return;
+      await this.createGroupChat(
+        fresh,
+        official,
+        this.configs.secretsOf(official),
+        backlog,
+      );
     });
+    return this.describe(backlogId);
   }
 
   /** backlog 状态变化后调用：终态发结果卡片 + 计时解散；其余发状态卡片 */
@@ -166,7 +216,7 @@ export class FeishuBotBacklogChatService
     });
   }
 
-  /** 每分钟对账：补建群 / 补拉机器人 / 终态计时 / 到期解散 / 补检无绑定 backlog */
+  /** 每分钟对账：重试建群 / 补拉机器人 / 终态计时 / 到期解散 */
   @Cron('25 * * * * *')
   async reconcile(): Promise<void> {
     if (this.reconciling) return;
@@ -222,18 +272,6 @@ export class FeishuBotBacklogChatService
           await this.dissolve(fresh, secrets);
         }
       });
-    }
-
-    if (!official) return;
-    const bound = new Set(rows.map((row) => row.backlogId));
-    const candidates = await this.backlogs.find({
-      where: { status: In([BacklogStatus.WAITING, BacklogStatus.EXECUTING]) },
-      order: { id: 'DESC' },
-      take: CANDIDATE_LIMIT,
-    });
-    for (const backlog of candidates) {
-      if (bound.has(backlog.id)) continue;
-      await this.ensureForBacklog(backlog.id);
     }
   }
 

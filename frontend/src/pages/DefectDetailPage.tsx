@@ -415,19 +415,7 @@ export function DefectDetailPage() {
         />
         <Card>
           <CardHeader>
-            <CardTitle className="flex items-center justify-between gap-2">
-              <span>缺陷信息</span>
-              {/* Markdown 视图：后端 .md URL 规范（GET /api/defects/:id.md） */}
-              <a
-                href={`/api/defects/${defect.id}.md`}
-                target="_blank"
-                rel="noreferrer"
-                className="text-sm font-normal underline"
-                title="Markdown 视图"
-              >
-                MD
-              </a>
-            </CardTitle>
+            <CardTitle>缺陷信息</CardTitle>
           </CardHeader>
           <dl className="grid gap-3 px-6 pb-6 text-sm sm:grid-cols-2 xl:grid-cols-4">
             <div className="flex items-center justify-between">

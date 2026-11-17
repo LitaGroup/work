@@ -213,15 +213,6 @@ export function IterationDetailPage() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <a
-            href={`/api/iterations/${id}.md`}
-            target="_blank"
-            rel="noreferrer"
-            className="text-sm underline"
-            title="Markdown 视图"
-          >
-            MD
-          </a>
           {isAdmin && (
             <>
               {detail.type !== 'T0' && (

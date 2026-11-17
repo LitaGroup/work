@@ -96,15 +96,6 @@ export function FeedbackPage() {
   const typeItems = Object.fromEntries(
     ['all', ...FEEDBACK_TYPES].map((t) => [t, t === 'all' ? '不限类型' : t]),
   )
-  // Markdown 视图带当前筛选参数（'all'/空串不传）
-  const mdQuery = [
-    search && `q=${encodeURIComponent(search)}`,
-    statusFilter !== 'all' && `status=${encodeURIComponent(statusFilter)}`,
-    typeFilter !== 'all' && `type=${encodeURIComponent(typeFilter)}`,
-  ]
-    .filter(Boolean)
-    .join('&')
-
   return (
     <div>
       <div className="mb-4 flex items-center justify-between">
@@ -115,15 +106,6 @@ export function FeedbackPage() {
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <a
-            href={`/api/feedbacks.md${mdQuery ? `?${mdQuery}` : ''}`}
-            target="_blank"
-            rel="noreferrer"
-            className="text-sm underline"
-            title="Markdown 视图"
-          >
-            MD
-          </a>
           <FeedbackFormDialog onSaved={reload} />
         </div>
       </div>

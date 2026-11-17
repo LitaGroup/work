@@ -12,7 +12,7 @@ export type FeishuBotBacklogChatState =
   'creating' | 'active' | 'error' | 'destroyed';
 
 /**
- * 迭代项（Backlog）沟通群：backlog 创建后建群。
+ * 迭代项（Backlog）沟通群：由成员/管理员在详情页手动建群。
  * 群内含产品/业务/项目/技术等成员及绑定飞书的机器人；
  * backlog 完成/取消后保留 7 天自动解散。
  */

@@ -2,6 +2,7 @@ import {
   composeScheduleRemark,
   extractDocLinks,
   extractHttpLinks,
+  extractMultiSelect,
   extractPeople,
   toIterationCycle,
   toLastModifiedMs,
@@ -197,5 +198,33 @@ describe('extractPeople（人员字段 → 姓名，需求方同步复用）', (
     expect(extractPeople(undefined)).toBe(undefined);
     expect(extractPeople([])).toBe(undefined);
     expect(extractPeople([{ name: '' }, { text: '@' }])).toBe(undefined);
+  });
+});
+
+describe('extractMultiSelect（多选字段 → 选项名数组，涉及方同步复用）', () => {
+  it('多选数组解析为字符串数组并保持顺序', () => {
+    expect(extractMultiSelect(['iOS', 'Android', 'Backend'])).toEqual([
+      'iOS',
+      'Android',
+      'Backend',
+    ]);
+  });
+
+  it('trim / 去空 / 去重保序', () => {
+    expect(extractMultiSelect([' iOS ', '', 'iOS', 'Android'])).toEqual([
+      'iOS',
+      'Android',
+    ]);
+  });
+
+  it('单选纯字符串按单值处理', () => {
+    expect(extractMultiSelect(' Android ')).toEqual(['Android']);
+  });
+
+  it('空值 / 非字符串 / 全空数组返回 null', () => {
+    expect(extractMultiSelect(null)).toBe(null);
+    expect(extractMultiSelect(undefined)).toBe(null);
+    expect(extractMultiSelect([])).toBe(null);
+    expect(extractMultiSelect([1, null, ''])).toBe(null);
   });
 });

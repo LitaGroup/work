@@ -333,6 +333,15 @@ export class BacklogsController {
     return this.backlogsService.move(id, dto.iterationId, iterationActor(req));
   }
 
+  /** 手动创建/重试飞书沟通群（成员或管理员；已建成的群返回现有状态） */
+  @Post(':id/feishu-chat')
+  createFeishuChat(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req: AuthedRequest,
+  ): ReturnType<BacklogsService['createFeishuChat']> {
+    return this.backlogsService.createFeishuChat(id, iterationActor(req));
+  }
+
   /** 更新成员（仅管理员） */
   @Patch(':id/members')
   updateMembers(

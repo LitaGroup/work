@@ -256,19 +256,7 @@ export function DocumentDetailPage() {
             { label: doc.title },
           ]}
         />
-        <div className="flex flex-wrap items-center gap-2">
-          <h1 className="text-xl font-semibold">{doc.title}</h1>
-          {/* Markdown 视图：后端 .md URL 规范（GET /api/documents/:id.md） */}
-          <a
-            href={`/api/documents/${doc.id}.md`}
-            target="_blank"
-            rel="noreferrer"
-            className="text-sm underline"
-            title="Markdown 视图"
-          >
-            MD
-          </a>
-        </div>
+        <h1 className="text-xl font-semibold">{doc.title}</h1>
         <p className="flex flex-wrap items-center gap-2 text-sm text-foreground-muted">
           {/* 文档类型放信息行最前面 */}
           <Badge variant="secondary">{doc.type}</Badge>

@@ -73,15 +73,6 @@ export function IterationsPage() {
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <a
-            href="/api/iterations.md"
-            target="_blank"
-            rel="noreferrer"
-            className="text-sm underline"
-            title="Markdown 视图"
-          >
-            MD
-          </a>
           {isAdmin && (
             <Link to="/iterations/new" className={buttonVariants()}>
               新建迭代

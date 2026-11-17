@@ -20,7 +20,7 @@ export interface BacklogMember {
  * - 记录原始需求 ID（projects.id，应用层软引用，不建物理外键）；
  * - 负责人在转入时敲定（AI 或真人机器人），机器人负责人自动创建交付任务；
  * - 状态由成员/管理员手动流转：等待 → 执行 → 测试 → 发布 → 完成，允许取消；
- * - 创建时自动建立飞书沟通群（绑定见 feishu_bot_backlog_chats）。
+ * - 飞书沟通群由成员/管理员在详情页手动创建（绑定见 feishu_bot_backlog_chats）。
  */
 @Entity('backlogs')
 @Index('IDX_backlogs_iterationId', ['iterationId'])

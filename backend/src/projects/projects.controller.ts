@@ -41,6 +41,8 @@ class UpdateProjectDto {
   expectedReleaseAt?: string;
   /** 需求方（姓名，多个顿号连接；须在用户系统内），空串清除 */
   owner?: string;
+  /** 涉及方（飞书「涉及方」多选同步；平台内可编辑，下次同步覆盖；顿号/逗号分隔），空串清除 */
+  involvedParties?: string;
   /** 备注（飞书「排期优先级」+「排期备注」同步合成；平台内可编辑，下次同步覆盖），空串清除 */
   remark?: string;
   /** 脚本目录：相对 CHECK_SCRIPTS_DIR 的路径，空串清除 */
