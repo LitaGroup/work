@@ -35,8 +35,10 @@ describe('TicketsService', () => {
     save: jest.Mock;
     create: jest.Mock;
     findOne: jest.Mock;
+    find: jest.Mock;
     createQueryBuilder: jest.Mock;
   };
+  let backlogs: { find: jest.Mock };
   let workflowRuns: { find: jest.Mock };
   let configs: { findOne: jest.Mock };
   let tasks: {
@@ -78,8 +80,10 @@ describe('TicketsService', () => {
       }),
       create: jest.fn((value: Partial<Ticket>) => value),
       findOne: jest.fn().mockResolvedValue(null),
+      find: jest.fn().mockResolvedValue([]),
       createQueryBuilder: jest.fn(),
     };
+    backlogs = { find: jest.fn().mockResolvedValue([]) };
     workflowRuns = { find: jest.fn().mockResolvedValue([]) };
     configs = {
       findOne: jest.fn().mockResolvedValue(config),
@@ -130,6 +134,7 @@ describe('TicketsService', () => {
       templates as never,
       workers as never,
       {} as never,
+      backlogs as never,
       tasksService as never,
       dispatchService as never,
       {} as never,
@@ -308,5 +313,57 @@ describe('TicketsService', () => {
 
     expect(rows).toEqual([]);
     expect(query.andWhere).not.toHaveBeenCalled();
+  });
+
+  it('按需求聚合相关工单：迭代项提测工单与交付任务树工单去重后按更新时间倒序', async () => {
+    const older = {
+      id: 1,
+      code: 'WO-0001',
+      title: '提测工单',
+      category: '提测',
+      workflowStatus: '处理中',
+      currentNodeName: '验收',
+      initiatorWorkerName: '张三',
+      backlogId: 11,
+      taskId: null,
+      createdAt: new Date('2026-01-01T00:00:00Z'),
+      updatedAt: new Date('2026-01-02T00:00:00Z'),
+    } as Ticket;
+    const newer = {
+      id: 2,
+      code: 'WO-0002',
+      title: '任务工单',
+      category: '设计',
+      workflowStatus: '已完成',
+      currentNodeName: null,
+      initiatorWorkerName: null,
+      backlogId: null,
+      taskId: 202,
+      createdAt: new Date('2026-01-03T00:00:00Z'),
+      updatedAt: new Date('2026-01-04T00:00:00Z'),
+    } as Ticket;
+    backlogs.find.mockResolvedValue([
+      { id: 11, taskId: 201 },
+      { id: 12, taskId: null },
+    ]);
+    tasks.find.mockResolvedValue([{ id: 201 }, { id: 202 }]);
+    tickets.find
+      .mockResolvedValueOnce([older])
+      .mockResolvedValueOnce([newer])
+      .mockResolvedValueOnce([newer]);
+    workflowRuns.find.mockResolvedValue([{ ticketId: 2 }]);
+
+    const rows = await service.listByProject(3);
+
+    expect(backlogs.find).toHaveBeenCalledWith({
+      where: { projectId: 3 },
+      select: { id: true, taskId: true },
+    });
+    expect(rows.map((row) => row.id)).toEqual([2, 1]);
+    expect(rows[0]).toMatchObject({
+      code: 'WO-0002',
+      workflowStatus: '已完成',
+      currentNodeName: null,
+    });
   });
 });

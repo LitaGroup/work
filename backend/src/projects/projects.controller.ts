@@ -13,6 +13,7 @@ import {
 } from '@nestjs/common';
 import type { AuthedRequest } from '../auth/auth.guard';
 import { ProjectStatus, ProjectType } from '../common/enums';
+import { TicketsService } from '../tickets/tickets.service';
 import { Project } from './project.entity';
 import { ProjectSyncService, SyncProjectsResult } from './project-sync.service';
 import {
@@ -65,6 +66,7 @@ export class ProjectsController {
   constructor(
     private readonly projectsService: ProjectsService,
     private readonly projectSyncService: ProjectSyncService,
+    private readonly ticketsService: TicketsService,
   ) {}
 
   @Get()
@@ -110,6 +112,12 @@ export class ProjectsController {
   @Post('sync-feishu')
   syncFromFeishu(@Body() dto?: SyncFeishuDto): Promise<SyncProjectsResult> {
     return this.projectSyncService.syncFromFeishu(!!dto?.full, true);
+  }
+
+  /** 需求相关工单（全部迭代项的提测工单 + 交付任务树关联工单；须声明在 :id 之前） */
+  @Get(':id/tickets')
+  listTickets(@Param('id', ParseIntPipe) id: number) {
+    return this.ticketsService.listByProject(id);
   }
 
   @Get(':id')

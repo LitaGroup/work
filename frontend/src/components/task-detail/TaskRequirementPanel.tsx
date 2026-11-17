@@ -1,6 +1,15 @@
-import { ExternalLink } from '@appica/icons-react'
+import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
+import { ChevronRight, ExternalLink } from '@appica/icons-react'
 import { Badge } from '@appica/ui-react/badge'
-import type { TaskPackage } from '../../lib/api'
+import {
+  api,
+  type BacklogSummary,
+  type Project,
+  type ProjectTicketSummary,
+  type TaskPackage,
+} from '../../lib/api'
+import { TicketStatusBadge } from '../StatusBadge'
 import { ChatMarkdown } from '../ChatMarkdown'
 
 /** 从任务现有 Markdown 字段中提取可直接访问的链接（Markdown 链接 + 裸 URL）。 */
@@ -52,9 +61,16 @@ function formatDateTime(value: string | null | undefined) {
 
 /**
  * 任务详情「需求」Tab：把任务现有字段整理为只读需求视图。
- * 不新增持久化字段，链接从已有 Markdown 中提取。
+ * 不新增持久化字段，链接从已有 Markdown 中提取；任务关联需求时附需求/迭代项/工单跳转。
  */
-export function TaskRequirementPanel({ task }: { task: TaskPackage }) {
+export function TaskRequirementPanel({
+  task,
+  fallbackProjectId = null,
+}: {
+  task: TaskPackage
+  /** 根任务所属需求（子任务自身 projectId 为空时兜底） */
+  fallbackProjectId?: number | null
+}) {
   const originalRequirement = nonEmpty(task.input, task.description)
   const organizedRequirement = nonEmpty(task.content)
   const links = extractRequirementLinks([
@@ -62,6 +78,44 @@ export function TaskRequirementPanel({ task }: { task: TaskPackage }) {
     task.description,
     task.content,
   ])
+  const projectId = task.projectId ?? fallbackProjectId ?? null
+
+  /** 关联数据与请求的 projectId 绑定，切换需求时自然回到加载态，避免旧数据串场 */
+  const [related, setRelated] = useState<{
+    projectId: number
+    project: Project | null
+    backlogs: BacklogSummary[]
+    tickets: ProjectTicketSummary[]
+  } | null>(null)
+
+  useEffect(() => {
+    if (projectId === null) return
+    let cancelled = false
+    const requestedFor = projectId
+    Promise.allSettled([
+      api.getProject(projectId),
+      api.listBacklogs({ projectId, includeCanceled: true }),
+      api.listProjectTickets(projectId),
+    ]).then(([projectResult, backlogResult, ticketResult]) => {
+      if (cancelled) return
+      setRelated({
+        projectId: requestedFor,
+        project:
+          projectResult.status === 'fulfilled' ? projectResult.value : null,
+        backlogs:
+          backlogResult.status === 'fulfilled' ? backlogResult.value : [],
+        tickets: ticketResult.status === 'fulfilled' ? ticketResult.value : [],
+      })
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [projectId])
+
+  const relatedData = related?.projectId === projectId ? related : null
+  const project = relatedData?.project ?? null
+  const backlogs = relatedData?.backlogs ?? null
+  const tickets = relatedData?.tickets ?? null
 
   return (
     <section className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
@@ -100,6 +154,15 @@ export function TaskRequirementPanel({ task }: { task: TaskPackage }) {
               value={formatDateTime(task.createdAt) ?? '—'}
             />
           </dl>
+
+          {projectId !== null && (
+            <RelatedRequirementLinks
+              projectId={projectId}
+              project={project}
+              backlogs={backlogs}
+              tickets={tickets}
+            />
+          )}
 
           <RequirementSection
             title="原始需求"
@@ -146,6 +209,125 @@ export function TaskRequirementPanel({ task }: { task: TaskPackage }) {
         </div>
       </div>
     </section>
+  )
+}
+
+/** 任务所属需求的快速跳转：需求本体 + 未取消迭代项 + 需求相关工单 */
+function RelatedRequirementLinks({
+  projectId,
+  project,
+  backlogs,
+  tickets,
+}: {
+  projectId: number
+  project: Project | null
+  backlogs: BacklogSummary[] | null
+  tickets: ProjectTicketSummary[] | null
+}) {
+  const activeBacklogs = (backlogs ?? []).filter(
+    (backlog) => backlog.status !== '取消',
+  )
+
+  return (
+    <section>
+      <SectionTitle title="关联需求" />
+      <div className="flex flex-col rounded-[var(--radius-md)] border border-border">
+        <Link
+          to={`/requirements/${projectId}`}
+          className="flex min-w-0 items-center justify-between gap-2 rounded-t-[var(--radius-md)] px-3 py-2 no-underline transition-colors hover:bg-background-muted"
+        >
+          <span className="flex min-w-0 items-center gap-2">
+            <Badge variant="outline" size="sm">
+              需求
+            </Badge>
+            <span className="truncate text-sm text-foreground-intense underline decoration-border-strong underline-offset-2">
+              {project ? project.name : `#${projectId}`}
+            </span>
+          </span>
+          <ChevronRight className="size-3.5 shrink-0 text-foreground-subtle" />
+        </Link>
+
+        <div className="border-t border-border px-2 py-2">
+          <GroupTitle
+            label="迭代项"
+            count={backlogs === null ? undefined : activeBacklogs.length}
+          />
+          {backlogs === null ? (
+            <p className="px-1 text-xs text-foreground-subtle">加载中…</p>
+          ) : activeBacklogs.length === 0 ? (
+            <p className="px-1 text-xs text-foreground-subtle">暂无迭代项</p>
+          ) : (
+            <ul className="flex flex-col">
+              {activeBacklogs.map((backlog) => (
+                <li key={backlog.id}>
+                  <Link
+                    to={`/backlogs/${backlog.id}`}
+                    className="flex min-w-0 items-center justify-between gap-2 rounded-[var(--radius-sm)] px-1 py-1 no-underline transition-colors hover:bg-background-muted"
+                  >
+                    <span className="flex min-w-0 items-baseline gap-2">
+                      <span className="shrink-0 font-mono text-[11px] text-foreground-subtle">
+                        {backlog.iteration?.code ?? `#${backlog.id}`}
+                      </span>
+                      <span className="truncate text-sm text-foreground-emphasis underline decoration-border underline-offset-2 hover:decoration-border-strong">
+                        {backlog.title}
+                      </span>
+                    </span>
+                    <ChevronRight className="size-3.5 shrink-0 text-foreground-subtle" />
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div className="border-t border-border px-2 py-2">
+          <GroupTitle
+            label="工单"
+            count={tickets === null ? undefined : tickets.length}
+          />
+          {tickets === null ? (
+            <p className="px-1 text-xs text-foreground-subtle">加载中…</p>
+          ) : tickets.length === 0 ? (
+            <p className="px-1 text-xs text-foreground-subtle">暂无关联工单</p>
+          ) : (
+            <ul className="flex flex-col">
+              {tickets.map((ticket) => (
+                <li key={ticket.id}>
+                  <Link
+                    to={`/tickets/${ticket.id}`}
+                    className="flex min-w-0 items-center justify-between gap-2 rounded-[var(--radius-sm)] px-1 py-1 no-underline transition-colors hover:bg-background-muted"
+                  >
+                    <span className="flex min-w-0 items-center gap-2">
+                      <span className="shrink-0 font-mono text-[11px] text-foreground-subtle">
+                        {ticket.code}
+                      </span>
+                      <span className="truncate text-sm text-foreground-emphasis underline decoration-border underline-offset-2 hover:decoration-border-strong">
+                        {ticket.title}
+                      </span>
+                    </span>
+                    <span className="flex shrink-0 items-center gap-2">
+                      <TicketStatusBadge
+                        status={ticket.workflowStatus ?? '处理中'}
+                      />
+                      <ChevronRight className="size-3.5 text-foreground-subtle" />
+                    </span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    </section>
+  )
+}
+
+function GroupTitle({ label, count }: { label: string; count?: number }) {
+  return (
+    <div className="mb-1 flex items-center gap-1.5 px-1 text-[11px] text-foreground-subtle">
+      <span>{label}</span>
+      {typeof count === 'number' && <span>({count})</span>}
+    </div>
   )
 }
 

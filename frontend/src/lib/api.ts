@@ -783,6 +783,19 @@ export interface IterationSummary extends IterationProgress {
   updatedAt: string
 }
 
+/** 需求相关工单摘要（GET /projects/:id/tickets）：全部迭代项提测工单 + 交付任务树关联工单 */
+export interface ProjectTicketSummary {
+  id: number
+  code: string
+  title: string
+  category: string
+  workflowStatus: string | null
+  currentNodeName: string | null
+  initiatorWorkerName: string | null
+  createdAt: string
+  updatedAt: string
+}
+
 /** 迭代项轻量视图（GET /backlogs，默认不含取消项）：用于过滤已进入迭代的需求 */
 export interface BacklogSummary {
   id: number
@@ -2800,6 +2813,9 @@ export const api = {
       body: JSON.stringify({ members }),
     }),
   getProject: (id: number) => request<Project>(`/projects/${id}`),
+  /** 需求相关工单（全部迭代项的提测工单 + 交付任务树关联工单） */
+  listProjectTickets: (projectId: number) =>
+    request<ProjectTicketSummary[]>(`/projects/${projectId}/tickets`),
   createProject: (input: {
     name: string
     type?: ProjectType

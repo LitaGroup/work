@@ -112,6 +112,8 @@ export function TaskDetailView({
 }) {
   const navigate = useNavigate()
   const [task, setTask] = useState<TaskPackage | null>(null)
+  /** 根任务所属需求（子任务兜底「需求」分区关联跳转） */
+  const [rootProjectId, setRootProjectId] = useState<number | null>(null)
   const [workbenchTask, setWorkbenchTask] = useState<WorkbenchTask | null>(null)
   const [pipeline, setPipeline] = useState<TaskPipelineStage[]>([])
   const [messages, setMessages] = useState<TaskChatMessage[]>([])
@@ -156,6 +158,7 @@ export function TaskDetailView({
       const data: TaskChatSnapshot = await api.getTaskChat(taskId)
       if (seq !== loadSeq.current) return
       setTask(data.task)
+      setRootProjectId(data.rootTask?.projectId ?? null)
       setPipeline(data.pipeline)
       // 后端已按当前任务返回消息；这里再按 taskId 收敛一次，避免旧服务或异常数据串任务
       setMessages(data.messages.filter((message) => message.taskId === taskId))
@@ -713,7 +716,11 @@ export function TaskDetailView({
             )}
 
             {contentTab === 'requirement' && (
-              <TaskRequirementPanel key={taskId} task={currentTask} />
+              <TaskRequirementPanel
+                key={taskId}
+                task={currentTask}
+                fallbackProjectId={rootProjectId}
+              />
             )}
 
             {contentTab === 'tasks' && (

@@ -27,6 +27,8 @@ import { TasksService } from '../tasks/tasks.service';
 import { TaskDocumentService } from '../tasks/task-document.service';
 import { TaskMessage } from '../tasks/task-message.entity';
 import { Worker } from '../workers/worker.entity';
+import { Backlog } from '../iterations/backlog.entity';
+import type { BacklogTicketSummary } from '../iterations/iteration.types';
 import { findTicketCategory } from './ticket-categories';
 import { TicketConfig } from './ticket-config.entity';
 import { TicketDocumentsService } from './ticket-documents.service';
@@ -126,6 +128,8 @@ export class TicketsService {
     private readonly workers: Repository<Worker>,
     @InjectRepository(Topic)
     private readonly topicRows: Repository<Topic>,
+    @InjectRepository(Backlog)
+    private readonly backlogs: Repository<Backlog>,
     private readonly tasksService: TasksService,
     private readonly dispatchService: TaskDispatchService,
     private readonly taskDocuments: TaskDocumentService,
@@ -273,6 +277,65 @@ export class TicketsService {
       }),
     );
     return views.filter((ticket) => !status || ticket.status === status);
+  }
+
+  /**
+   * 需求维度相关工单：该需求全部迭代项的提测工单（tickets.backlogId）
+   * + 各迭代项交付任务树关联的工单（tickets.taskId / ticket_workflow_runs.taskId）。
+   * 口径与迭代项「任务」Tab 的 relatedRecords 一致，供任务详情「需求」分区快速跳转。
+   */
+  async listByProject(projectId: number): Promise<BacklogTicketSummary[]> {
+    const backlogs = await this.backlogs.find({
+      where: { projectId },
+      select: { id: true, taskId: true },
+    });
+    const backlogIds = backlogs.map((backlog) => backlog.id);
+    const rootTaskIds = [
+      ...new Set(
+        backlogs
+          .map((backlog) => backlog.taskId)
+          .filter((id): id is number => id !== null),
+      ),
+    ];
+    const taskRows = rootTaskIds.length
+      ? await this.tasks.find({
+          where: [{ id: In(rootTaskIds) }, { rootId: In(rootTaskIds) }],
+          select: { id: true },
+        })
+      : [];
+    const taskIds = taskRows.map((task) => task.id);
+
+    const directTickets = backlogIds.length
+      ? await this.tickets.find({ where: { backlogId: In(backlogIds) } })
+      : [];
+    const taskTickets = taskIds.length
+      ? await this.tickets.find({ where: { taskId: In(taskIds) } })
+      : [];
+    const runs = taskIds.length
+      ? await this.workflowRuns.find({ where: { taskId: In(taskIds) } })
+      : [];
+    const runTicketIds = [...new Set(runs.map((run) => run.ticketId))];
+    const runTickets = runTicketIds.length
+      ? await this.tickets.find({ where: { id: In(runTicketIds) } })
+      : [];
+
+    const ticketMap = new Map<number, Ticket>();
+    for (const ticket of [...directTickets, ...taskTickets, ...runTickets]) {
+      ticketMap.set(ticket.id, ticket);
+    }
+    return [...ticketMap.values()]
+      .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
+      .map((ticket) => ({
+        id: ticket.id,
+        code: ticket.code,
+        title: ticket.title,
+        category: ticket.category,
+        workflowStatus: ticket.workflowStatus,
+        currentNodeName: ticket.currentNodeName,
+        initiatorWorkerName: ticket.initiatorWorkerName,
+        createdAt: ticket.createdAt,
+        updatedAt: ticket.updatedAt,
+      }));
   }
 
   async findOne(id: number): Promise<TicketView> {
