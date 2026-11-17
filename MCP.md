@@ -1,6 +1,6 @@
 ---
 description: "> AI 助手提示：定义 lita-work / lita-bots / lita-proxy 三个 MCP 服务的令牌获取与客户端接入配置（opencode / Claude Code / Codex CLI）。"
-version: 1.2.0
+version: 1.2.1
 type: docs
 ---
 
@@ -12,7 +12,7 @@ type: docs
 
 | 服务 | 地址 | 用途 | 工具数 |
 |---|---|---|---|
-| `lita-work` | `http://work.cinta.team/api/mcp/work` | 直接操作平台数据：项目 / 文档 / 知识库 / 脚本运行 / 缺陷 / 提测 / 反馈 / 灵感 / 代码分支 / 任务协同 / 工单 / 机器人管理 / 飞书会话历史与消息发送 | 97 |
+| `lita-work` | `http://work.cinta.team/api/mcp/work` | 直接操作平台数据：需求 / 迭代项 / 文档 / 知识库 / 脚本运行 / 缺陷 / 反馈 / 灵感 / 代码分支 / 任务协同 / 工单 / 机器人管理 / 飞书会话历史与消息发送 | 102 |
 | `lita-bots` | `http://work.cinta.team/api/mcp/bots` | 把平台机器人当**子 Agent** 调用（多轮会话、提问、中断、断线找回） | 6 |
 | `lita-proxy` | `http://proxy.cinta.team/mcp` | 内部资源运维：MySQL/ClickHouse/MaxCompute（ODPS）SQL、Redis 命令、阿里云 SLS 只读日志、Nacos 配置、XXL-JOB 任务、Firebase Firestore 只读查询、线上操作工单、GitHub PR 创建 | 31 |
 
@@ -77,15 +77,15 @@ Claude Code 的 `--header`、Codex 的 `bearer_token_env_var` 均见下文各节
 
 ### 2.1 lita-work：直接操作平台数据
 
-覆盖项目、迭代成员、文档、资源、节点、脚本运行、知识库、缺陷/提测、用户反馈、灵感、GitHub 代码分支、文件上传、任务协同、工单、机器人/任务定义和飞书会话历史查询、平台名义消息发送。代表性工具：
+覆盖需求、迭代项、文档、脚本运行、知识库、缺陷、用户反馈、灵感、GitHub 代码分支、文件上传、任务协同、工单、机器人/任务定义和飞书会话历史查询、平台名义消息发送。代表性工具：
 
 | 分类 | 代表工具 |
 |---|---|
-| 项目 / 文档 / 资源 / 节点 | `search_projects`、`get_project`、`update_project`、`read_document`、`upsert_document`、`sync_apipost_document`、`list_resources`、`read_resource`、`sync_resource`、`list_milestones`、`create_milestone`、`update_milestone`、`delete_milestone` |
-| 迭代与成员 | `update_backlog_members`（管理员或迭代项负责人机器人整体替换成员，支持 userId 与姓名） |
+| 需求 / 文档 | `search_projects`、`get_project`、`update_project`、`read_document`、`upsert_document`、`sync_apipost_document` |
+| 迭代项 | `get_backlog`、`update_backlog_members`（管理员或负责人整体替换成员）、`update_backlog`（预期上线/负责人改派）、`change_backlog_status`、`move_backlog`、`create_backlog_task`、`create_backlog_release_ticket`（提测工单） |
 | 运行 / 脚本 / 设置 | `run_check`、`run_test`、`run_export`、`run_schedule`、`get_run`、`list_runs`、`import_scripts`、`pull_scripts`、`get_settings` |
 | 知识库 | `search_knowledge`、`list_knowledge_dir`、`read_knowledge`、`create_knowledge`、`update_knowledge`、`delete_knowledge`、`read_feishu_doc` |
-| 缺陷 / 提测 | `list_defects`、`get_defect`、`create_defect`、`update_defect`、`change_defect_status`、`add_defect_record`、`delete_defect`、`list_releases`、`submit_release`、`update_release_status` |
+| 缺陷 | `list_defects`、`get_defect`、`create_defect`、`update_defect`、`change_defect_status`、`add_defect_record`、`delete_defect` |
 | 用户反馈 | `list_feedbacks`、`get_feedback`（含「系统-反馈处理」从飞书反馈群自动收录的话题反馈与跟帖） |
 | 灵感 | `list_ideas`、`get_idea`、`create_idea`、`update_idea`、`delete_idea`、`change_idea_status`（采纳时新建或关联需求池需求） |
 | GitHub / 文件 | `search_github_repos`、`list_github_branches`、`list_code_branches`、`register_code_branch`、`update_code_branch`、`delete_code_branch`、`list_code_events`、`upload_file` |

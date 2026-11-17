@@ -14,10 +14,7 @@ import { GithubModule } from '../github/github.module';
 import { IdeasModule } from '../ideas/ideas.module';
 import { IterationsModule } from '../iterations/iterations.module';
 import { KnowledgeModule } from '../knowledge/knowledge.module';
-import { MilestonesModule } from '../milestones/milestones.module';
 import { ProjectsModule } from '../projects/projects.module';
-import { ReleasesModule } from '../releases/releases.module';
-import { ResourcesModule } from '../resources/resources.module';
 import { SchedulesModule } from '../schedules/schedules.module';
 import { ScriptsModule } from '../scripts/scripts.module';
 import { SettingsModule } from '../settings/settings.module';
@@ -60,8 +57,6 @@ import { WorkIterationTools } from './work-tools/work-iteration.tools';
     WorkersModule,
     ProjectsModule,
     DocumentsModule,
-    ResourcesModule,
-    MilestonesModule,
     ChecksModule,
     TestsModule,
     ExportsModule,
@@ -69,7 +64,6 @@ import { WorkIterationTools } from './work-tools/work-iteration.tools';
     KnowledgeModule,
     FilesModule,
     DefectsModule,
-    ReleasesModule,
     FeedbacksModule,
     IdeasModule,
     SettingsModule,

@@ -1,6 +1,12 @@
+---
+description: "> AI 助手提示：本文件定义了 lita-work MCP 服务的接入方式与工具清单；外部 Agent 按本文档完成令牌配置后即可调用需求、迭代项、文档、知识、运行、缺陷、反馈、灵感、任务、工单等平台工具。"
+version: "1.0.0"
+type: docs
+---
+
 # MCP 接入指南：lita-work 平台工具
 
-平台把原 **lita-work / knowledge-search / file-upload** 三个 Agent 技能（`.md` HTTP 端点）改造成 MCP 服务 **`lita-work`**：外部 Agent（opencode / Claude Code / Cursor 等）完成一次配置后，即可直接调用带 schema 的平台工具——项目、迭代成员、文档、知识库、脚本运行、缺陷/提测、反馈、灵感、代码分支、文件上传、任务协同、工单和机器人/任务定义管理等。
+平台把原 **lita-work / knowledge-search / file-upload** 三个 Agent 技能（`.md` HTTP 端点）改造成 MCP 服务 **`lita-work`**：外部 Agent（opencode / Claude Code / Cursor 等）完成一次配置后，即可直接调用带 schema 的平台工具——需求、迭代项、文档、知识库、脚本运行、缺陷、反馈、灵感、代码分支、文件上传、任务协同、工单和机器人/任务定义管理等。
 
 - 服务地址：`POST /api/mcp/work`（MCP Streamable HTTP，响应为 SSE 流）
 - 鉴权：机器人令牌（`Authorization: Bearer` / `X-Worker-Token` / `X-Agent-Token` / `?token=`），或管理员下发的公共 Agent 令牌；与 `.md` 端点同一令牌体系。真人用户没有独立令牌，其令牌就是绑定真人机器人的 `workers.agentToken`
@@ -77,29 +83,28 @@ claude mcp add --transport http lita-work http://your-host:3100/api/mcp/work \
 
 ## 三、工具清单
 
-### 项目 / 文档 / 资源 / 节点
+### 需求 / 文档
 
 | 工具 | 主要入参 | 说明 |
 |---|---|---|
-| `search_projects` | `query` | 按名称模糊搜索项目，返回前 5 个 |
+| `search_projects` | `query` | 按名称模糊搜索需求，返回前 5 个 |
 | `get_project` | `projectId` | 需求基本信息（描述 / 对应的迭代 / 文档资料清单与需求级 AI 操作入口） |
-| `update_project` | `projectId`、`scriptsPath?`、`description?`、`owner?`、`remark?` | 仅更新平台本地字段（脚本目录/描述/需求方/备注） |
+| `update_project` | `projectId`、`scriptsPath?`、`description?`、`owner?`、`involvedParties?`、`remark?` | 仅更新平台本地字段（脚本目录/描述/需求方/涉及方/备注） |
 | `read_document` | `documentId` | 文档元信息 + Markdown 正文 |
 | `upsert_document` | `projectId`、`fileName`、`content`、`title?`、`type?`、`description?` | 按 `(projectId, fileName)` upsert |
 | `sync_apipost_document` | `projectId`、`url`、`type?` | 导入 APIPOST 接口文档 |
-| `list_resources` | `projectId?`、`includeDeleted?` | 资源清单 |
-| `read_resource` | `resourceId` | 资源详情（配置/多语言/其它） |
-| `sync_resource` | `resourceId` | 重新同步配置文档或多语言文案 |
-| `list_milestones` | `projectId?` | 节点清单（附推导状态） |
-| `create_milestone` | `projectId`、`date`、`content`、`remark?`、`deliverer?`、`acceptor?` | 登记节点 |
-| `update_milestone` | `milestoneId`、…、`achieved?` | 更新节点；`achieved=yes` 验收达成 |
-| `delete_milestone` | `milestoneId` | 删除节点 |
 
-### 迭代与成员
+### 迭代项
 
 | 工具 | 主要入参 | 说明 |
 |---|---|---|
+| `get_backlog` | `backlogId` | 迭代项详情（元信息 / 成员 / 文档 / 最近事件） |
 | `update_backlog_members` | `backlogId`、`members[]`（`role` + `userId` 或 `name`） | 管理员或该迭代项负责人机器人整体替换成员；`name` 支持顿号连接多人，空数组清空 |
+| `update_backlog` | `backlogId`、`expectedOnlineAt?`、`ownerWorkerId?` | 修改预期上线时间（null 清空）；`ownerWorkerId` 仅管理员，改派时重建交付任务 |
+| `change_backlog_status` | `backlogId`、`status`、`remark?` | 状态流转（等待/执行/测试/发布/完成/取消），备注写入事件流；成员或管理员 |
+| `move_backlog` | `backlogId`、`iterationId` | 移动到另一个未结束的迭代（仅管理员），不重建交付任务与沟通群 |
+| `create_backlog_task` | `backlogId`、`title?`、`description?`、`templateId?`、`agentId?` | 新建交付子任务；无交付任务时按 `agentId` 创建交付任务并登记负责人（仅管理员） |
+| `create_backlog_release_ticket` | `backlogId`、`title?`、`supplement?` | 按「提测工单」工作流发起提测，自动填入迭代项上下文 |
 
 ### 运行 / 脚本 / 设置
 
@@ -127,7 +132,7 @@ claude mcp add --transport http lita-work http://your-host:3100/api/mcp/work \
 | `delete_knowledge` | `path`、`recursive?` | 删除（非空目录需 `recursive=true`） |
 | `read_feishu_doc` | `url` | 飞书文档转 Markdown（不落库） |
 
-### 缺陷 / 提测
+### 缺陷
 
 | 工具 | 主要入参 | 说明 |
 |---|---|---|
@@ -138,9 +143,6 @@ claude mcp add --transport http lita-work http://your-host:3100/api/mcp/work \
 | `change_defect_status` | `defectId`、`status`、`remark?` | 专用状态流转（开放/修复/关闭） |
 | `add_defect_record` | `defectId`、`content`、`remark?` | 追加变更记录 |
 | `delete_defect` | `defectId` | 删除缺陷 |
-| `list_releases` | `projectId?` | 提测记录清单 |
-| `submit_release` | `projectId`、`testers`、`content?`、`urls?`、`branches?`、`taskId?` | 发起提测（项目流转「测试中」） |
-| `update_release_status` | `releaseId`、`status` | 判定提测结果 |
 
 ### 用户反馈
 
@@ -280,7 +282,7 @@ claude mcp add --transport http lita-work http://your-host:3100/api/mcp/work \
 |---|---|---|
 | 地址 | `POST /api/mcp/work` | `POST /api/mcp/bots` |
 | 用途 | 直接操作平台数据与脚本 | 把平台机器人当子 Agent 调用 |
-| 工具 | 项目/知识/运行/缺陷/任务/工单/机器人等 80+ 工具 | `list_bots`、`bot_call` 等 6 个 |
+| 工具 | 需求/迭代项/知识/运行/缺陷/任务/工单/机器人等 100+ 工具 | `list_bots`、`bot_call` 等 6 个 |
 | 会话 | 无状态 | 多轮会话（`session_id`） |
 
 两个服务可同时配置，互不影响。

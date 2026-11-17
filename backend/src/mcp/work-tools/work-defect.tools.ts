@@ -1,19 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { ReleaseStatus } from '../../common/enums';
 import { DefectsService } from '../../defects/defects.service';
-import { ReleasesService } from '../../releases/releases.service';
 import { executeTool, markdownResult } from './work-tools.util';
 import {
   actorNameOf,
   type McpWorkPrincipal,
   type WorkToolRegistrar,
 } from './work-tools.types';
-
-const ReleaseStatusArg = z.enum(
-  Object.values(ReleaseStatus) as [ReleaseStatus, ...ReleaseStatus[]],
-);
 
 const DefectPlatformArg = z
   .enum(['前端', '后端', 'APP端', '未知'])
@@ -27,15 +21,12 @@ const DefectStatusArg = z
   .enum(['开放', '修复', '关闭'])
   .describe('缺陷状态：开放/修复/关闭');
 
-/** 缺陷与提测 */
+/** 缺陷 */
 @Injectable()
 export class WorkDefectTools implements WorkToolRegistrar {
   private readonly logger = new Logger(WorkDefectTools.name);
 
-  constructor(
-    private readonly defects: DefectsService,
-    private readonly releases: ReleasesService,
-  ) {}
+  constructor(private readonly defects: DefectsService) {}
 
   register(server: McpServer, principal: McpWorkPrincipal): void {
     server.registerTool(
@@ -223,83 +214,6 @@ export class WorkDefectTools implements WorkToolRegistrar {
       async (args) =>
         executeTool(this.logger, 'delete_defect', principal, async () =>
           markdownResult(await this.defects.removeMarkdown(args.defectId)),
-        ),
-    );
-
-    server.registerTool(
-      'list_releases',
-      {
-        title: '提测记录清单',
-        description:
-          '按提测时间倒序返回提测记录（时间/提测人/状态/判定人/判定时间/测试人员/地址/分支/内容摘要）；不传项目返回全平台。',
-        inputSchema: {
-          projectId: z.number().int().positive().optional().describe('项目 ID'),
-        },
-      },
-      async (args) =>
-        executeTool(this.logger, 'list_releases', principal, async () =>
-          markdownResult(await this.releases.listMarkdown(args.projectId)),
-        ),
-    );
-
-    server.registerTool(
-      'submit_release',
-      {
-        title: '发起项目提测',
-        description:
-          '创建提测记录并将项目状态流转「测试中」，通知测试人员与迭代项成员。testers 至少 1 人且须为平台用户。',
-        inputSchema: {
-          projectId: z.number().int().positive().describe('项目 ID'),
-          testers: z
-            .array(z.string())
-            .min(1)
-            .describe('测试人员姓名（平台用户）'),
-          content: z.string().optional().describe('提测内容 Markdown'),
-          urls: z.array(z.string()).optional().describe('访问地址'),
-          branches: z
-            .array(z.object({ repo: z.string(), branch: z.string() }))
-            .optional()
-            .describe('代码分支'),
-          taskId: z
-            .number()
-            .int()
-            .positive()
-            .optional()
-            .describe('来源任务 ID（机器人令牌缺省取当前执行中任务）'),
-        },
-      },
-      async ({ projectId, ...dto }) =>
-        executeTool(this.logger, 'submit_release', principal, async () =>
-          markdownResult(
-            await this.releases.submitMarkdown(projectId, dto, {
-              operator: actorNameOf(principal),
-              workerId: principal.worker?.id ?? null,
-              sourceTaskId: dto.taskId ?? null,
-            }),
-          ),
-        ),
-    );
-
-    server.registerTool(
-      'update_release_status',
-      {
-        title: '判定提测结果',
-        description:
-          '推进提测状态：待冒烟/进行中/已通过/未通过；改为已通过或未通过时记录判定人与判定时间。',
-        inputSchema: {
-          releaseId: z.number().int().positive().describe('提测记录 ID'),
-          status: ReleaseStatusArg,
-        },
-      },
-      async (args) =>
-        executeTool(this.logger, 'update_release_status', principal, async () =>
-          markdownResult(
-            await this.releases.updateStatusMarkdown(
-              args.releaseId,
-              args.status,
-              actorNameOf(principal),
-            ),
-          ),
         ),
     );
   }

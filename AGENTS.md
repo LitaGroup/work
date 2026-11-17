@@ -70,7 +70,7 @@
 - `backend/src/model-config/`：管理区「模型配置」（固定场景的 OpenAI 兼容连接：baseUrl/apiKey/model/思考等级）与通用单次大模型调用（`LlmService`，工单/任务标题命名等后台任务）。
 - `backend/src/github/`、`github-gateway/`：仓库/分支/提交集成与凭证网关。
 - `backend/src/agent/`、`remote-run/`、`app-versions/`：Appium Agent、远程运行与 APP 包。
-- `backend/src/files/`、`images/`、`settings/`、`mcp/`：上传、设置与 MCP 开放（`lita-bots` 调用机器人、`lita-work` 平台工具：项目/迭代成员/知识/运行/缺陷/反馈/灵感/任务协同/工单/机器人/飞书会话历史与消息发送）；`backend/src/mcp-servers/` 为管理区「MCP 配置」（机器人连接的外部 MCP 服务）。
+- `backend/src/files/`、`images/`、`settings/`、`mcp/`：上传、设置与 MCP 开放（`lita-bots` 调用机器人、`lita-work` 平台工具：需求/迭代项（含成员与状态流转）/知识/运行/缺陷/反馈/灵感/任务协同/工单/机器人/飞书会话历史与消息发送）；`backend/src/mcp-servers/` 为管理区「MCP 配置」（机器人连接的外部 MCP 服务）。
 
 其他入口：
 
@@ -152,6 +152,7 @@
 - 转入/追加的**负责人机器人**（AI 或真人）可暂不指定（不创建交付任务）；指定/改派由管理员操作，指定后按负责人创建交付任务（显式 `agentId=负责人`，系统任务定义 **ID=9「迭代-Backlog交付」**），改派先取消旧交付任务再重建。已完成的交付任务取消失败只告警，不阻断改派。
 - 需求选择器（新建迭代 / 追加需求）默认过滤已进入迭代的需求（存在未取消迭代项），支持名称/类型/计划周(w) 过滤；转入接口仍兜底判重（未取消即拒绝）。
 - 成员角色：产品 / 业务 / 项目 / 前端 / 后端 / 测试 / 客户端；成员由管理员或迭代项负责人维护（`PATCH /api/backlogs/{id}/members` 或 `lita-work` MCP `update_backlog_members`，支持 userId 与姓名），转入迭代时不再从需求自动带入。
+- `lita-work` MCP 的迭代项工具与网页写能力等价（权限复用成员/负责人/管理员规则）：`get_backlog`、`update_backlog_members`、`update_backlog`（预期上线时间、负责人改派）、`change_backlog_status`（状态 + 备注）、`move_backlog`（移动迭代）、`create_backlog_task`（子任务/交付任务）、`create_backlog_release_ticket`（发起提测工单）。
 - 状态：等待 → 执行 → 测试 → 发布 → 完成，允许回退与取消；由成员或管理员手动流转，记录操作人与各阶段时间；取消时联动取消未结束的交付任务。状态与任务/需求状态解耦。推进走弹窗（选状态 + 备注可空，备注写入事件流），网页两处（迭代表格/迭代项详情）共用同一弹窗组件，不再使用行内下拉。
 - 迭代项有自己的标题：转入后异步用 `title-naming` 场景生成 `「BL-{id}」+ 模型标题`（乐观条件更新，失败保留需求名快照兜底，不覆盖人工修改）；迭代表格展示迭代项标题并链接 `/backlogs/{id}`（需求仅保留 `#id` 提示）。
 - 属性：预期上线时间到小时（`backlogs.expectedOnlineAt`，timestamptz，北京时间展示），成员或管理员可改（`PATCH /api/backlogs/{id}`）。

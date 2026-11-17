@@ -9,11 +9,34 @@ function buildTools(options?: {
   worker?: { id: number; name: string };
 }): {
   tools: Map<string, Handler>;
-  backlogs: { updateMembers: jest.Mock; findOneMarkdown: jest.Mock };
+  backlogs: {
+    updateMembers: jest.Mock;
+    updateBacklog: jest.Mock;
+    updateStatus: jest.Mock;
+    move: jest.Mock;
+    createTask: jest.Mock;
+    createReleaseTicket: jest.Mock;
+    findOneMarkdown: jest.Mock;
+  };
+  tickets: { ticketMarkdown: jest.Mock };
 } {
   const backlogs = {
     updateMembers: jest.fn().mockResolvedValue({ id: 33 }),
+    updateBacklog: jest.fn().mockResolvedValue({ id: 33 }),
+    updateStatus: jest.fn().mockResolvedValue({ id: 33 }),
+    move: jest.fn().mockResolvedValue({ id: 33 }),
+    createTask: jest
+      .fn()
+      .mockResolvedValue({ id: 55, code: 'TK-0055', title: '子任务' }),
+    createReleaseTicket: jest.fn().mockResolvedValue({
+      ticketId: 88,
+      ticketCode: 'WO-0088',
+      title: '提测',
+    }),
     findOneMarkdown: jest.fn().mockResolvedValue('# 迭代项详情'),
+  };
+  const tickets = {
+    ticketMarkdown: jest.fn().mockResolvedValue('# 工单详情'),
   };
   const tools = new Map<string, Handler>();
   const server = {
@@ -21,7 +44,7 @@ function buildTools(options?: {
       tools.set(name, handler);
     },
   } as unknown as McpServer;
-  new WorkIterationTools(backlogs as never).register(server, {
+  new WorkIterationTools(backlogs as never, tickets as never).register(server, {
     user: options?.user ?? {
       id: 1,
       name: '张三',
@@ -29,10 +52,32 @@ function buildTools(options?: {
     },
     worker: options?.worker,
   } as never);
-  return { tools, backlogs };
+  return { tools, backlogs, tickets };
 }
 
 describe('WorkIterationTools', () => {
+  it('注册迭代项工具', () => {
+    const { tools } = buildTools();
+    expect([...tools.keys()]).toEqual([
+      'get_backlog',
+      'update_backlog_members',
+      'update_backlog',
+      'change_backlog_status',
+      'move_backlog',
+      'create_backlog_task',
+      'create_backlog_release_ticket',
+    ]);
+  });
+
+  it('get_backlog 返回迭代项 Markdown', async () => {
+    const { tools, backlogs } = buildTools();
+    const result = (await tools.get('get_backlog')!({ backlogId: 33 })) as {
+      content: { text: string }[];
+    };
+    expect(backlogs.findOneMarkdown).toHaveBeenCalledWith(33);
+    expect(result.content[0].text).toBe('# 迭代项详情');
+  });
+
   it('update_backlog_members 以管理员身份更新并返回迭代项 Markdown', async () => {
     const { tools, backlogs } = buildTools();
     const result = (await tools.get('update_backlog_members')!({
@@ -78,5 +123,98 @@ describe('WorkIterationTools', () => {
         workerId: 1002,
       }),
     );
+  });
+
+  it('update_backlog 透传预期上线时间与负责人', async () => {
+    const { tools, backlogs } = buildTools();
+    await tools.get('update_backlog')!({
+      backlogId: 33,
+      expectedOnlineAt: '2026-11-20T18:00:00+08:00',
+      ownerWorkerId: 1002,
+    });
+    expect(backlogs.updateBacklog).toHaveBeenCalledWith(
+      33,
+      {
+        expectedOnlineAt: '2026-11-20T18:00:00+08:00',
+        ownerWorkerId: 1002,
+      },
+      expect.objectContaining({ userId: 1, isAdmin: true }),
+    );
+    expect(backlogs.findOneMarkdown).toHaveBeenCalledWith(33);
+  });
+
+  it('change_backlog_status 透传状态与备注', async () => {
+    const { tools, backlogs } = buildTools();
+    await tools.get('change_backlog_status')!({
+      backlogId: 33,
+      status: '测试',
+      remark: '提测通过',
+    });
+    expect(backlogs.updateStatus).toHaveBeenCalledWith(
+      33,
+      '测试',
+      expect.objectContaining({ userName: '张三' }),
+      '提测通过',
+    );
+    expect(backlogs.findOneMarkdown).toHaveBeenCalledWith(33);
+  });
+
+  it('move_backlog 透传目标迭代', async () => {
+    const { tools, backlogs } = buildTools();
+    await tools.get('move_backlog')!({ backlogId: 33, iterationId: 7 });
+    expect(backlogs.move).toHaveBeenCalledWith(
+      33,
+      7,
+      expect.objectContaining({ userId: 1 }),
+    );
+    expect(backlogs.findOneMarkdown).toHaveBeenCalledWith(33);
+  });
+
+  it('create_backlog_task 返回新建任务信息与迭代项详情', async () => {
+    const { tools, backlogs } = buildTools();
+    const result = (await tools.get('create_backlog_task')!({
+      backlogId: 33,
+      title: '子任务',
+      agentId: 1002,
+    })) as { content: { text: string }[] };
+    expect(backlogs.createTask).toHaveBeenCalledWith(
+      33,
+      {
+        title: '子任务',
+        description: null,
+        templateId: null,
+        agentId: 1002,
+      },
+      expect.objectContaining({ userId: 1 }),
+    );
+    expect(result.content[0].text).toContain('已创建任务 #55（TK-0055）');
+    expect(result.content[0].text).toContain('# 迭代项详情');
+  });
+
+  it('create_backlog_release_ticket 透传创建人并返回工单 Markdown', async () => {
+    const { tools, backlogs, tickets } = buildTools({
+      user: { id: 2, name: '负责人', role: UserRole.MEMBER },
+      worker: { id: 1002, name: '迭代负责人机器人' },
+    });
+    const result = (await tools.get('create_backlog_release_ticket')!({
+      backlogId: 33,
+      supplement: '请重点验证登录',
+    })) as { content: { text: string }[] };
+    expect(backlogs.createReleaseTicket).toHaveBeenCalledWith(
+      33,
+      { title: undefined, supplement: '请重点验证登录' },
+      expect.objectContaining({
+        userId: 2,
+        userName: '负责人',
+        isAdmin: false,
+        workerId: 1002,
+      }),
+      {
+        user: { id: 2, name: '负责人', role: UserRole.MEMBER },
+        worker: { id: 1002, name: '迭代负责人机器人' },
+      },
+    );
+    expect(tickets.ticketMarkdown).toHaveBeenCalledWith(88);
+    expect(result.content[0].text).toBe('# 工单详情');
   });
 });
