@@ -137,7 +137,8 @@ function toolText(value: unknown): string | undefined {
 }
 
 /** 从参数 JSON 提取一行摘要（shell 命令 / 文件路径 / 搜索词等） */
-function toolSummary(argsText?: string): string | undefined {
+// oxlint-disable-next-line react/only-export-components
+export function toolSummary(argsText?: string): string | undefined {
   if (!argsText?.trim()) return undefined
   let args: Record<string, unknown>
   try {

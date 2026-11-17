@@ -47,7 +47,7 @@
 - `frontend/src/pages/`：页面实现。修改页面时从路由定位，不在本文件维护页面快照。
 - `frontend/src/components/MarkdownEditor.tsx`：Milkdown Crepe Markdown 编辑器；`MarkdownViewer.tsx` 为通用只读渲染，`MarkdownField.tsx` 为表单封装。
 - `frontend/src/components/detail/`：详情页布局、我的 AI 面板和脚本运行详情。
-- `frontend/src/components/task-detail/`：任务正文与需求方/执行方协作面板。
+- `frontend/src/components/task-detail/`：任务正文、会话（身份发送 + 提问作答 + 单行活动滚动条）与任务操作面板。
 - `frontend/src/lib/event-source.ts`：统一 SSE 封装。
 - `frontend/src/lib/pinyin-search.ts`：前端拼音搜索。
 - `docs/UI_STANDARD.md`：按钮反馈与 Markdown 外框的完整 UI 规范。
@@ -126,7 +126,7 @@
 ### 布局、Markdown 与搜索
 
 - 详情页只允许两种布局：`DetailPageLayout` 传入 `ai` 时为“内容区 + 右侧 AI 区”，不传时为单栏。不得新增永久业务侧栏或第三栏；窄屏 AI 收为浮动入口和全屏抽屉。
-- 普通详情页 AI 使用 `DetailAgentPanel`；任务/工单详情使用 `TaskWorkbenchPanel`，按 `workbenchRoles` 展示需求方、执行方与「我的 AI」。业务属性、历史、筛选、产物等全部留在内容区。
+- 普通详情页与任务/工单详情的右侧 AI 区统一使用 `DetailAgentPanel`（仅「我的助理」个人 AI 会话）；任务对话与提问答复在正文「会话」分区完成，不再占用 AI 区。业务属性、历史、筛选、产物等全部留在内容区。
 - 「我的 AI」会话按详情对象隔离：任务使用 `agent:task:{id}`，其他详情使用 `agent:page:{type}:{hash}`。新增详情上下文类型时同步扩展后端白名单；`contextReadUrl` 只允许站内只读 `/api/` 地址。
 - `MarkdownEditor` 是非受控组件，切换内容用 `key` 重挂载；保存前通过 ref 的 `getMarkdown()` 取实时内容。Mermaid 统一走 `src/lib/mermaid.ts`，解析失败回退源码与错误。
 - 任务定义、机器人相关的前端搜索和联想必须复用 `matchesPinyinSearch`；后端关键词过滤复用 `backend/src/common/pinyin-search.ts`。支持原文、无声调全拼和首字母，不要退回纯子串匹配。
@@ -240,6 +240,7 @@
 - 子任务事件通过 `task_worker_inbox` 唤醒父机器人；queued/delivered 超时、会话失败和缺失事件由 LOOP 恢复，按 2/10/30 分钟退避持续重试，不因失败次数转移需求方或执行方。父任务等待用户答复期间子任务事件保持排队，父任务恢复后由父任务答复子任务。根任务、父任务已结束或需求方不是父任务执行方的 AI 需求方，其消息回复、提问答复和自动验收统一由需求方机器人一次性会话处理，事件保持开放并持续重试，不静默丢弃。
 - 真人执行方给 AI 需求方子任务发消息时写入父机器人收件箱；AI 经消息回复接口响应，可多次往返且不改变任务状态。
 - 任务列表、详情和对话使用 SSE：订阅先收快照，再收任务、实时行等增量；看板不恢复定时轮询。
+- 任务/工单详情正文「会话」是任务对话的唯一交互入口：按当前用户角色自动选择需求方/执行方身份发送（待验收时需求方发送等同验收不通过，管理员只可答复提问），机器人提问在会话内直接作答；运行中只展示一行实时活动（工具名 + 参数摘要或最新思考行），不渲染工具调用卡片与思考过程。右侧「我的助理」只承载个人 AI 会话。
 - 任务执行中继续发送的消息直接投递当前 opencode 会话，由 opencode 按序处理；平台不维护发送队列。opencode 接受 prompt 后才写反馈事件。
 - 任务外部事件（lita-proxy 工单回调）：执行机器人经 MCP `get_task_callback_url` 领取任务级回调地址（`POST /api/tasks/{id}/external-event`，纯内网免鉴权），建单时作为 `callbackUrl` 传给 proxy；回调按「任务 + 工单 + 状态」幂等落 `task_external_events`，回合仍在执行时直投当前会话，回合已结束转「待继续」由 LOOP 恢复，任务已结束只记录不复活，暂不可投递按 2/10/30 分钟退避重试。
 - 定时唤醒（`wakeups`，MCP `schedule_task_wakeup` / `cancel_task_wakeup` / `schedule_agent_wakeup` / `cancel_agent_wakeup`）：机器人自主设置「多久后唤醒我」的回访提醒，用于等待人工确认/答复、等待工单或脚本结果等长任务场景。任务唤醒仅任务当前执行机器人可设置，落库后由 `WakeupsService` 每 15 秒扫描到期投递，投递规则与外部事件一致（回合在跑直投会话、回合结束转「待继续」由 LOOP 按容量恢复、任务结束只记录），**待反馈等暂不可接收状态按 2/10/30 分钟退避等待状态变化**；「我的 AI」会话唤醒经个人 AGENT 会话投递（`agent:global` / `agent:task:{id}` / `agent:page:{type}:{hash}`，会话繁忙时退避）。每任务 / 每会话范围只保留一条 scheduled，新设置覆盖旧的；`delayMinutes`（0.5~43200）与 `wakeAt`（ISO 8601，无时区按北京时间）二选一，`note` 随唤醒消息回传。

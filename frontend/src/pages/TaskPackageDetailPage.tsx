@@ -6,7 +6,7 @@ import { Skeleton } from '@appica/ui-react/skeleton'
 import {
   api,
   type TaskChatMessage,
-  type TaskChatQuestion,
+  type TaskChatPerspective,
   type TaskChatSnapshot,
   type TaskChatStreamMessage,
   type TaskDocumentContent,
@@ -16,6 +16,7 @@ import {
   type TaskPipelineStage,
   type WorkbenchTask,
 } from '../lib/api'
+import { useAuth } from '../context/AuthContext'
 import { TaskStatusBadge } from '../components/StatusBadge'
 import { PageBreadcrumb, type Crumb } from '../components/PageBreadcrumb'
 import { DetailPageLayout } from '../components/detail/DetailPageLayout'
@@ -23,7 +24,6 @@ import { TopicsPanel } from '../components/topics/TopicsPanel'
 import { DetailAgentPanel } from '../components/detail/DetailAgentPanel'
 import { TaskActions } from '../components/task-detail/TaskActions'
 import { TaskConversationView } from '../components/task-detail/TaskConversationView'
-import { TaskWorkbenchPanel } from '../components/task-detail/TaskWorkbenchPanel'
 import { TaskDocumentsPanel } from '../components/task-detail/TaskDocumentsPanel'
 import { TaskEventsPanel } from '../components/task-detail/TaskEventsPanel'
 import { TaskInfoPanel } from '../components/task-detail/TaskInfoPanel'
@@ -73,8 +73,8 @@ function readTaskTabFromHash(fallback: TaskContentTab): TaskContentTab {
 
 /**
  * 任务详情：正文按「需求 / 交付 / 任务 / 信息 / 事件 / 文档 / 会话 / 复盘」组织，
- * 默认打开「需求」；右侧复用工作台的任务协作面板（需求方 / 执行方 / 我的 AI）。
- * 正文「会话」只读实时展示多方交互，右侧按当前用户身份参与任务。
+ * 默认打开「需求」；右侧固定为「我的助理」个人 AI 会话。
+ * 正文「会话」实时展示多方交互，并按当前用户身份发送消息、答复机器人提问。
  */
 export function TaskPackageDetailPage() {
   const { id, topicId } = useParams<{ id: string; topicId?: string }>()
@@ -113,7 +113,7 @@ export function TaskDetailView({
   hideBreadcrumb?: boolean
   /** 工作台模式：需求方/执行方可在「交付」Tab 创建与编辑交付文档 */
   handoffEditable?: boolean
-  /** 普通详情页：右侧任务协作面板外置并默认收起；工作台保持常驻 */
+  /** 普通详情页：右侧「我的助理」外置并默认收起；工作台保持常驻 */
   collapsibleCollaboration?: boolean
   /** 分区与 URL hash 双向同步（/tasks/302#documents 直达）；工单详情与工作台保持原状 */
   syncTabHash?: boolean
@@ -125,6 +125,7 @@ export function TaskDetailView({
   focusTopicId?: number
 }) {
   const navigate = useNavigate()
+  const { user } = useAuth()
   const [task, setTask] = useState<TaskPackage | null>(null)
   /** 根任务所属需求（子任务兜底「需求」分区关联跳转） */
   const [rootProjectId, setRootProjectId] = useState<number | null>(null)
@@ -240,6 +241,60 @@ export function TaskDetailView({
     }
   }
 
+  /** 「会话」页签未读：停留在其它分区时累计新消息，进入会话即清零 */
+  const [conversationUnread, setConversationUnread] = useState(0)
+  const conversationUnreadRef = useRef(0)
+  const seenConversationIdsRef = useRef(new Set<string>())
+  const conversationTaskRef = useRef<number | null>(null)
+  /** 当前任务的会话是否已完成首次对齐（此后到达的消息才计入未读） */
+  const conversationSeededRef = useRef(false)
+  useEffect(() => {
+    const emit = (next: number) => {
+      if (conversationUnreadRef.current === next) return
+      conversationUnreadRef.current = next
+      setConversationUnread(next)
+    }
+    // 切换任务时重新对齐，避免把上一个任务的角标带过来
+    if (conversationTaskRef.current !== taskId) {
+      conversationTaskRef.current = taskId
+      conversationSeededRef.current = false
+      seenConversationIdsRef.current = new Set()
+      emit(0)
+    }
+    if (!conversationSeededRef.current) {
+      // 首屏快照返回前不累计未读，避免刚打开任务就出现角标
+      for (const message of messages) {
+        seenConversationIdsRef.current.add(message.id)
+      }
+      if (messages.length > 0 || !loading) conversationSeededRef.current = true
+      emit(0)
+      return
+    }
+    if (contentTab === 'conversation') {
+      for (const message of messages) {
+        seenConversationIdsRef.current.add(message.id)
+      }
+      emit(0)
+      return
+    }
+    const ownSenderId = user ? `user:${user.name ?? user.id}` : null
+    let added = 0
+    for (const message of messages) {
+      if (message.taskId !== taskId) continue
+      if (seenConversationIdsRef.current.has(message.id)) continue
+      seenConversationIdsRef.current.add(message.id)
+      if (
+        ownSenderId &&
+        message.sender.kind === 'user' &&
+        message.sender.id === ownSenderId
+      ) {
+        continue
+      }
+      added += 1
+    }
+    if (added > 0) emit(conversationUnreadRef.current + added)
+  }, [messages, contentTab, taskId, user, loading])
+
   /** 当前用户在该任务中的工作台角色；加载失败时降级为仅「我的 AI」 */
   const roleSeq = useRef(0)
   const loadWorkbenchTask = useCallback(async () => {
@@ -302,7 +357,7 @@ export function TaskDetailView({
     void loadTaskDocuments()
   }, [loadTaskDocuments, docsRevision])
 
-  /** 右侧任务协作操作后同步刷新任务、角色与文档，并通知工作台刷新任务列表 */
+  /** 会话发送、答复提问或助理回合结束后同步刷新任务、角色与文档 */
   const refreshTaskPanel = useCallback(async () => {
     await Promise.all([
       loadRef.current(),
@@ -453,6 +508,8 @@ export function TaskDetailView({
             }
           }),
         )
+        // 答复后任务可能从「待反馈」推进到「待继续」，同步刷新任务与角色
+        await refreshTaskPanel()
       } catch (e) {
         setError((e as Error).message)
         throw e
@@ -460,7 +517,7 @@ export function TaskDetailView({
         setBusy(false)
       }
     },
-    [taskId],
+    [taskId, refreshTaskPanel],
   )
 
   const currentTask = task?.id === taskId ? task : null
@@ -496,6 +553,52 @@ export function TaskDetailView({
       }
     : null
 
+  const conversationRoles = interactiveTask?.workbenchRoles ?? []
+  const isAdmin = user?.role === '管理员'
+
+  /** 会话发送：按当前用户角色自动选择身份与投递接口；返回错误文案，成功为 null */
+  const sendConversationMessage = useCallback(
+    async (
+      text: string,
+      perspective: TaskChatPerspective,
+    ): Promise<string | null> => {
+      if (!currentTask || currentTask.id !== taskId) {
+        return '任务尚未加载完成'
+      }
+      if (currentTask.status === '已结束') return '任务已结束，不能继续对话'
+      const roles =
+        workbenchTask?.id === taskId ? workbenchTask.workbenchRoles : []
+      if (perspective === 'requester' && !roles.includes('requester')) {
+        return '仅需求方可以需求方身份发送消息'
+      }
+      if (perspective === 'responsible' && !roles.includes('agent')) {
+        return '仅执行方可以执行方身份发送消息'
+      }
+      setBusy(true)
+      setError(null)
+      try {
+        if (perspective === 'requester') {
+          // 需求方在待验收时发送消息等同于验收不通过
+          await (currentTask.subStatus === '待验收'
+            ? api.workbenchRejectHandoff(taskId, text)
+            : api.sendTaskMessage(taskId, text, 'requester'))
+        } else {
+          // 执行中直接投递执行机器人会话，其余阶段按执行方补充反馈
+          await (currentTask.subStatus === '执行中'
+            ? api.workbenchSendMessage(taskId, text)
+            : api.sendTaskMessage(taskId, text, 'responsible'))
+        }
+        await refreshTaskPanel()
+        return null
+      } catch (e) {
+        return (e as Error).message
+      } finally {
+        setBusy(false)
+      }
+    },
+    [currentTask, taskId, workbenchTask, refreshTaskPanel],
+  )
+
   // 初始加载失败（没有任何数据）：页面内错误 + 重试
   if (!currentTask && !loading && error) {
     return (
@@ -527,16 +630,6 @@ export function TaskDetailView({
   const agentName = pipeline.find(
     (stage) => stage.task.id === currentTask.id,
   )?.agent?.name
-  const pendingQuestions = Array.from(
-    new Map(
-      messages
-        .map((message) => message.question)
-        .filter((question): question is TaskChatQuestion =>
-          Boolean(question && question.state === 'pending'),
-        )
-        .map((question) => [question.id, question]),
-    ).values(),
-  )
   const openRelatedTask =
     onOpenTask ?? ((id: number) => navigate(`/tasks/${id}`))
 
@@ -615,32 +708,24 @@ export function TaskDetailView({
       {pageHeader}
       <div className="flex min-h-0 flex-1 flex-col">
         <DetailPageLayout
-          aiLabel="任务协作"
+          aiLabel="我的助理"
           aiCollapsible={collapsibleCollaboration}
           aiOutsideContent={collapsibleCollaboration}
           aiOpen={collaborationOpen}
           onAiOpenChange={setCollaborationOpen}
           aiUnreadCount={collaborationUnread}
-          aiCollapseClassName="top-0 h-12"
           ai={
-            <TaskWorkbenchPanel
-              task={interactiveTask}
-              chat={interactiveChat}
+            <DetailAgentPanel
+              taskId={currentTask.id}
+              title="我的助理"
               visible={collapsibleCollaboration ? collaborationOpen : true}
               onUnreadChange={setCollaborationUnread}
-              onRefresh={refreshTaskPanel}
-              agent={
-                <DetailAgentPanel
-                  taskId={currentTask.id}
-                  embedded
-                  emptyTitle={`${currentTask.code} 的独立 AI 会话`}
-                  emptyHint="当前任务的对话与其它页面相互隔离；让 AI 查询、创建或推进任务"
-                  placeholder={`让 AI 处理 ${currentTask.code}，或输入其它指令…`}
-                  onRunFinished={() => {
-                    void refreshTaskPanel()
-                  }}
-                />
-              }
+              emptyTitle={`${currentTask.code} 的独立 AI 会话`}
+              emptyHint="当前任务的对话与其它页面相互隔离；让 AI 查询、创建或推进任务"
+              placeholder={`让 AI 处理 ${currentTask.code}，或输入其它指令…`}
+              onRunFinished={() => {
+                void refreshTaskPanel()
+              }}
             />
           }
         >
@@ -665,6 +750,11 @@ export function TaskDetailView({
                     }`}
                   >
                     {label}
+                    {key === 'conversation' && conversationUnread > 0 && (
+                      <span className="ml-1 inline-flex min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] leading-4 text-primary-foreground">
+                        {conversationUnread > 99 ? '99+' : conversationUnread}
+                      </span>
+                    )}
                   </button>
                 ))}
               </div>
@@ -780,9 +870,6 @@ export function TaskDetailView({
                 agentOwnerName={agentOwnerName}
                 interventionCount={interventionCount}
                 durationMs={durationMs}
-                busy={busy}
-                pendingQuestions={pendingQuestions}
-                onReplyQuestion={replyQuestion}
               />
             )}
 
@@ -801,8 +888,14 @@ export function TaskDetailView({
             {contentTab === 'conversation' && (
               <TaskConversationView
                 taskId={taskId}
+                task={currentTask}
                 messages={messages}
                 connection={connection}
+                roles={conversationRoles}
+                isAdmin={isAdmin}
+                busy={busy}
+                onSend={sendConversationMessage}
+                onReplyQuestion={replyQuestion}
               />
             )}
 
@@ -903,7 +996,7 @@ function TaskDetailSkeleton({
 
       <div className="flex min-h-0 flex-1 flex-col">
         <DetailPageLayout
-          aiLabel="任务协作"
+          aiLabel="我的助理"
           ai={
             <section className="flex h-full min-h-0 flex-col overflow-hidden rounded-[var(--radius-lg)] border border-border bg-background">
               <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-2">

@@ -1,13 +1,24 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Badge } from '@appica/ui-react/badge'
 import { MessageCircleQuestion } from '@appica/icons-react'
 import type {
   TaskChatMessage,
+  TaskChatPerspective,
   TaskChatQuestion,
+  TaskPackage,
+  WorkbenchRole,
 } from '../../lib/api'
 import { questionStatusLabel } from '../../lib/question'
+import { useImeEnterGuard } from '../../lib/ime-enter'
 import { ChatMarkdown } from '../ChatMarkdown'
+import { QuestionCard } from '../QuestionCard'
+import {
+  ChatComposerDock,
+  ChatComposerFrame,
+  ChatSendButton,
+} from '../agent-chat/ChatComposer'
 import { SenderLine, WorkerAvatar } from './WorkerAvatar'
+import { TaskActivityTicker } from './TaskActivityTicker'
 
 /** 任务详情「会话」Tab 的连接状态 */
 export type TaskConversationConnection =
@@ -18,36 +29,102 @@ export type TaskConversationConnection =
 /** 距离底部小于该值时仍视为停留在底部，实时内容继续跟随 */
 const FOLLOW_BOTTOM_THRESHOLD = 24
 
+export interface TaskConversationViewProps {
+  taskId: number
+  task: TaskPackage | null
+  messages: TaskChatMessage[]
+  connection: TaskConversationConnection
+  /** 当前用户在该任务中的角色（工作台口径） */
+  roles: WorkbenchRole[]
+  /** 当前用户是否管理员：可答复提问，但不以需求方身份发消息 */
+  isAdmin: boolean
+  /** 发送或答复进行中 */
+  busy: boolean
+  /** 以指定身份发送消息；返回错误文案，成功返回 null */
+  onSend: (
+    text: string,
+    perspective: TaskChatPerspective,
+  ) => Promise<string | null>
+  /** 回答（answers）或跳过（null）机器人提问 */
+  onReplyQuestion: (
+    questionId: string,
+    answers: string[][] | null,
+  ) => Promise<void>
+}
+
 /**
- * 任务详情「会话」：只读、实时展示多方交互内容。
- * 不渲染输入框、操作按钮、工具调用和思考过程；
- * question 以普通时间线文本展示问题与回答结果，不使用交互式问答组件。
+ * 任务详情「会话」：实时展示多方交互，并按当前用户身份发送消息与答复提问。
+ * 不渲染工具调用和思考过程，运行中只展示一行实时活动；提问以交互卡片作答。
  */
 export function TaskConversationView({
   taskId,
+  task,
   messages,
   connection,
-}: {
-  taskId: number
-  messages: TaskChatMessage[]
-  connection: TaskConversationConnection
-}) {
+  roles,
+  isAdmin,
+  busy,
+  onSend,
+  onReplyQuestion,
+}: TaskConversationViewProps) {
   const boxRef = useRef<HTMLDivElement>(null)
   /** 用户停留在底部时跟随最新消息；向上翻阅后保留当前位置 */
   const followBottomRef = useRef(true)
+  const [draft, setDraft] = useState('')
+  const [sending, setSending] = useState(false)
+  const [sendError, setSendError] = useState<string | null>(null)
+  const [perspective, setPerspective] =
+    useState<TaskChatPerspective>('requester')
+  const imeEnter = useImeEnterGuard()
+
+  const isRequester = roles.includes('requester')
+  const isAgent = roles.includes('agent')
+  const bothRoles = isRequester && isAgent
+  const canSend = isRequester || isAgent
+  const showComposer = Boolean(task) && (canSend || isAdmin)
+
+  const finished = task?.status === '已结束'
+  const awaitingAnswer = task?.subStatus === '待反馈'
+  const awaitingReview = task?.subStatus === '待验收'
+  const executing = task?.subStatus === '执行中'
+  /** 需求方与管理员可答复提问；执行方与旁观者只读 */
+  const canAnswerQuestions = (isRequester || isAdmin) && awaitingAnswer
+
+  /** 单一身份时直接使用该身份；双身份时按切换状态 */
+  const activePerspective: TaskChatPerspective = bothRoles
+    ? perspective
+    : isAgent
+      ? 'responsible'
+      : 'requester'
+
+  const sendDisabled =
+    !task ||
+    busy ||
+    sending ||
+    finished ||
+    !canSend ||
+    !draft.trim() ||
+    (activePerspective === 'responsible' && awaitingReview)
+
   const visibleMessages = useMemo(
     () =>
       messages.filter((message) =>
         message.kind === 'question'
           ? true
-          : Boolean(message.content?.trim()),
+          : Boolean(message.content?.trim()) || message.status === 'running',
       ),
     [messages],
   )
 
   useEffect(() => {
-    // 切换任务后重新定位到新任务的最新消息
+    // 切换任务后重新定位到新任务的最新消息，并清空未发送内容与身份
     followBottomRef.current = true
+    // oxlint-disable-next-line react/set-state-in-effect
+    setDraft('')
+    // oxlint-disable-next-line react/set-state-in-effect
+    setSendError(null)
+    // oxlint-disable-next-line react/set-state-in-effect
+    setPerspective('requester')
   }, [taskId])
 
   useEffect(() => {
@@ -63,6 +140,48 @@ export function TaskConversationView({
       box.scrollHeight - box.scrollTop - box.clientHeight <=
       FOLLOW_BOTTOM_THRESHOLD
   }
+
+  const selectPerspective = (next: TaskChatPerspective) => {
+    if (next === activePerspective) return
+    // 切换身份时清空未发送内容，避免把需求方内容误发成执行方消息
+    setDraft('')
+    setSendError(null)
+    setPerspective(next)
+  }
+
+  const sendMessage = useCallback(async () => {
+    const text = draft.trim()
+    if (!text || sendDisabled) return
+    setSending(true)
+    setSendError(null)
+    try {
+      const error = await onSend(text, activePerspective)
+      if (error) {
+        setSendError(error)
+      } else {
+        // 发送失败保留输入内容，便于直接重试
+        setDraft((current) => (current.trim() === text ? '' : current))
+      }
+    } finally {
+      setSending(false)
+    }
+  }, [draft, sendDisabled, onSend, activePerspective])
+
+  const placeholder = !task
+    ? '选择任务后开始交互'
+    : finished
+      ? '任务已结束，不能继续对话'
+      : !canSend
+        ? '管理员可直接答复提问，不能以需求方身份发送消息'
+        : activePerspective === 'requester'
+          ? awaitingReview
+            ? '输入验收不通过意见，发送后退回机器人…'
+            : '以需求方身份补充需求…'
+          : awaitingReview
+            ? '待需求方验收，如需继续修改请先撤销交付'
+            : isAgent && executing
+              ? '以执行方身份回复…'
+              : '以执行方身份提供反馈…'
 
   return (
     <section className="flex h-full min-h-0 flex-col overflow-hidden rounded-none bg-background">
@@ -103,19 +222,96 @@ export function TaskConversationView({
             暂无会话内容
           </div>
         ) : (
-          visibleMessages.map((message) =>
-            message.kind === 'question' && message.question ? (
-              <QuestionTimeline
-                key={message.id}
-                message={message}
-                question={message.question}
-              />
-            ) : (
-              <ConversationMessage key={message.id} message={message} />
-            ),
-          )
+          visibleMessages.map((message) => {
+            const question = message.question
+            if (message.kind === 'question' && question) {
+              return question.state === 'pending' && canAnswerQuestions ? (
+                <PendingQuestionCard
+                  key={message.id}
+                  message={message}
+                  question={question}
+                  busy={busy}
+                  onReply={onReplyQuestion}
+                />
+              ) : (
+                <QuestionTimeline
+                  key={message.id}
+                  message={message}
+                  question={question}
+                />
+              )
+            }
+            return <ConversationMessage key={message.id} message={message} />
+          })
         )}
       </div>
+
+      {showComposer && (
+        <ChatComposerDock>
+          <ChatComposerFrame
+            top={
+              bothRoles ? (
+                <div className="flex flex-wrap items-center gap-1 px-2 pt-2">
+                  {(
+                    [
+                      ['requester', '需求方'],
+                      ['responsible', '执行方'],
+                    ] as Array<[TaskChatPerspective, string]>
+                  ).map(([key, label]) => (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => selectPerspective(key)}
+                      className={`rounded-[var(--radius-md)] px-2.5 py-1 text-xs ${
+                        activePerspective === key
+                          ? 'bg-background-muted font-medium text-foreground-intense'
+                          : 'text-foreground-muted hover:text-foreground-intense'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              ) : undefined
+            }
+            right={
+              <ChatSendButton
+                onClick={() => void sendMessage()}
+                disabled={sendDisabled}
+              />
+            }
+          >
+            <textarea
+              value={draft}
+              rows={3}
+              disabled={
+                !task ||
+                busy ||
+                sending ||
+                finished ||
+                !canSend ||
+                (activePerspective === 'responsible' && awaitingReview)
+              }
+              onChange={(event) => setDraft(event.target.value)}
+              onCompositionStart={imeEnter.onCompositionStart}
+              onCompositionEnd={imeEnter.onCompositionEnd}
+              onKeyDown={(event) => {
+                if (event.key !== 'Enter' || event.shiftKey) return
+                if (imeEnter.isImeEnter(event)) return
+                event.preventDefault()
+                void sendMessage()
+              }}
+              placeholder={placeholder}
+              className="block h-[72px] w-full resize-none bg-transparent px-3 py-2 text-sm outline-none placeholder:text-foreground-subtle disabled:cursor-not-allowed disabled:opacity-60"
+            />
+          </ChatComposerFrame>
+          {sendError && (
+            <p role="alert" className="mt-1.5 text-[11px] text-error-foreground">
+              {sendError}
+            </p>
+          )}
+        </ChatComposerDock>
+      )}
     </section>
   )
 }
@@ -123,6 +319,7 @@ export function TaskConversationView({
 function ConversationMessage({ message }: { message: TaskChatMessage }) {
   const isUser = message.role === 'user'
   const running = message.status === 'running'
+  const content = message.content?.trim() ?? ''
   return (
     <article
       className={`flex items-start gap-3 px-1 ${isUser ? 'flex-row-reverse' : ''}`}
@@ -146,24 +343,52 @@ function ConversationMessage({ message }: { message: TaskChatMessage }) {
             </span>
           )}
         </div>
-        <div
-          className={`min-w-0 max-w-full text-sm leading-relaxed ${
-            isUser
-              ? 'rounded-none bg-primary px-4 py-2.5 text-primary-foreground'
-              : 'task-chat-markdown text-foreground-emphasis'
-          }`}
-        >
-          {isUser ? (
+        {isUser ? (
+          <div className="min-w-0 max-w-full rounded-none bg-primary px-4 py-2.5 text-sm leading-relaxed text-primary-foreground">
             <ChatMarkdown text={message.content} onPrimary />
-          ) : (
-            <>
-              <ChatMarkdown text={message.content} />
-              {running && (
-                <span className="ml-1 inline-block h-3.5 w-1 animate-pulse rounded-full bg-foreground-muted align-middle" />
-              )}
-            </>
-          )}
+          </div>
+        ) : (
+          <div className="min-w-0 max-w-full text-sm leading-relaxed text-foreground-emphasis">
+            {content && (
+              <>
+                <ChatMarkdown text={message.content} />
+                {running && (
+                  <span className="ml-1 inline-block h-3.5 w-1 animate-pulse rounded-full bg-foreground-muted align-middle" />
+                )}
+              </>
+            )}
+            {running && <TaskActivityTicker message={message} />}
+          </div>
+        )}
+      </div>
+    </article>
+  )
+}
+
+/** 待回答提问：直接嵌入可交互卡片（选项 / 自由输入 / 跳过） */
+function PendingQuestionCard({
+  message,
+  question,
+  busy,
+  onReply,
+}: {
+  message: TaskChatMessage
+  question: TaskChatQuestion
+  busy: boolean
+  onReply: (questionId: string, answers: string[][] | null) => Promise<void>
+}) {
+  return (
+    <article className="flex items-start gap-3 px-1">
+      <WorkerAvatar sender={message.sender} size={30} className="mt-0.5" />
+      <div className="min-w-0 flex-1">
+        <div className="mb-1.5 flex flex-wrap items-center gap-2">
+          <SenderLine sender={message.sender} time={message.createdAt} />
+          <span className="inline-flex items-center gap-1 text-[11px] text-info-foreground">
+            <MessageCircleQuestion className="size-3.5" />
+            提问 · {questionStatusLabel(question)}
+          </span>
         </div>
+        <QuestionCard question={question} busy={busy} onReply={onReply} />
       </div>
     </article>
   )
@@ -237,7 +462,7 @@ function QuestionTimeline({
                     ? '提问已失效。'
                     : question.state === 'answered'
                       ? '已回答。'
-                      : '尚未回答；请在「信息」Tab 处理待回答问题。'}
+                      : '尚未回答，等待需求方或管理员在会话中答复。'}
               </p>
             )}
           </div>

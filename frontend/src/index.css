@@ -685,3 +685,37 @@
   background-color: #ebdbb2;
   color: #282828;
 }
+
+/* 任务会话单行活动滚动条：新活动从下方进入、旧行向上移出，容器始终只有一行高度 */
+@keyframes task-activity-enter {
+  from {
+    transform: translateY(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+@keyframes task-activity-exit {
+  from {
+    transform: translateY(0);
+    opacity: 1;
+  }
+  to {
+    transform: translateY(-100%);
+    opacity: 0;
+  }
+}
+.task-activity-line-enter {
+  animation: task-activity-enter 240ms ease-out;
+}
+.task-activity-line-exit {
+  animation: task-activity-exit 240ms ease-in forwards;
+}
+@media (prefers-reduced-motion: reduce) {
+  .task-activity-line-enter,
+  .task-activity-line-exit {
+    animation: none;
+  }
+}

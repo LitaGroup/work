@@ -32,7 +32,6 @@ import { DetailAgentPanel } from '../components/detail/DetailAgentPanel'
 import { DetailPageLayout } from '../components/detail/DetailPageLayout'
 import { TopicsPanel } from '../components/topics/TopicsPanel'
 import { TaskActions } from '../components/task-detail/TaskActions'
-import { TaskWorkbenchPanel } from '../components/task-detail/TaskWorkbenchPanel'
 import { TicketCurrentNodePanel } from '../components/ticket-detail/TicketCurrentNodePanel'
 import { TaskDocumentsPanel } from '../components/task-detail/TaskDocumentsPanel'
 import { TaskEventsPanel } from '../components/task-detail/TaskEventsPanel'
@@ -382,7 +381,7 @@ export function TicketDetailPage() {
     [currentNodeTaskId, loadTaskData],
   )
 
-  /** 右侧任务协作操作后刷新工单与节点任务数据 */
+  /** 会话发送、答复或助理回合结束后刷新工单与节点任务数据 */
   const refreshTicket = useCallback(async () => {
     const row = await load()
     const nextTaskId = latestTaskId(row?.workflow)
@@ -499,32 +498,24 @@ export function TicketDetailPage() {
         {pageHeader}
         <div className="flex min-h-0 flex-1 flex-col">
           <DetailPageLayout
-            aiLabel="任务协作"
+            aiLabel="我的助理"
             aiCollapsible
             aiOutsideContent
             aiOpen={collaborationOpen}
             onAiOpenChange={setCollaborationOpen}
             aiUnreadCount={collaborationUnread}
-            aiCollapseClassName="top-0 h-12"
             ai={
-              <TaskWorkbenchPanel
-                task={isTaskNode ? currentNodeTask : null}
-                chat={isTaskNode ? currentNodeChat : null}
+              <DetailAgentPanel
+                taskId={currentNodeTaskId ?? undefined}
+                title="我的助理"
                 visible={collaborationOpen}
                 onUnreadChange={setCollaborationUnread}
-                onRefresh={refreshTicket}
-                agent={
-                  <DetailAgentPanel
-                    taskId={currentNodeTaskId ?? undefined}
-                    embedded
-                    emptyTitle={`${nodeTaskCode ?? ticket.code} 的独立 AI 会话`}
-                    emptyHint="当前工单的对话与其它页面相互隔离；让 AI 查询、创建或推进任务"
-                    placeholder={`让 AI 处理 ${nodeTaskCode ?? ticket.code}，或输入其它指令…`}
-                    onRunFinished={() => {
-                      void refreshTicket()
-                    }}
-                  />
-                }
+                emptyTitle={`${nodeTaskCode ?? ticket.code} 的独立 AI 会话`}
+                emptyHint="当前工单的对话与其它页面相互隔离；让 AI 查询、创建或推进任务"
+                placeholder={`让 AI 处理 ${nodeTaskCode ?? ticket.code}，或输入其它指令…`}
+                onRunFinished={() => {
+                  void refreshTicket()
+                }}
               />
             }
           >

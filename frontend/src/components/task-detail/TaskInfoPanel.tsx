@@ -1,7 +1,6 @@
 import { AlertCircle } from '@appica/icons-react'
-import type { TaskChatQuestion, TaskPackage } from '../../lib/api'
+import type { TaskPackage } from '../../lib/api'
 import { formatDuration } from '../../lib/duration'
-import { QuestionCard } from '../QuestionCard'
 
 interface TaskInfoPanelProps {
   task: TaskPackage
@@ -10,18 +9,11 @@ interface TaskInfoPanelProps {
   agentOwnerName: string | null
   interventionCount: number
   durationMs: number
-  busy: boolean
-  /** 待回答的机器人提问（交互组件只在信息 Tab 展示） */
-  pendingQuestions: TaskChatQuestion[]
-  onReplyQuestion: (
-    questionId: string,
-    answers: string[][] | null,
-  ) => Promise<void>
 }
 
 /**
- * 任务详情「信息」Tab：任务字段、待处理事项与待回答问题。
- * 不承载任务操作；会话 Tab 只读展示多方交互。
+ * 任务详情「信息」Tab：任务字段与待反馈事项。
+ * 不承载任务操作；机器人提问统一在「会话」Tab 答复。
  */
 export function TaskInfoPanel({
   task,
@@ -30,12 +22,7 @@ export function TaskInfoPanel({
   agentOwnerName,
   interventionCount,
   durationMs,
-  busy,
-  pendingQuestions,
-  onReplyQuestion,
 }: TaskInfoPanelProps) {
-  const finished = task.status === '已结束'
-
   return (
     <section className="h-full min-h-0 overflow-y-auto rounded-none bg-background">
       <div className="flex flex-col gap-5 p-4">
@@ -121,25 +108,6 @@ export function TaskInfoPanel({
               </p>
             )}
           </div>
-        )}
-
-        {pendingQuestions.length > 0 && (
-          <section>
-            <h2 className="mb-2 text-sm font-semibold text-foreground-intense">
-              待回答问题（{pendingQuestions.length}）
-            </h2>
-            <div className="flex flex-col gap-3">
-              {pendingQuestions.map((question) => (
-                <QuestionCard
-                  key={question.id}
-                  question={question}
-                  busy={busy}
-                  disabled={finished || task.subStatus !== '待反馈'}
-                  onReply={onReplyQuestion}
-                />
-              ))}
-            </div>
-          </section>
         )}
       </div>
     </section>

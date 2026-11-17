@@ -51,7 +51,7 @@ interface DetailPageLayoutProps {
   aiUnreadCount?: number
   /** 宽屏时把 AI 面板移到正文灰色画布之外，作为画布右侧的独立栏 */
   aiOutsideContent?: boolean
-  /** 收起按钮定位容器类；默认适配 36px 标题栏，任务协作面板可传更高的高度 */
+  /** 收起按钮定位容器类；默认适配 36px 标题栏，其它面板可按自身标题高度覆盖 */
   aiCollapseClassName?: string
   className?: string
 }
