@@ -229,9 +229,12 @@ export class TasksAgentService {
     const task = await this.tasksService.findOneDetail(taskId);
     const canOperate = this.includes(scope, task);
     if (!canOperate && !scope.canReadVisibleTasks) {
-      throw new ForbiddenException(
-        '仅任务需求方、执行方或负责方可以读取该任务',
-      );
+      const treeVisible = await this.isTreeParticipant(scope, task);
+      if (!treeVisible) {
+        throw new ForbiddenException(
+          '仅任务需求方、执行方或负责方可以读取该任务',
+        );
+      }
     }
     const names = await this.namesOf([task]);
     const documents = await this.taskDocuments
@@ -504,6 +507,22 @@ export class TasksAgentService {
       where.push({ agentId: In(scope.responsibleWorkerIds) });
     }
     return where;
+  }
+
+  /**
+   * 同一任务树内的只读可见性：调用方是该工作流任一任务的需求方/执行方/负责方时，
+   * 允许读取同 rootId 的其它任务（协作所需的父任务、兄弟任务等）。
+   * 根任务自身不在此放行范围（需由 includes 命中），避免放大可见范围。
+   */
+  private async isTreeParticipant(
+    scope: AgentTaskScope,
+    task: Task,
+  ): Promise<boolean> {
+    const rootId = task.rootId ?? task.id;
+    if (!rootId || rootId === task.id) return false;
+    const where = this.whereOf(scope).map((item) => ({ ...item, rootId }));
+    if (where.length === 0) return false;
+    return (await this.tasks.count({ where })) > 0;
   }
 
   /** 当前身份是否属于任务需求方/执行方 */

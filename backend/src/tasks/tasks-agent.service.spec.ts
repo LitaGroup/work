@@ -39,8 +39,12 @@ function buildService(task: ReturnType<typeof buildTask>) {
     listTaskDocuments: jest.fn().mockResolvedValue([]),
     taskDirectory: jest.fn().mockReturnValue('/task/20261105/TK-0042'),
   };
+  const tasksRepo = {
+    find: jest.fn().mockResolvedValue([]),
+    count: jest.fn().mockResolvedValue(0),
+  };
   const service = new TasksAgentService(
-    { find: jest.fn() } as never,
+    tasksRepo as never,
     { find: jest.fn() } as never,
     { find: jest.fn().mockResolvedValue([]) } as never,
     { find: jest.fn().mockResolvedValue([]) } as never,
@@ -52,7 +56,7 @@ function buildService(task: ReturnType<typeof buildTask>) {
     } as never,
     { findForUser: jest.fn().mockResolvedValue(null) } as never,
   );
-  return { service, taskDocuments };
+  return { service, taskDocuments, tasksRepo };
 }
 
 function scopeWith(overrides: Partial<AgentTaskScope> = {}): AgentTaskScope {
@@ -84,6 +88,50 @@ describe('TasksAgentService 可见任务读取', () => {
       service.detailMarkdown(
         scopeWith({ workerIds: [2001], canReadVisibleTasks: false }),
         42,
+      ),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('普通执行机器人可只读读取同一任务树内的其它任务', async () => {
+    const { service, tasksRepo } = buildService(
+      buildTask({
+        id: 43,
+        rootId: 42,
+        requesterType: 'worker',
+        requesterId: 2002,
+      }),
+    );
+    tasksRepo.count.mockResolvedValue(1);
+
+    const markdown = await service.detailMarkdown(
+      scopeWith({
+        workerIds: [2001],
+        canReadVisibleTasks: false,
+      }),
+      43,
+    );
+
+    expect(tasksRepo.count).toHaveBeenCalled();
+    const countCalls = tasksRepo.count.mock.calls as [
+      { where: { rootId?: number }[] },
+    ][];
+    expect(countCalls[0][0].where.every((item) => item.rootId === 42)).toBe(
+      true,
+    );
+    expect(markdown).toContain('我的角色：查看者（只读）');
+    expect(markdown).toContain('## 只读访问');
+  });
+
+  it('普通执行机器人仍不能读取其它任务树的任务', async () => {
+    const { service, tasksRepo } = buildService(
+      buildTask({ id: 43, rootId: 42 }),
+    );
+    tasksRepo.count.mockResolvedValue(0);
+
+    await expect(
+      service.detailMarkdown(
+        scopeWith({ workerIds: [2001], canReadVisibleTasks: false }),
+        43,
       ),
     ).rejects.toBeInstanceOf(ForbiddenException);
   });
