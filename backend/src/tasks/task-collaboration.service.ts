@@ -17,6 +17,7 @@ import { TaskMessage } from './task-message.entity';
 import { TaskTemplate } from './task-template.entity';
 import { TaskChatService } from './task-chat.service';
 import type { TaskChatQuestionInfo, TaskChatSender } from './task-chat.types';
+import { TaskContextService } from './task-context.service';
 import { TaskDeliveryService } from './task-delivery.service';
 import { TaskDispatchService } from './task-dispatch.service';
 import { TaskNotifyService } from './task-notify.service';
@@ -71,6 +72,7 @@ export class TaskCollaborationService {
     private readonly taskChat: TaskChatService,
     private readonly taskNotify: TaskNotifyService,
     private readonly workerInbox: TaskWorkerInboxService,
+    private readonly taskContext: TaskContextService,
   ) {}
 
   /** task-defines：仅返回当前确有启用处理机器人的任务定义。 */
@@ -129,6 +131,7 @@ export class TaskCollaborationService {
   /**
    * 父任务执行方或需求方创建子任务：执行方要求任务处于执行中，
    * 需求方在任务未结束时均可追加子任务。子任务需求方为当前操作人。
+   * 描述自动附带系统上下文（任务树 / 迭代 / 相关工单 / 交付文档 + MCP 读取指引）。
    */
   async createSubtaskForActor(
     parentId: number,
@@ -168,9 +171,13 @@ export class TaskCollaborationService {
       throw new BadRequestException('该任务定义当前没有启用的处理机器人');
     }
     const operatorName = actorName(actor);
+    const context = await this.taskContext.buildSubtaskContext(parent.id);
+    const description = input.description ?? input.input ?? null;
     const child = await this.tasksService.create({
       title: input.title?.trim() ?? '',
-      description: input.description ?? input.input ?? null,
+      description: description?.trim()
+        ? `${description}\n\n---\n\n${context}`
+        : context,
       input: input.input ?? null,
       outputSpec: input.outputSpec ?? null,
       templateId: template.id,

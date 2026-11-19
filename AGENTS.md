@@ -159,7 +159,7 @@
 - **负责人/需求方自动列入成员**（系统维护、不可手动移除、不授予成员操作权限）：负责人取 `ownerWorkerId`（真人或 AI 机器人），需求方取 `projects.owner` 姓名对应的真人机器人；自动行角色为 负责人/需求方，按 `(role, workerId)` 去重，同一人不同角色显示多次。需求方在需求编辑/飞书同步变更时联动刷新该需求全部未取消迭代项的成员行。
 - 成员权限按机器人判定：仅「手动成员」授予操作权限（管理员与负责人既有规则不变），自动列入的负责人/需求方只展示不入权限。
 - 迭代项飞书沟通群按成员机器人进群：真人机器人 → 绑定真人 open_id，AI 机器人 → 绑定的飞书应用 app_id；成员新增（含负责人/需求方自动列入）自动拉入已有群，**只加不减**（移除成员不踢人），`feishu_bot_backlog_chats.memberWorkerIds` 跟踪已入群机器人。升级前的存量群没有成员跟踪，不能假定成员已在群内：迁移 `1801300000000` 重置既有跟踪，对账（非终态）按当前全部成员实际补拉（飞书拉人接口忽略已入群成员，重复调用安全），上线后一轮对账补齐历史遗漏成员；对账校验群存活，飞书侧已解散（`chat_status=dissolved`）或 chat_id 失效（错误码 232006）时把绑定置为 `destroyed` 并记录原因，详情页重新提供「飞书建群」。
-- `lita-work` MCP 的迭代项工具与网页写能力等价（权限复用成员/负责人/管理员规则）：`get_backlog`、`update_backlog_members`、`update_backlog`（预期上线时间、负责人改派）、`change_backlog_status`（状态 + 备注）、`move_backlog`（移动迭代）、`create_backlog_task`（子任务/交付任务）、`create_backlog_release`（批量提测：迭代项 + 提测端/测试人员/分支/地址）。
+- `lita-work` MCP 的迭代项工具与网页写能力等价（权限复用成员/负责人/管理员规则）：`get_backlog`、`get_iteration`（迭代详情）、`update_backlog_members`、`update_backlog`（预期上线时间、负责人改派）、`change_backlog_status`（状态 + 备注）、`move_backlog`（移动迭代）、`create_backlog_task`（子任务/交付任务）、`create_backlog_release`（批量提测：迭代项 + 提测端/测试人员/分支/地址）。
 - 状态：等待 → 执行 → 测试 → 发布 → 完成，允许回退与取消；由成员或管理员手动流转，记录操作人与各阶段时间；取消时联动取消未结束的交付任务。状态与任务/需求状态解耦。推进走弹窗（选状态 + 备注可空，备注写入事件流），网页两处（迭代表格/迭代项详情）共用同一弹窗组件，不再使用行内下拉。
 - 迭代项有自己的标题：转入后异步用 `title-naming` 场景生成 `「BL-{id}」+ 模型标题`（乐观条件更新，失败保留需求名快照兜底，不覆盖人工修改）；迭代表格展示迭代项标题并链接 `/backlogs/{id}`（需求仅保留 `#id` 提示）。
 - 属性：预期上线时间到小时（`backlogs.expectedOnlineAt`，timestamptz，北京时间展示），成员或管理员可改（`PATCH /api/backlogs/{id}`）。
@@ -168,7 +168,7 @@
 - 事件流：`backlog_events` append-only 记录 created / status（from/to/remark）/ moved / owner（负责人 from/to/taskId）/ release-ticket（提测工单）等，`GET /api/backlogs/{id}/events`；`.md` 视图附文档清单与最近事件。
 - 任务与工单面板：`GET /api/backlogs/{id}/tasks` 返回交付任务为根的任务树（含全部子任务）与相关工单（`tickets.backlogId` ∪ `tickets.taskId` ∪ `ticket_workflow_runs.taskId` 去重）。
 - 提测：迭代项详情页「提测」按钮按系统工作流 `release-ticket`（代码预置，启动与迁移均按规范定义幂等发布 v1）创建工单，**支持一次选择多个迭代项（不限制同一迭代）**；每个迭代项各创建一张提测工单 + 一条提测记录（`project_releases.ticketId/ticketCode` 互相绑定），多个迭代项汇总为一条提测群消息（平台官方机器人，`RELEASE_FEISHU_CHAT_ID` 配置群）。描述自动填入迭代项上下文、提测端/测试人员/分支/地址与本迭代项提测内容、人工可补充；`tickets.backlogId` 记录关联，创建成功写 `release-ticket` 事件。提测不与迭代项/迭代状态绑定，同一迭代项可多次发起提测工单（完成、取消后仍可提测）。
-- 新建任务：迭代项详情页「任务」分区「新建任务」按 `POST /api/backlogs/{id}/tasks` 处理——已有交付任务时创建其子任务（成员或管理员），任务描述自动附带迭代上下文（迭代 ID、标识、描述与 `.md` 链接）和任务上下文（父任务与已有兄弟任务的 ID、标题）；无交付任务时按所选执行机器人创建交付任务（系统任务定义「迭代-Backlog交付」）并登记迭代项负责人（仅管理员，等价于指定负责人）。
+- 新建任务：迭代项详情页「任务」分区「新建任务」按 `POST /api/backlogs/{id}/tasks` 处理——已有交付任务时创建其子任务（成员或管理员），任务描述自动附带系统上下文（任务树 / 迭代 / 相关工单 / 交付文档，见「任务处理中心」）；无交付任务时按所选执行机器人创建交付任务（系统任务定义「迭代-Backlog交付」）并登记迭代项负责人（仅管理员，等价于指定负责人）。
 - 迭代项详情页为标准双栏布局 + 右下角可收起 AI 面板（⌥A）；内容分区为 信息 / 文档 / 任务（任务树 + 相关工单）/ 缺陷（按 `backlogId` 关联，支持页内新建）/ 话题 / 事件 / 成员，分区与 URL hash 一一对应（如 `/backlogs/{id}#topics` 直达话题，切换分区同步 `history.replaceState`）；「话题」页签显示话题数（其他页面的 `TopicsPanel` 卡片标题也显示计数）。AI 页面上下文类型 `backlog`（`agent:page:backlog:*`），`contextReadUrl` 固定 `/api/backlogs/{id}.md`。
 - 迭代项成员在详情页「成员」分区内直接维护（管理员）：角色 + 成员（真人或 AI 机器人）选择后「添加」、每个手动成员「移除」，均立即调用 `PATCH /api/backlogs/{id}/members`（整体替换手动成员，负责人/需求方自动维持）。
 - 支持向已有迭代追加需求、移动 backlog 到其它迭代（移动不重建交付任务与沟通群）；周迭代到期未完成的 backlog 留在原迭代，由管理员手动结转到新迭代。
@@ -284,6 +284,7 @@
 - `LlmService` 提供通用单次调用 `ask`（非流式、20s 超时、全局并发 3）与标题生成 `generateTitle`；场景未配置返回 null，由调用方降级，失败不得影响主流程。
 - 工单与根任务创建后异步生成标题 `「T-{id}」+ 模型生成内容`（`title-naming` 场景，`T-` 后为数字 ID，与 code `WO-/TK-` 并存），不阻塞创建、派发与节点流转，失败只告警。更新使用乐观条件（标题仍为创建时值），不覆盖人工修改。
 - 工单与根任务入口（`POST /api/tickets` / MCP `create_ticket`、任务 `create.md` / MCP `create_task`、项目交付任务）以及父任务执行方在任务详情页新建子任务（`POST /api/workbench/tasks/{id}/subtasks`，身份固定为父任务执行方，内容以 Markdown 提交、首行兜底标题）触发生成；机器人经 MCP `create_subtask` / `subtasks/create.md` 创建的子任务、工单节点任务、缺陷自动派单任务保留原结构化标题。
+- 子任务上下文（`TaskContextService`，MCP `create_subtask`、`POST /api/tasks/{id}/subtasks/create.md`、网页 `POST /api/workbench/tasks/{id}/subtasks` 与迭代项新建任务共用）：描述自动追加 `## 上下文（系统附加）` 块，含**任务树**（根任务起含全部子任务，缩进层级、`#id TK-code` 标题、状态与 HANDOFF 版本，标注当前父任务，上限 200 节点）、**迭代**（迭代项 `BL-{id}` 与所属迭代 `#id 标识（类型）` 及描述）、**相关工单**（任务树工单 + 工作流节点任务 + 迭代项工单去重，最近更新 50 条）、**交付文档**（树内 HANDOFF 清单）与 lita-work MCP 读取指引（`get_task` / `get_ticket` / `get_task_ticket` / `get_backlog` / `get_iteration` / `read_task_handoff` / `list_task_documents` / `list_ticket_documents`）；用户描述非空时以 `---` 分隔拼接在描述之后，为空时直接使用上下文。
 
 ### 单点登录（SSO）
 

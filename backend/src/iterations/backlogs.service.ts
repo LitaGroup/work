@@ -24,6 +24,7 @@ import { Document } from '../documents/document.entity';
 import { Project } from '../projects/project.entity';
 import { User } from '../auth/user.entity';
 import { Task } from '../tasks/task.entity';
+import { TaskContextService } from '../tasks/task-context.service';
 import { TasksService } from '../tasks/tasks.service';
 import { SYSTEM_BACKLOG_DELIVERY_TASK_TEMPLATE_ID } from '../tasks/system-task-templates';
 import { Ticket } from '../tickets/ticket.entity';
@@ -137,6 +138,7 @@ export class BacklogsService implements OnModuleInit {
     private readonly topicRows: Repository<Topic>,
     private readonly ticketsService: TicketsService,
     private readonly tasks: TasksService,
+    private readonly taskContext: TaskContextService,
     private readonly chat: FeishuBotBacklogChatService,
     private readonly llm: LlmService,
     private readonly releases: ReleasesService,
@@ -909,10 +911,8 @@ export class BacklogsService implements OnModuleInit {
       if (!actor.isAdmin && !(await this.isMember(backlog, actor))) {
         throw new ForbiddenException('仅迭代项成员或管理员可新建任务');
       }
-      const context = await this.buildSubtaskContext(
-        backlog,
+      const context = await this.taskContext.buildSubtaskContext(
         backlog.taskId,
-        iteration,
       );
       return this.tasks.create({
         title: input.title,
@@ -995,47 +995,6 @@ export class BacklogsService implements OnModuleInit {
       : `#${iterationId}`;
     const description = iteration?.description?.trim();
     return description ? `${label}——${description}` : label;
-  }
-
-  /**
-   * 子任务上下文：迭代（ID/标识/描述）与任务（父任务、兄弟任务 ID 和标题）。
-   * 追加在用户填写描述之后，随任务派发进入执行机器人提示词；
-   * 兄弟任务取同一交付任务下的直接子任务（含终态），上限 50 条。
-   */
-  private async buildSubtaskContext(
-    backlog: Backlog,
-    parentTaskId: number,
-    iteration: Iteration | null,
-  ): Promise<string> {
-    const lines = [
-      '## 上下文（系统附加）',
-      `- 迭代：${this.iterationLabel(iteration, backlog.iterationId)}（迭代详情：\`GET /api/iterations/${backlog.iterationId}.md\`）`,
-    ];
-    const [parent, siblings] = await Promise.all([
-      this.taskRows.findOne({
-        where: { id: parentTaskId },
-        select: { id: true, title: true },
-      }),
-      this.taskRows.find({
-        where: { parentId: parentTaskId },
-        select: { id: true, title: true },
-        order: { id: 'ASC' },
-        take: 50,
-      }),
-    ]);
-    if (parent) {
-      lines.push(
-        `- 父任务：#${parent.id} ${parent.title}（任务详情：\`GET /api/tasks/${parent.id}.md\`）`,
-      );
-    }
-    if (siblings.length > 0) {
-      lines.push(
-        `- 兄弟任务：${siblings
-          .map((task) => `#${task.id} ${task.title}`)
-          .join('；')}`,
-      );
-    }
-    return lines.join('\n');
   }
 
   /**

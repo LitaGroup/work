@@ -60,6 +60,7 @@ describe('TaskCollaborationService 多机器人协同动作', () => {
   };
   let templatesRepo: { find: jest.Mock; findOne: jest.Mock };
   let workersRepo: { find: jest.Mock; findOne: jest.Mock };
+  let taskContext: { buildSubtaskContext: jest.Mock };
   let service: TaskCollaborationService;
 
   beforeEach(() => {
@@ -111,6 +112,11 @@ describe('TaskCollaborationService 多机器人协同动作', () => {
     };
     templatesRepo = { find: jest.fn(), findOne: jest.fn() };
     workersRepo = { find: jest.fn(), findOne: jest.fn() };
+    taskContext = {
+      buildSubtaskContext: jest
+        .fn()
+        .mockResolvedValue('## 上下文（系统附加）\n- 任务树：#1 协同任务'),
+    };
     service = new TaskCollaborationService(
       tasksRepo as never,
       templatesRepo as never,
@@ -127,6 +133,7 @@ describe('TaskCollaborationService 多机器人协同动作', () => {
         notifyTaskRequester: jest.fn().mockResolvedValue({ sent: true }),
       } as never,
       inbox as never,
+      taskContext as never,
     );
   });
 
@@ -177,10 +184,10 @@ describe('TaskCollaborationService 多机器人协同动作', () => {
     );
 
     expect(child.id).toBe(5);
+    expect(taskContext.buildSubtaskContext).toHaveBeenCalledWith(1);
     expect(tasksService.create).toHaveBeenCalledWith(
       expect.objectContaining({
         title: '',
-        description: '整理竞品资料',
         templateId: 3,
         agentId: 1002,
         titleNaming: true,
@@ -188,12 +195,38 @@ describe('TaskCollaborationService 多机器人协同动作', () => {
         requesterId: worker.id,
       }),
     );
+    const [[created]] = tasksService.create.mock.calls as [
+      [{ description: string }],
+    ];
+    expect(created.description).toContain(
+      '整理竞品资料\n\n---\n\n## 上下文（系统附加）',
+    );
     expect(tasksService.addEvent).toHaveBeenCalledWith(
       1,
       '操作',
       expect.stringContaining('创建子任务'),
       '父机器人',
       expect.objectContaining({ agentId: 1002, templateId: 3 }),
+    );
+  });
+
+  it('子任务无描述时直接使用系统上下文', async () => {
+    task.status = TaskStatus.RUNNING;
+    task.subStatus = TaskSubStatus.EXECUTING;
+    templatesRepo.findOne.mockResolvedValue({ id: 3, name: '调研' });
+    workersRepo.find.mockResolvedValue([{ id: 1002, name: '调研机器人' }]);
+    tasksService.create.mockResolvedValue({ id: 6, code: 'TK-0006' });
+
+    await service.createSubtaskForActor(
+      1,
+      { type: 'worker', worker },
+      { templateId: 3 },
+    );
+
+    expect(tasksService.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        description: '## 上下文（系统附加）\n- 任务树：#1 协同任务',
+      }),
     );
   });
 

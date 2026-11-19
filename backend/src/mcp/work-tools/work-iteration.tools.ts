@@ -9,6 +9,7 @@ import {
 import type { BacklogMemberRole } from '../../common/enums';
 import { BacklogsService } from '../../iterations/backlogs.service';
 import type { IterationActor } from '../../iterations/iteration.types';
+import { IterationsService } from '../../iterations/iterations.service';
 import { executeTool, markdownResult } from './work-tools.util';
 import type { McpWorkPrincipal, WorkToolRegistrar } from './work-tools.types';
 
@@ -31,7 +32,10 @@ const BacklogStatusArg = z
 export class WorkIterationTools implements WorkToolRegistrar {
   private readonly logger = new Logger(WorkIterationTools.name);
 
-  constructor(private readonly backlogs: BacklogsService) {}
+  constructor(
+    private readonly backlogs: BacklogsService,
+    private readonly iterations: IterationsService,
+  ) {}
 
   register(server: McpServer, principal: McpWorkPrincipal): void {
     server.registerTool(
@@ -47,6 +51,24 @@ export class WorkIterationTools implements WorkToolRegistrar {
       async (args) =>
         executeTool(this.logger, 'get_backlog', principal, async () =>
           markdownResult(await this.backlogs.findOneMarkdown(args.backlogId)),
+        ),
+    );
+
+    server.registerTool(
+      'get_iteration',
+      {
+        title: '迭代详情',
+        description:
+          '读取迭代详情：标识、类型、状态、描述、起止日期、平台链接与迭代项清单（含交付任务）。',
+        inputSchema: {
+          iterationId: z.number().int().positive().describe('迭代 ID'),
+        },
+      },
+      async (args) =>
+        executeTool(this.logger, 'get_iteration', principal, async () =>
+          markdownResult(
+            await this.iterations.findOneMarkdown(args.iterationId),
+          ),
         ),
     );
 
@@ -206,7 +228,7 @@ export class WorkIterationTools implements WorkToolRegistrar {
       {
         title: '新建迭代项任务',
         description:
-          '迭代项「任务」分区新建任务：已有交付任务时创建其子任务（成员或管理员；任务描述自动附带迭代上下文与父/兄弟任务上下文）；无交付任务时按所选执行机器人创建交付任务并登记负责人（仅管理员）。返回新建任务 ID 与迭代项详情。',
+          '迭代项「任务」分区新建任务：已有交付任务时创建其子任务（成员或管理员；任务描述自动附带系统上下文：任务树/迭代/相关工单/交付文档）；无交付任务时按所选执行机器人创建交付任务并登记负责人（仅管理员）。返回新建任务 ID 与迭代项详情。',
         inputSchema: {
           backlogId: z.number().int().positive().describe('迭代项 ID'),
           title: z.string().optional().describe('任务标题'),

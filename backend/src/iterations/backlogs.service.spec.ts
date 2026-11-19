@@ -149,6 +149,13 @@ function buildTaskService() {
     create: jest.fn((row: unknown) => row),
   };
   const tasks = { create: jest.fn() };
+  const taskContext = {
+    buildSubtaskContext: jest
+      .fn()
+      .mockResolvedValue(
+        '## 上下文（系统附加）\n- 任务树：#500 TK-0500 交付礼包改版',
+      ),
+  };
   const taskRows = {
     findOne: jest.fn().mockResolvedValue({ id: 500, title: '交付礼包改版' }),
     find: jest.fn().mockResolvedValue([]),
@@ -190,6 +197,7 @@ function buildTaskService() {
     {} as never,
     tickets as never,
     tasks as never,
+    taskContext as never,
     chat as never,
     {} as never,
     releases as never,
@@ -199,6 +207,7 @@ function buildTaskService() {
     backlogs,
     workers,
     tasks,
+    taskContext,
     taskRows,
     iterations,
     projects,
@@ -214,24 +223,13 @@ const memberActor = { userId: 21, userName: '李四', isAdmin: false };
 const adminActor = { userId: 1, userName: '管理员', isAdmin: true };
 
 describe('BacklogsService.createTask', () => {
-  it('已有交付任务时作为其子任务创建，描述附带迭代与任务上下文（成员可操作）', async () => {
-    const { service, backlogs, tasks, taskRows, iterations } =
-      buildTaskService();
+  it('已有交付任务时作为其子任务创建，描述附带系统上下文（成员可操作）', async () => {
+    const { service, backlogs, tasks, taskContext } = buildTaskService();
     backlogs.findOne.mockResolvedValue({
       ...backlogRow,
       taskId: 500,
       members: [{ role: '产品', workerId: 21, name: '李四' }],
     });
-    iterations.findOne.mockResolvedValue({
-      id: 3,
-      code: '2026W47',
-      type: IterationType.T7,
-      description: '本周礼包迭代',
-    });
-    taskRows.find.mockResolvedValue([
-      { id: 501, title: '前端页面拆分' },
-      { id: 502, title: '后端接口开发' },
-    ]);
     tasks.create.mockResolvedValue({ id: 600, code: 'TK-0600' });
 
     const task = await service.createTask(
@@ -241,6 +239,7 @@ describe('BacklogsService.createTask', () => {
     );
 
     expect(task).toEqual({ id: 600, code: 'TK-0600' });
+    expect(taskContext.buildSubtaskContext).toHaveBeenCalledWith(500);
     expect(tasks.create).toHaveBeenCalledWith(
       expect.objectContaining({
         parentId: 500,
@@ -251,42 +250,25 @@ describe('BacklogsService.createTask', () => {
     );
     const [[input]] = tasks.create.mock.calls as [[{ description: string }]];
     expect(input.description.startsWith('按模块拆分\n\n---\n\n')).toBe(true);
-    expect(input.description).toContain('迭代：#3 2026W47（T7）——本周礼包迭代');
-    expect(input.description).toContain('迭代详情：`GET /api/iterations/3.md`');
-    expect(input.description).toContain('父任务：#500 交付礼包改版');
-    expect(input.description).toContain(
-      '兄弟任务：#501 前端页面拆分；#502 后端接口开发',
-    );
+    expect(input.description).toContain('## 上下文（系统附加）');
     expect(backlogs.save).not.toHaveBeenCalled();
   });
 
-  it('子任务无兄弟任务时省略兄弟行，描述缺省时直接用上下文', async () => {
-    const { service, backlogs, tasks, taskRows, iterations } =
-      buildTaskService();
+  it('子任务描述缺省时直接使用系统上下文', async () => {
+    const { service, backlogs, tasks } = buildTaskService();
     backlogs.findOne.mockResolvedValue({
       ...backlogRow,
       taskId: 500,
       members: [{ role: '产品', workerId: 21, name: '李四' }],
     });
-    iterations.findOne.mockResolvedValue({
-      id: 3,
-      code: '2026W47',
-      type: IterationType.T7,
-      description: null,
-    });
-    taskRows.find.mockResolvedValue([]);
-    taskRows.findOne.mockResolvedValue(null);
     tasks.create.mockResolvedValue({ id: 600, code: 'TK-0600' });
 
     await service.createTask(12, { title: '拆分页面' }, memberActor);
 
     const [[input]] = tasks.create.mock.calls as [[{ description: string }]];
-    // 无描述时为纯上下文块，迭代无描述不带「——」后缀
-    expect(input.description.startsWith('## 上下文（系统附加）')).toBe(true);
-    expect(input.description).toContain('- 迭代：#3 2026W47（T7）（迭代详情');
-    expect(input.description).not.toContain('——');
-    expect(input.description).not.toContain('父任务');
-    expect(input.description).not.toContain('兄弟任务');
+    expect(input.description).toBe(
+      '## 上下文（系统附加）\n- 任务树：#500 TK-0500 交付礼包改版',
+    );
   });
 
   it('已有交付任务但非成员非管理员时拒绝', async () => {

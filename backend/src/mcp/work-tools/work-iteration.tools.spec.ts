@@ -18,6 +18,7 @@ function buildTools(options?: {
     submitReleaseMarkdown: jest.Mock;
     findOneMarkdown: jest.Mock;
   };
+  iterations: { findOneMarkdown: jest.Mock };
 } {
   const backlogs = {
     updateMembers: jest.fn().mockResolvedValue({ id: 33 }),
@@ -30,21 +31,27 @@ function buildTools(options?: {
     submitReleaseMarkdown: jest.fn().mockResolvedValue('# 提测结果'),
     findOneMarkdown: jest.fn().mockResolvedValue('# 迭代项详情'),
   };
+  const iterations = {
+    findOneMarkdown: jest.fn().mockResolvedValue('# 迭代详情'),
+  };
   const tools = new Map<string, Handler>();
   const server = {
     registerTool: (name: string, _meta: unknown, handler: Handler) => {
       tools.set(name, handler);
     },
   } as unknown as McpServer;
-  new WorkIterationTools(backlogs as never).register(server, {
-    user: options?.user ?? {
-      id: 1,
-      name: '张三',
-      role: UserRole.ADMIN,
-    },
-    worker: options?.worker,
-  } as never);
-  return { tools, backlogs };
+  new WorkIterationTools(backlogs as never, iterations as never).register(
+    server,
+    {
+      user: options?.user ?? {
+        id: 1,
+        name: '张三',
+        role: UserRole.ADMIN,
+      },
+      worker: options?.worker,
+    } as never,
+  );
+  return { tools, backlogs, iterations };
 }
 
 describe('WorkIterationTools', () => {
@@ -52,6 +59,7 @@ describe('WorkIterationTools', () => {
     const { tools } = buildTools();
     expect([...tools.keys()]).toEqual([
       'get_backlog',
+      'get_iteration',
       'update_backlog_members',
       'update_backlog',
       'change_backlog_status',
@@ -68,6 +76,15 @@ describe('WorkIterationTools', () => {
     };
     expect(backlogs.findOneMarkdown).toHaveBeenCalledWith(33);
     expect(result.content[0].text).toBe('# 迭代项详情');
+  });
+
+  it('get_iteration 返回迭代 Markdown', async () => {
+    const { tools, iterations } = buildTools();
+    const result = (await tools.get('get_iteration')!({
+      iterationId: 7,
+    })) as { content: { text: string }[] };
+    expect(iterations.findOneMarkdown).toHaveBeenCalledWith(7);
+    expect(result.content[0].text).toBe('# 迭代详情');
   });
 
   it('update_backlog_members 以管理员身份更新并返回迭代项 Markdown', async () => {

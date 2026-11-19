@@ -189,7 +189,7 @@ export class WorkTaskTools implements WorkToolRegistrar {
       {
         title: '创建子任务',
         description:
-          '父任务执行机器人按任务定义创建子任务；需要机器人身份。创建后父任务成为子任务需求方。',
+          '父任务执行机器人按任务定义创建子任务；需要机器人身份。创建后父任务成为子任务需求方。子任务描述自动附带系统上下文（任务树/迭代/相关工单/交付文档与 MCP 读取指引）。',
         inputSchema: {
           parentTaskId: z.number().int().positive().describe('父任务 ID'),
           templateId: z.number().int().positive().describe('任务定义 ID'),

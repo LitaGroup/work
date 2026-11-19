@@ -6,6 +6,8 @@ import { Executor } from '../executors/executor.entity';
 import { FeishuModule } from '../feishu/feishu.module';
 import { FeishuBotModule } from '../feishu-bot/feishu-bot.module';
 import { FeishuBotApprovalCard } from '../feishu-bot/feishu-bot-approval-card.entity';
+import { Backlog } from '../iterations/backlog.entity';
+import { Iteration } from '../iterations/iteration.entity';
 import { KnowledgeModule } from '../knowledge/knowledge.module';
 import { WorkersModule } from '../workers/workers.module';
 import { Worker } from '../workers/worker.entity';
@@ -25,6 +27,7 @@ import { TaskTemplate } from './task-template.entity';
 import { TaskWorkerInbox } from './task-worker-inbox.entity';
 import { TaskWorkerInboxService } from './task-worker-inbox.service';
 import { TaskCollaborationService } from './task-collaboration.service';
+import { TaskContextService } from './task-context.service';
 import { TaskAssignmentService } from './task-assignment.service';
 import { TaskChatService } from './task-chat.service';
 import { TaskDeliveryService } from './task-delivery.service';
@@ -74,6 +77,8 @@ import { WorkbenchService } from './workbench.service';
       Ticket,
       TicketWorkflowRun,
       Topic,
+      Backlog,
+      Iteration,
     ]),
     WorkersModule,
     ExecutorsModule,
@@ -114,6 +119,7 @@ import { WorkbenchService } from './workbench.service';
     TaskReleaseNotificationService,
     TaskWorkerInboxService,
     TaskCollaborationService,
+    TaskContextService,
     TaskRealtimeService,
     TaskTemplatesService,
     WorkbenchService,
@@ -124,6 +130,7 @@ import { WorkbenchService } from './workbench.service';
     TaskActorService,
     TaskChatService,
     TaskCollaborationService,
+    TaskContextService,
     TaskDeliveryService,
     TaskDispatchService,
     TaskDocumentService,

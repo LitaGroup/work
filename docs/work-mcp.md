@@ -99,11 +99,12 @@ claude mcp add --transport http lita-work http://your-host:3100/api/mcp/work \
 | 工具 | 主要入参 | 说明 |
 |---|---|---|
 | `get_backlog` | `backlogId` | 迭代项详情（元信息 / 成员 / 文档 / 最近事件） |
+| `get_iteration` | `iterationId` | 迭代详情（标识 / 类型 / 状态 / 描述 / 起止 / 迭代项清单） |
 | `update_backlog_members` | `backlogId`、`members[]`（`role` + `userId` 或 `name`） | 管理员或该迭代项负责人机器人整体替换成员；`name` 支持顿号连接多人，空数组清空 |
 | `update_backlog` | `backlogId`、`expectedOnlineAt?`、`ownerWorkerId?` | 修改预期上线时间（null 清空）；`ownerWorkerId` 仅管理员，改派时重建交付任务 |
 | `change_backlog_status` | `backlogId`、`status`、`remark?` | 状态流转（等待/执行/测试/发布/完成/取消），备注写入事件流；成员或管理员 |
 | `move_backlog` | `backlogId`、`iterationId` | 移动到另一个未结束的迭代（仅管理员），不重建交付任务与沟通群 |
-| `create_backlog_task` | `backlogId`、`title?`、`description?`、`templateId?`、`agentId?` | 新建交付子任务；无交付任务时按 `agentId` 创建交付任务并登记负责人（仅管理员） |
+| `create_backlog_task` | `backlogId`、`title?`、`description?`、`templateId?`、`agentId?` | 新建交付子任务（描述自动附带系统上下文）；无交付任务时按 `agentId` 创建交付任务并登记负责人（仅管理员） |
 | `create_backlog_release` | `items`（`[{backlogId, content?}]`）、`ends`（APP/H5/后端 ≥1）、`testers`（≥1）、`title?`、`branches?`、`urls?`、`taskId?` | 批量提测：每个迭代项建提测工单 + 提测记录（互相绑定），多迭代项汇总一条提测群消息 |
 
 ### 运行 / 脚本 / 设置
@@ -201,7 +202,7 @@ claude mcp add --transport http lita-work http://your-host:3100/api/mcp/work \
 | `get_task` | `taskId` | 任务详情与操作指引 |
 | `create_task` | `title?`、`description?`、`input?`、`outputSpec?`、`templateId?` | 创建根任务并自动分配机器人 |
 | `list_task_defines` | — | 可分发任务定义与可用机器人 |
-| `create_subtask` | `parentTaskId`、`templateId`、`title`、`description?`、`input?`、`outputSpec?` | 父任务机器人创建子任务 |
+| `create_subtask` | `parentTaskId`、`templateId`、`title`、`description?`、`input?`、`outputSpec?` | 父任务机器人创建子任务；描述自动附带系统上下文（任务树 / 迭代 / 相关工单 / 交付文档） |
 | `accept_task` / `refuse_task` | `taskId`、`reason?`、`suggestion?` | 接受 / 拒绝邀约（拒绝需理由） |
 | `ask_task_question` | `taskId`、`questions` | 执行机器人向需求方提问 |
 | `answer_task_question` | `taskId`、`questionId`、`answers?`、`reject?` | 需求方或管理员答复提问 |
