@@ -547,7 +547,13 @@ export function BacklogDetailPage() {
   /** 现有手动成员（排除自动列入的负责人/需求方），用于整体替换时回传 */
   const manualMemberKeys = () =>
     (backlog.members ?? [])
-      .filter((m) => !isAutoMemberRole(m.role))
+      .filter(
+        (m) =>
+          !isAutoMemberRole(m.role) &&
+          Number.isInteger(m.workerId) &&
+          m.workerId > 0,
+      )
+      // 历史脏数据可能缺少 workerId，直接跳过，保存时顺带清除
       .map((m) => ({ role: m.role, workerId: m.workerId }))
 
   const addMember = () => {
