@@ -61,7 +61,10 @@ describe('TicketWorkflowRuntimeService', () => {
   let projects: { find: jest.Mock };
   let users: { findOne: jest.Mock };
   let officialMessages: { send: jest.Mock };
-  let botConfigs: { loadEnabledOfficial: jest.Mock };
+  let botConfigs: {
+    loadEnabledOfficial: jest.Mock;
+    findEnabledWorkerConfigs: jest.Mock;
+  };
   let botIdentities: { openIdFor: jest.Mock };
   let config: { get: jest.Mock };
   let service: TicketWorkflowRuntimeService;
@@ -121,7 +124,10 @@ describe('TicketWorkflowRuntimeService', () => {
     officialMessages = {
       send: jest.fn().mockResolvedValue({ messageIds: [] }),
     };
-    botConfigs = { loadEnabledOfficial: jest.fn().mockResolvedValue(null) };
+    botConfigs = {
+      loadEnabledOfficial: jest.fn().mockResolvedValue(null),
+      findEnabledWorkerConfigs: jest.fn().mockResolvedValue(new Map()),
+    };
     botIdentities = { openIdFor: jest.fn().mockResolvedValue(null) };
     config = { get: jest.fn().mockReturnValue('https://project.example') };
     service = new TicketWorkflowRuntimeService(
@@ -1570,10 +1576,99 @@ describe('TicketWorkflowRuntimeService', () => {
       );
     });
 
+    it('成员是机器人时按飞书应用绑定情况 @ 或只展示姓名', async () => {
+      const memberTemplate = [
+        '测试人员：{{#each testers}}{{mention}} {{else}}—{{/each}}',
+        '开发人员：{{#each developers}}{{mention}} {{else}}—{{/each}}',
+      ].join('\n');
+      const notifyNode = workflow.nodes.find(
+        (item) => item.kind === 'feishu-message',
+      );
+      if (!notifyNode) throw new Error('飞书群消息节点缺失');
+      notifyNode.messageTemplate = memberTemplate;
+      iterations.find.mockResolvedValue([{ id: 12, code: '2026W47' }]);
+      backlogs.find.mockResolvedValue([
+        {
+          id: 1,
+          code: 'BL-0001',
+          iterationId: 12,
+          projectId: 100,
+          title: 'BL-0001 需求A',
+          status: '执行',
+          members: [
+            { role: '测试', workerId: 2001, name: '测试机器人' },
+            { role: '后端', workerId: 2002, name: '开发机器人' },
+            { role: '前端', workerId: 2003, name: '开发-真人' },
+          ],
+        },
+      ]);
+      projects.find.mockResolvedValue([
+        { id: 100, name: '需求A', type: '功能' },
+      ]);
+      workers.find.mockResolvedValue([
+        { id: 1001, name: '发起机器人-真人', humanUserId: 7 },
+        // 绑定了独立飞书应用的 AI 机器人：给出机器人 open_id
+        { id: 2001, name: '测试机器人', humanUserId: null },
+        // 未绑定飞书应用的 AI 机器人：只展示姓名
+        { id: 2002, name: '开发机器人', humanUserId: null },
+        { id: 2003, name: '开发-真人', humanUserId: 8 },
+      ]);
+      botConfigs.findEnabledWorkerConfigs.mockResolvedValue(
+        new Map([[2001, { botOpenId: 'ou_bot_tester' }]]),
+      );
+      botConfigs.loadEnabledOfficial.mockResolvedValue({ id: 3 });
+      botIdentities.openIdFor.mockImplementation(
+        (_configId: number, userId: number) =>
+          Promise.resolve(
+            userId === 7 ? 'ou_initiator' : userId === 8 ? 'ou_dev' : null,
+          ),
+      );
+      let sent: { content?: string } | null = null;
+      officialMessages.send.mockImplementation((input: { content: string }) => {
+        sent = input;
+        return Promise.resolve({ messageIds: ['om_1'] });
+      });
+      jest
+        .spyOn(
+          service as unknown as {
+            advance: (
+              ticketId: number,
+              workflow: WorkflowDefinitionJson,
+              fromKey: string,
+              outcome: string | null,
+              depth?: number,
+            ) => Promise<void>;
+          },
+          'advance',
+        )
+        .mockResolvedValue(undefined);
+
+      await (
+        service as unknown as {
+          enterNode: (
+            ticket: Ticket,
+            workflow: WorkflowDefinitionJson,
+            nodeKey: string | null,
+            depth?: number,
+          ) => Promise<void>;
+        }
+      ).enterNode(ticket, workflow, 'notify');
+
+      expect(botConfigs.findEnabledWorkerConfigs).toHaveBeenCalledWith([
+        2001, 2002,
+      ]);
+      const captured: Array<{ content?: string }> = sent ? [sent] : [];
+      const content = captured[0]?.content ?? '';
+      expect(content).toContain('测试人员：<at id=ou_bot_tester></at>');
+      // 未绑定飞书应用的机器人只留姓名，不生成点不动的 @
+      expect(content).toContain('开发人员：开发机器人 <at id=ou_dev></at>');
+    });
+
     it('迭代项字段直接决定模板循环与成员来源', async () => {
       const backlogTemplate = [
         '迭代项：{{ values.backlogs }}',
         '{{#each backlogs}}- {{code}} {{requirementTitle}}{{/each}}',
+        '链接：{{#each backlogs}}[{{code}}]({{url}}) [{{iterationCode}}]({{iterationUrl}}) [{{requirementTitle}}]({{requirementUrl}}) {{/each}}',
         '测试人员：{{#each testers}}{{mention}} {{else}}—{{/each}}',
       ].join('\n');
       const workflowWithBacklogs: WorkflowDefinitionJson = {
@@ -1622,6 +1717,7 @@ describe('TicketWorkflowRuntimeService', () => {
         { id: 100, name: '礼包改版', type: '功能' },
         { id: 101, name: '排行榜', type: '技术' },
       ]);
+      iterations.find.mockResolvedValue([{ id: 12, code: '2026W47' }]);
       workers.find.mockResolvedValue([
         { id: 1001, name: '发起机器人-真人', humanUserId: 7 },
         { id: 2001, name: '测试机器人', humanUserId: null },
@@ -1666,6 +1762,9 @@ describe('TicketWorkflowRuntimeService', () => {
       expect(content).toContain('迭代项：BL-0005 礼包改版、BL-0006 排行榜');
       expect(content).toContain('- BL-0005 礼包改版');
       expect(content).toContain('- BL-0006 排行榜');
+      expect(content).toContain(
+        '链接：[BL-0005](https://project.example/backlogs/5) [2026W47](https://project.example/iterations/12) [礼包改版](https://project.example/requirements/100) [BL-0006](https://project.example/backlogs/6) [2026W47](https://project.example/iterations/12) [排行榜](https://project.example/requirements/101)',
+      );
       expect(content).toContain('测试人员：测试机器人');
     });
 

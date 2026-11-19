@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { WorkerRuntime } from '../common/enums';
 import { Worker } from '../workers/worker.entity';
 import { SYSTEM_FEEDBACK_HANDLER_WORKER_KEY } from '../workers/system-workers';
@@ -88,6 +88,27 @@ export class FeishuBotConfigService {
     return this.configs.findOne({
       where: { workerId, kind: 'worker', enabled: true },
     });
+  }
+
+  /**
+   * 批量取机器人已启用且绑定的飞书应用配置（workerId → 配置）。
+   * 用于消息模板等场景：绑定了应用且有机器人 open_id 时才能 @ 到机器人。
+   */
+  async findEnabledWorkerConfigs(
+    workerIds: number[],
+  ): Promise<Map<number, FeishuBotConfig>> {
+    const ids = [
+      ...new Set(workerIds.filter((id) => Number.isInteger(id) && id > 0)),
+    ];
+    if (!ids.length) return new Map();
+    const rows = await this.configs.find({
+      where: { workerId: In(ids), kind: 'worker', enabled: true },
+    });
+    const result = new Map<number, FeishuBotConfig>();
+    for (const row of rows) {
+      if (typeof row.workerId === 'number') result.set(row.workerId, row);
+    }
+    return result;
   }
 
   /** 配置/更新平台官方机器人（全平台唯一） */

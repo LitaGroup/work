@@ -1171,8 +1171,11 @@ export function TicketDefinitionEditPage() {
                           {`{{#each developers}}{{mention}} {{/each}}`}（开发人员）、
                           {`{{#each demanders}}{{mention}} {{/each}}`}（需求方）、
                           {`{{#each backlogs}}{{requirementType}} {{requirementTitle}}{{/each}}`}
-                          （关联迭代项，另有 title / code / status）；成员来自起始节点选择的迭代项
-                          （选择「迭代」时按该迭代下全部迭代项），真人机器人自动转飞书 @，AI 机器人显示名称
+                          （关联迭代项，另有 code / title / status / url，以及所属迭代
+                          iterationCode / iterationUrl 与需求链接 requirementUrl）；
+                          {`迭代项与迭代可直接写成 [文本]({{ url }}) 形式的可点击链接`}；
+                          成员来自起始节点选择的迭代项（选择「迭代」时按该迭代下全部迭代项），
+                          真人机器人自动转飞书 @，AI 机器人显示名称
                         </p>
                       </div>
                     )}

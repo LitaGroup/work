@@ -17,7 +17,7 @@ export interface TicketMessageTemplateTicket {
   url: string;
 }
 
-/** 消息模板中的人员：姓名 + 飞书 @ 文本（解析不到 open_id 时回退姓名） */
+/** 消息模板中的人员：姓名 + 飞书 @ 文本（真人取绑定真人 open_id，AI 机器人取绑定的飞书应用机器人 open_id；都没有时回退姓名） */
 export interface TicketMessageTemplatePerson {
   name: string;
   /** 可直接插入卡片的 @ 文本：`<at id=ou_xxx></at>`；无法解析时为姓名 */
@@ -35,8 +35,16 @@ export interface TicketMessageTemplateBacklog {
   requirementTitle: string;
   /** 需求类型（projects.type） */
   requirementType: string;
+  /** 需求（projects）在平台内的链接，可直接用作 Markdown 链接地址 */
+  requirementUrl: string;
+  /** 所属迭代标识（如 2026W47）；无迭代时为空串 */
+  iterationCode: string;
+  /** 所属迭代在平台内的链接；无迭代时为空串 */
+  iterationUrl: string;
   /** 迭代项状态 */
   status: string;
+  /** 迭代项在平台内的链接，可直接用作 Markdown 链接地址 */
+  url: string;
 }
 
 /** Handlebars 模板上下文：ticket / initiator / 成员 / 迭代项 / values / node */

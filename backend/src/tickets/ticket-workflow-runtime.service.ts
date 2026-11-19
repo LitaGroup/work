@@ -44,6 +44,7 @@ import { Backlog } from '../iterations/backlog.entity';
 import { Iteration } from '../iterations/iteration.entity';
 import { Project } from '../projects/project.entity';
 import { FeishuBotConfigService } from '../feishu-bot/feishu-bot-config.service';
+import type { FeishuBotConfig } from '../feishu-bot/feishu-bot-config.entity';
 import { FeishuBotIdentityService } from '../feishu-bot/feishu-bot-identity.service';
 import { FeishuBotOfficialMessageService } from '../feishu-bot/feishu-bot-official-message.service';
 import {
@@ -1175,11 +1176,16 @@ export class TicketWorkflowRuntimeService {
     await this.advance(ticket.id, workflow, node.key, null, depth + 1);
   }
 
-  /** 消息模板中的工单上下文（链接取 APP_URL） */
-  private messageTicketContext(ticket: Ticket): TicketMessageTemplateTicket {
-    const base = (
+  /** 平台内地址前缀（消息模板中的各类详情链接都基于 APP_URL） */
+  private appBaseUrl(): string {
+    return (
       this.config.get<string>('APP_URL') ?? 'http://localhost:5273'
     ).replace(/\/+$/, '');
+  }
+
+  /** 消息模板中的工单上下文（链接取 APP_URL） */
+  private messageTicketContext(ticket: Ticket): TicketMessageTemplateTicket {
+    const base = this.appBaseUrl();
     return {
       id: ticket.id,
       code: ticket.code,
@@ -1274,7 +1280,27 @@ export class TicketWorkflowRuntimeService {
       const openId = await openIdOf(userId);
       return { name, mention: openId ? `<at id=${openId}></at>` : name };
     };
-    /** 成员行兼容历史 userId 写法：真人机器人取绑定真人，AI 机器人回退名称 */
+    // AI 机器人成员：绑定了独立飞书应用（且有机器人 open_id）才能 @，
+    // 未绑定应用的只展示姓名，避免出现点不动的 @ 文本。
+    const botWorkerIds = workers
+      .filter((row) => !row.humanUserId)
+      .map((row) => row.id);
+    const botOpenIdByWorkerId = new Map<number, string>();
+    if (botWorkerIds.length) {
+      const workerConfigs = await this.botConfigs
+        .findEnabledWorkerConfigs(botWorkerIds)
+        .catch((error: unknown): Map<number, FeishuBotConfig> => {
+          this.logger.warn(
+            `解析机器人绑定的飞书应用失败（成员按姓名展示）：${(error as Error).message}`,
+          );
+          return new Map();
+        });
+      for (const [workerId, config] of workerConfigs) {
+        if (config.botOpenId)
+          botOpenIdByWorkerId.set(workerId, config.botOpenId);
+      }
+    }
+    /** 成员行兼容历史 userId 写法：真人机器人取绑定真人，AI 机器人按飞书应用绑定情况 @ 或回退名称 */
     const personOf = async (
       row: { workerId?: number; userId?: number; name: string },
       fallbackName?: string,
@@ -1285,6 +1311,8 @@ export class TicketWorkflowRuntimeService {
       if (worker?.humanUserId)
         return mentionForUserId(worker.humanUserId, name);
       if (!worker && row.userId) return mentionForUserId(row.userId, name);
+      const botOpenId = worker ? botOpenIdByWorkerId.get(worker.id) : undefined;
+      if (botOpenId) return { name, mention: `<at id=${botOpenId}></at>` };
       return { name, mention: name };
     };
     const peopleOf = async (
@@ -1311,15 +1339,40 @@ export class TicketWorkflowRuntimeService {
         })
       : [];
     const projectById = new Map(projectRows.map((row) => [row.id, row]));
+    // 迭代项所属迭代标识：模板里同时给出迭代链接，便于从群消息直达迭代详情
+    const relatedIterationIds = [
+      ...new Set(
+        related
+          .map((row) => row.iterationId)
+          .filter((id): id is number => Number.isInteger(id) && id > 0),
+      ),
+    ];
+    const relatedIterations = relatedIterationIds.length
+      ? await this.iterations.find({
+          where: { id: In(relatedIterationIds) },
+          select: { id: true, code: true },
+        })
+      : [];
+    const relatedIterationCodeById = new Map(
+      relatedIterations.map((row) => [row.id, row.code]),
+    );
+    const base = this.appBaseUrl();
     const backlogs: TicketMessageTemplateBacklog[] = related.map((row) => {
       const project = projectById.get(row.projectId);
+      const iterationCode = relatedIterationCodeById.get(row.iterationId) ?? '';
       return {
         id: row.id,
         code: row.code,
         title: row.title,
         requirementTitle: project?.name ?? row.title,
         requirementType: project?.type ?? '需求',
+        requirementUrl: `${base}/requirements/${row.projectId}`,
+        iterationCode,
+        iterationUrl: iterationCode
+          ? `${base}/iterations/${row.iterationId}`
+          : '',
         status: row.status,
+        url: `${base}/backlogs/${row.id}`,
       };
     });
 
