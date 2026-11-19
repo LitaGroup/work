@@ -97,7 +97,7 @@ export interface BacklogReleaseItemResult {
   releaseId: number;
 }
 
-/** 批量提测结果：多迭代项汇总为一条提测群消息 */
+/** 批量提测结果：提测群通知由各提测工单节点发送 */
 export interface BacklogReleaseResult {
   /** 提测标题（多个迭代项时为「xxx 等x个迭代」） */
   title: string;

@@ -273,16 +273,12 @@ export class WorkIterationTools implements WorkToolRegistrar {
       {
         title: '发起迭代项批量提测',
         description:
-          '批量提测：每个迭代项按系统「提测工单」工作流创建工单并生成提测记录（互相绑定），多个迭代项汇总为一条提测群消息（平台官方机器人）。提测端至少 1 个（APP / H5 / 后端），测试人员至少 1 人且须为用户系统内用户；仅所选迭代项成员或管理员。',
+          '批量提测：每个迭代项按系统「提测工单」工作流创建工单并生成提测记录（互相绑定），提测群通知由工单「提测群通知」节点发送。提测端取值须为提测工单 testEnds 字段配置的选项；测试人员/代码分支/访问地址/补充描述等由提测工单字段配置与迭代项成员承载（inputValues 透传）；仅所选迭代项成员或管理员。',
         inputSchema: {
           items: z
             .array(
               z.object({
                 backlogId: z.number().int().positive().describe('迭代项 ID'),
-                content: z
-                  .string()
-                  .optional()
-                  .describe('该迭代项的提测内容（Markdown）'),
               }),
             )
             .min(1)
@@ -294,26 +290,16 @@ export class WorkIterationTools implements WorkToolRegistrar {
               '提测标题（多个迭代项缺省「{首个迭代项标题} 等x个迭代」）',
             ),
           ends: z
-            .array(z.enum(['APP', 'H5', '后端']))
-            .min(1)
-            .describe('提测端（至少 1 个）'),
-          testers: z
-            .array(z.string())
-            .min(1)
-            .describe('测试人员姓名（须为用户系统内用户）'),
-          branches: z
-            .array(z.object({ repo: z.string(), branch: z.string() }))
-            .optional()
-            .describe('代码分支（整单共用，可空）'),
-          urls: z
             .array(z.string())
             .optional()
-            .describe('访问地址（整单共用，可空）'),
+            .describe(
+              '提测端（取值须为提测工单 testEnds 字段配置的选项；工单未配置该字段时忽略）',
+            ),
           inputValues: z
             .record(z.string(), z.unknown())
             .optional()
             .describe(
-              '提测工单配置（release-ticket）动态字段值：除保留 key（title/description/content/testEnds/testers/branch/url/backlogs）外的起始字段原样透传',
+              '提测工单配置（release-ticket）动态字段值：除保留 key（title/description/testEnds/backlogs）外的起始字段原样透传',
             ),
           taskId: z
             .number()
@@ -334,9 +320,6 @@ export class WorkIterationTools implements WorkToolRegistrar {
                 items: args.items,
                 title: args.title,
                 ends: args.ends,
-                testers: args.testers,
-                branches: args.branches,
-                urls: args.urls,
                 inputValues: args.inputValues,
                 taskId: args.taskId,
               },

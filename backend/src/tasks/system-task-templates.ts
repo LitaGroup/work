@@ -44,7 +44,7 @@ export const DEVELOPMENT_OPERATION_GUIDE = [
   '',
   '### 提测与缺陷',
   '',
-  '- 提测：`POST /api/backlogs/release.md`，body `{"items": [{"backlogId": 123, "content": "提测内容 Markdown"}], "ends": ["APP"], "testers": ["张三"], "branches": [{"repo": "LitaGroup/xxx", "branch": "test"}], "urls": ["https://..."], "inputValues": {"自定义字段key": "值"}, "title": "可选", "taskId": 123}`（提测端至少 1 个：APP / H5 / 后端；测试人员至少 1 人且须为用户系统内用户；inputValues 透传提测工单配置中除保留 key 外的起始字段；每个迭代项生成提测工单与提测记录，多个迭代项汇总为一条提测群消息；taskId 可省略，缺省自动关联当前执行中的任务）。',
+  '- 提测：`POST /api/backlogs/release.md`，body `{"items": [{"backlogId": 123}], "ends": ["APP"], "inputValues": {"自定义字段key": "值"}, "title": "可选", "taskId": 123}`（每个迭代项生成提测工单与提测记录；提测端取值须为提测工单 testEnds 字段配置的选项；测试人员/代码分支/访问地址/补充描述等由提测工单字段配置与迭代项成员承载；提测群通知由工单「提测群通知」节点发送；taskId 可省略，缺省自动关联当前执行中的任务）。',
   '- 提测记录与状态：`GET /api/releases.md?projectId={projectId}`；`POST /api/releases/{id}/status.md`，body `{"status": "已通过"}`。',
   '- 缺陷：`GET /api/defects.md?projectId={projectId}`；新建 `POST /api/defects/create.md`；详情 `GET /api/defects/{id}.md`；状态变更 `POST /api/defects/{id}/status.md`。',
   '',

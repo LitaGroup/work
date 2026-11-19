@@ -10,12 +10,7 @@ import {
 import { ReleaseStatus } from '../common/enums';
 import { Project } from '../projects/project.entity';
 
-/** 提测端可选值（至少选 1 个） */
-export const RELEASE_END_VALUES = ['APP', 'H5', '后端'] as const;
-
-export type ReleaseEnd = (typeof RELEASE_END_VALUES)[number];
-
-/** 提测单上的代码分支（仓库 + 分支，提测时快照，不关联 project_branches 登记） */
+/** 提测单上的代码分支（仓库 + 分支，历史提测快照，不关联 project_branches 登记） */
 export interface ReleaseBranch {
   repo: string;
   branch: string;
@@ -32,8 +27,9 @@ export const ACTIVE_RELEASE_STATUSES: readonly ReleaseStatus[] = [
 ];
 
 /**
- * 项目提测记录：点「提测」后生成一条，同时项目状态流转为「测试中」。
- * 允许重复提测（修复后重新提测追加新记录）；删除项目时应用层级联删除。
+ * 项目提测记录：迭代项提测创建一条记录并生成提测工单（互相绑定）。
+ * 提测端以提测工单 testEnds 配置为准；提测内容 / 测试人员 / 代码分支 / 访问地址
+ * 为历史字段（新提测不再采集，保留历史行原值）。
  */
 @Entity('project_releases')
 export class ProjectRelease {
@@ -50,23 +46,23 @@ export class ProjectRelease {
   @Column()
   projectId: number;
 
-  /** 提测内容（Markdown，可空） */
+  /** 提测内容（Markdown，历史字段：新提测不再采集，保留历史行） */
   @Column({ type: 'text', nullable: true })
   content: string | null;
 
-  /** 访问地址（可空） */
+  /** 访问地址（历史字段：新提测由提测工单字段承载） */
   @Column({ type: 'simple-json', nullable: true })
   urls: string[] | null;
 
-  /** 代码分支（仓库+分支 列表，可空） */
+  /** 代码分支（仓库+分支 列表，历史字段：新提测由提测工单字段承载） */
   @Column({ type: 'simple-json', nullable: true })
   branches: ReleaseBranch[] | null;
 
-  /** 测试人员姓名（至少 1 个，均须为用户系统内用户） */
+  /** 测试人员姓名（历史字段：新提测写空数组，测试人员由迭代项成员承载） */
   @Column({ type: 'simple-json' })
   testers: string[];
 
-  /** 提测端（APP / H5 / 后端，至少 1 个） */
+  /** 提测端（取值须为提测工单 testEnds 字段配置的选项，至少 1 个） */
   @Column({ type: 'simple-json', nullable: true })
   ends: string[] | null;
 

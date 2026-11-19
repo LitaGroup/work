@@ -8,14 +8,6 @@ import {
   DialogFooter,
   DialogClose,
 } from '@appica/ui-react/dialog'
-import {
-  Autocomplete,
-  AutocompleteInput,
-  AutocompleteContent,
-  AutocompleteEmpty,
-  AutocompleteList,
-  AutocompleteItem,
-} from '@appica/ui-react/autocomplete'
 import { Button } from '@appica/ui-react/button'
 import { Checkbox } from '@appica/ui-react/checkbox'
 import { Input } from '@appica/ui-react/input'
@@ -23,21 +15,18 @@ import { ScrollArea } from '@appica/ui-react/scroll-area'
 import { Textarea } from '@appica/ui-react/textarea'
 import {
   api,
-  RELEASE_ENDS,
   type BacklogDetail,
   type BacklogReleaseResult,
   type BacklogStatus,
   type BacklogSummary,
   type Project,
-  type ReleaseBranch,
-  type ReleaseEnd,
   type TicketWorkflowInputField,
 } from '../lib/api'
 import { matchesPinyinSearch } from '../lib/pinyin-search'
 import { WorkflowField } from './WorkflowFieldInput'
 
 /** 端映射：需求「涉及方」→ 提测端默认值（Android/iOS → APP，Backend → 后端） */
-const INVOLVED_END_MAP: Record<string, ReleaseEnd> = {
+const INVOLVED_END_MAP: Record<string, string> = {
   Android: 'APP',
   iOS: 'APP',
   H5: 'H5',
@@ -46,18 +35,13 @@ const INVOLVED_END_MAP: Record<string, ReleaseEnd> = {
 
 /**
  * 提测工单保留字段：由提测弹窗的专用控件承载（迭代项选择、标题、提测端、
- * 测试人员、分支、地址、各迭代项内容、详细说明），不进入动态字段区。
- * 与后端 `RELEASE_RESERVED_INPUT_KEYS` 保持一致。
+ * 补充描述），不进入动态字段区。与后端 `RELEASE_RESERVED_INPUT_KEYS` 保持一致。
  */
 const RELEASE_RESERVED_INPUT_KEYS = new Set([
   'title',
   'description',
   'backlogs',
-  'content',
   'testEnds',
-  'testers',
-  'branch',
-  'url',
 ])
 
 /** 迭代 / 迭代项引用字段：随所选迭代项自动代入，不渲染选择器 */
@@ -77,20 +61,22 @@ function defaultReleaseTitle(rows: BacklogSummary[], codes: string[]): string {
   return `${rows[0].title} 等${rows.length}个迭代`.slice(0, 200)
 }
 
-/** 按所选迭代项的原始需求「涉及方」预选提测端 */
+/** 按所选迭代项的原始需求「涉及方」预选提测端（仅保留工单配置的选项） */
 function defaultReleaseEnds(
   rows: BacklogSummary[],
   projects: Project[],
-): ReleaseEnd[] {
+  options: string[],
+): string[] {
+  const allowed = new Set(options)
   const involved = new Set<string>()
   for (const row of rows) {
     const project = projects.find((item) => item.id === row.projectId)
     for (const party of project?.involvedParties ?? []) involved.add(party)
   }
-  const ends = new Set<ReleaseEnd>()
+  const ends = new Set<string>()
   for (const party of involved) {
     const end = INVOLVED_END_MAP[party]
-    if (end) ends.add(end)
+    if (end && allowed.has(end)) ends.add(end)
   }
   return [...ends]
 }
@@ -115,11 +101,13 @@ function referenceSummary(
 
 /**
  * 批量提测弹窗：
- * - 可跨迭代多选迭代项（默认预选当前迭代项），每个迭代项填写各自的提测内容；
- * - 整单共用提测端（APP / H5 / 后端，多选至少 1 个）、测试人员、代码分支、访问地址；
- * - 表单按「提测工单」（release-ticket）发布版本起始节点的字段配置动态渲染：
- *   迭代项 / 迭代引用字段随所选迭代项自动代入，其余自定义字段按类型渲染；
- * - 提交后每个迭代项各生成提测工单 + 提测记录，汇总一条提测群消息。
+ * - 可跨迭代多选迭代项（默认预选当前迭代项）；
+ * - 提测端选项完全取自「提测工单」`testEnds` 字段配置，与工单保持一致；
+ * - 补充描述为空白可选输入，工单描述由平台追加迭代项上下文；
+ * - 表单其余字段按「提测工单」（release-ticket）发布版本起始节点的字段配置动态渲染：
+ *   迭代项 / 迭代引用字段随所选迭代项自动代入，其余自定义字段（如代码分支、访问地址）
+ *   按类型渲染；
+ * - 提交后每个迭代项各生成提测工单 + 提测记录，提测群通知由工单节点发送。
  */
 export function BacklogReleaseDialog({
   backlog,
@@ -134,19 +122,13 @@ export function BacklogReleaseDialog({
 }) {
   const [candidates, setCandidates] = useState<BacklogSummary[] | null>(null)
   const [projects, setProjects] = useState<Project[]>([])
-  const [userNames, setUserNames] = useState<string[]>([])
   const [selected, setSelected] = useState<number[]>([backlog.id])
-  const [contents, setContents] = useState<Record<number, string>>({})
   const [title, setTitle] = useState('')
   const [titleTouched, setTitleTouched] = useState(false)
   const [description, setDescription] = useState('')
-  const [descriptionTouched, setDescriptionTouched] = useState(false)
   const [dynamicValues, setDynamicValues] = useState<Record<string, string>>({})
-  const [ends, setEnds] = useState<ReleaseEnd[]>([])
+  const [ends, setEnds] = useState<string[]>([])
   const [endsTouched, setEndsTouched] = useState(false)
-  const [testers, setTesters] = useState<string[]>([''])
-  const [branches, setBranches] = useState<ReleaseBranch[]>([])
-  const [urls, setUrls] = useState<string[]>([])
   const [keyword, setKeyword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -160,6 +142,9 @@ export function BacklogReleaseDialog({
     () => new Map(configFields.map((field) => [field.key, field])),
     [configFields],
   )
+  /** 提测端字段与选项：与提测工单配置保持一致 */
+  const endsField = configFieldByKey.get('testEnds')
+  const endOptions = useMemo(() => endsField?.options ?? [], [endsField])
   /** 自定义动态字段：排除保留 key 与迭代/迭代项引用字段 */
   const dynamicFields = useMemo(
     () =>
@@ -180,17 +165,13 @@ export function BacklogReleaseDialog({
       ),
     [configFields],
   )
-  const reservedRequired = (key: string) =>
-    configFieldByKey.get(key)?.required ?? false
 
   useEffect(() => {
     if (!open) return
     setSelected([backlog.id])
-    setContents({})
     setTitle('')
     setTitleTouched(false)
-    setDescription(backlog.releaseDescriptionPreview ?? '')
-    setDescriptionTouched(false)
+    setDescription('')
     setDynamicValues(
       Object.fromEntries(
         configFields.map((field) => [
@@ -201,9 +182,6 @@ export function BacklogReleaseDialog({
     )
     setEnds([])
     setEndsTouched(false)
-    setTesters([''])
-    setBranches([])
-    setUrls([])
     setKeyword('')
     setError(null)
     setSaving(false)
@@ -215,10 +193,6 @@ export function BacklogReleaseDialog({
       .listProjects()
       .then(setProjects)
       .catch(() => setProjects([]))
-    api
-      .listUsers()
-      .then((users) => setUserNames(users.map((user) => user.name)))
-      .catch(() => setUserNames([]))
     // configFields 仅在迭代项切换/打开时变化，随 open 一起重置即可
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, backlog.id])
@@ -294,9 +268,9 @@ export function BacklogReleaseDialog({
       )
     }
     if (!endsTouched) {
-      setEnds(defaultReleaseEnds(selectedRows, projects))
+      setEnds(defaultReleaseEnds(selectedRows, projects, endOptions))
     }
-  }, [open, selectedRows, projects, titleTouched, endsTouched])
+  }, [open, selectedRows, projects, titleTouched, endsTouched, endOptions])
 
   const toggle = (id: number, checked: boolean) => {
     setSelected((list) =>
@@ -307,7 +281,7 @@ export function BacklogReleaseDialog({
     setError(null)
   }
 
-  const toggleEnd = (end: ReleaseEnd, checked: boolean) => {
+  const toggleEnd = (end: string, checked: boolean) => {
     setEndsTouched(true)
     setEnds((list) =>
       checked ? [...new Set([...list, end])] : list.filter((item) => item !== end),
@@ -317,30 +291,11 @@ export function BacklogReleaseDialog({
 
   const submit = async () => {
     if (saving) return
-    const items = selectedRows.map((row) => ({
-      backlogId: row.id,
-      content: contents[row.id]?.trim() || undefined,
-    }))
-    const validTesters = testers.map((name) => name.trim()).filter(Boolean)
-    const validBranches = branches
-      .map((row) => ({ repo: row.repo.trim(), branch: row.branch.trim() }))
-      .filter((row) => row.repo || row.branch)
-    const validUrls = urls.map((url) => url.trim()).filter(Boolean)
+    const items = selectedRows.map((row) => ({ backlogId: row.id }))
     let message: string | null = null
     if (items.length === 0) message = '至少选择一个迭代项'
-    else if (ends.length === 0) message = '提测端至少选择 1 个'
-    else if (validTesters.length === 0) message = '测试人员至少填写 1 人'
-    else if (validBranches.some((row) => !row.repo || !row.branch)) {
-      message = '代码分支需同时填写仓库与分支'
-    } else if (reservedRequired('branch') && validBranches.length === 0) {
-      message = '代码分支为必填项'
-    } else if (reservedRequired('url') && validUrls.length === 0) {
-      message = '访问地址为必填项'
-    } else if (
-      reservedRequired('content') &&
-      selectedRows.some((row) => !contents[row.id]?.trim())
-    ) {
-      message = '每个迭代项的提测内容均为必填项'
+    else if (endOptions.length > 0 && ends.length === 0) {
+      message = '提测端至少选择 1 个'
     } else {
       const missingDynamic = dynamicFields.find(
         (field) => field.required && !(dynamicValues[field.key] ?? '').trim(),
@@ -351,7 +306,7 @@ export function BacklogReleaseDialog({
       setError(message)
       return
     }
-    // 动态字段透传（保留 key 由后端按提测表单映射）；详细说明仅在人工修改后提交
+    // 动态字段透传（保留 key 由后端按提测表单映射）
     const inputValues: Record<string, unknown> = {}
     for (const field of dynamicFields) {
       const value = (dynamicValues[field.key] ?? '').trim()
@@ -369,7 +324,8 @@ export function BacklogReleaseDialog({
       const value = isMulti ? ids.join(',') : (ids[0] ?? '')
       if (value) inputValues[field.key] = value
     }
-    if (descriptionTouched && description.trim()) {
+    // 补充描述：仅人工填写时提交，平台会自动附加迭代项上下文
+    if (description.trim()) {
       inputValues.description = description.trim()
     }
     setSaving(true)
@@ -378,10 +334,7 @@ export function BacklogReleaseDialog({
       const result = await api.submitBacklogRelease({
         items,
         title: title.trim() || undefined,
-        ends,
-        testers: validTesters,
-        branches: validBranches,
-        urls: validUrls,
+        ends: endOptions.length > 0 ? ends : undefined,
         inputValues:
           Object.keys(inputValues).length > 0 ? inputValues : undefined,
       })
@@ -405,7 +358,7 @@ export function BacklogReleaseDialog({
         <DialogBody>
           <div className="flex max-h-[70vh] flex-col gap-4 overflow-y-auto pe-1">
             <p className="text-xs text-foreground-muted">
-              可跨迭代多选迭代项；每个迭代项各生成一张提测工单与一条提测记录，提测群只推送一条汇总消息。
+              可跨迭代多选迭代项；每个迭代项各生成一张提测工单与一条提测记录，提测群通知由工单节点发送。
               {configFields.length > 0 &&
                 '表单字段按「提测工单」配置动态生成，迭代项等引用字段自动代入。'}
             </p>
@@ -472,233 +425,41 @@ export function BacklogReleaseDialog({
             </label>
 
             <label className="flex flex-col gap-1 text-sm">
-              {configFieldByKey.get('description')?.label ?? '详细说明'}
-              {reservedRequired('description') && (
-                <span className="text-xs text-foreground-muted">
-                  已按当前迭代项预填上下文，可修改；留空表示使用自动生成内容
-                </span>
-              )}
+              {configFieldByKey.get('description')?.label ?? '补充描述'}
+              <span className="text-xs text-foreground-muted">
+                可选；平台会自动附带迭代项上下文，人工补充置于上下文之前
+              </span>
               <Textarea
-                rows={5}
+                rows={4}
                 value={description}
-                onChange={(e) => {
-                  setDescriptionTouched(true)
-                  setDescription(e.target.value)
-                }}
-                placeholder="补充提测背景、注意事项；留空自动生成迭代项上下文"
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="补充提测背景、注意事项、回归重点…"
               />
             </label>
 
-            <div className="flex flex-col gap-2">
-              <span className="text-sm">提测端（至少 1 个）</span>
-              <div className="flex flex-wrap items-center gap-4">
-                {RELEASE_ENDS.map((end) => (
-                  <label
-                    key={end}
-                    className="flex cursor-pointer items-center gap-2 text-sm"
-                  >
-                    <Checkbox
-                      checked={ends.includes(end)}
-                      onCheckedChange={(value) =>
-                        toggleEnd(end, value === true)
-                      }
-                    />
-                    {end}
-                  </label>
-                ))}
-              </div>
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <span className="text-sm">测试人员（至少 1 人）</span>
-              {testers.map((tester, index) => (
-                <div key={index} className="flex items-center gap-2">
-                  <div className="flex-1">
-                    <Autocomplete
-                      items={userNames}
-                      value={tester}
-                      onValueChange={(value) =>
-                        setTesters((list) =>
-                          list.map((item, i) =>
-                            i === index ? (value as string) : item,
-                          ),
-                        )
-                      }
-                      clearable
+            {endOptions.length > 0 && (
+              <div className="flex flex-col gap-2">
+                <span className="text-sm">
+                  {endsField?.label ?? '提测端'}（至少 1 个）
+                </span>
+                <div className="flex flex-wrap items-center gap-4">
+                  {endOptions.map((end) => (
+                    <label
+                      key={end}
+                      className="flex cursor-pointer items-center gap-2 text-sm"
                     >
-                      <AutocompleteInput
-                        placeholder="如 王五"
-                        aria-label={`测试人员 ${index + 1}`}
+                      <Checkbox
+                        checked={ends.includes(end)}
+                        onCheckedChange={(value) =>
+                          toggleEnd(end, value === true)
+                        }
                       />
-                      <AutocompleteContent>
-                        <AutocompleteEmpty>
-                          未找到匹配的用户（须为登录过本平台的用户）
-                        </AutocompleteEmpty>
-                        <AutocompleteList>
-                          {(item: string) => (
-                            <AutocompleteItem key={item} value={item}>
-                              {item}
-                            </AutocompleteItem>
-                          )}
-                        </AutocompleteList>
-                      </AutocompleteContent>
-                    </Autocomplete>
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() =>
-                      setTesters((list) =>
-                        list.length === 1
-                          ? ['']
-                          : list.filter((_, i) => i !== index),
-                      )
-                    }
-                  >
-                    移除
-                  </Button>
+                      {end}
+                    </label>
+                  ))}
                 </div>
-              ))}
-              <div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setTesters((list) => [...list, ''])}
-                >
-                  添加人员
-                </Button>
               </div>
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <span className="text-sm">
-                代码分支
-                {reservedRequired('branch') ? '（必填，整单共用）' : '（可空，整单共用）'}
-              </span>
-              {branches.map((branch, index) => (
-                <div key={index} className="flex items-center gap-2">
-                  <Input
-                    className="flex-1"
-                    placeholder="仓库，如 LitaGroup/lita-h5"
-                    value={branch.repo}
-                    onChange={(e) =>
-                      setBranches((list) =>
-                        list.map((row, i) =>
-                          i === index ? { ...row, repo: e.target.value } : row,
-                        ),
-                      )
-                    }
-                  />
-                  <Input
-                    className="w-48"
-                    placeholder="分支，如 test"
-                    value={branch.branch}
-                    onChange={(e) =>
-                      setBranches((list) =>
-                        list.map((row, i) =>
-                          i === index
-                            ? { ...row, branch: e.target.value }
-                            : row,
-                        ),
-                      )
-                    }
-                  />
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() =>
-                      setBranches((list) =>
-                        list.filter((_, i) => i !== index),
-                      )
-                    }
-                  >
-                    移除
-                  </Button>
-                </div>
-              ))}
-              <div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() =>
-                    setBranches((list) => [...list, { repo: '', branch: '' }])
-                  }
-                >
-                  添加分支
-                </Button>
-              </div>
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <span className="text-sm">
-                访问地址
-                {reservedRequired('url') ? '（必填，整单共用）' : '（可空，整单共用）'}
-              </span>
-              {urls.map((url, index) => (
-                <div key={index} className="flex items-center gap-2">
-                  <Input
-                    className="flex-1"
-                    placeholder="https://…"
-                    value={url}
-                    onChange={(e) =>
-                      setUrls((list) =>
-                        list.map((item, i) =>
-                          i === index ? e.target.value : item,
-                        ),
-                      )
-                    }
-                  />
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() =>
-                      setUrls((list) => list.filter((_, i) => i !== index))
-                    }
-                  >
-                    移除
-                  </Button>
-                </div>
-              ))}
-              <div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setUrls((list) => [...list, ''])}
-                >
-                  添加地址
-                </Button>
-              </div>
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <span className="text-sm">
-                各迭代项提测内容
-                {reservedRequired('content') ? '（必填）' : ''}
-              </span>
-              {selectedRows.map((row) => (
-                <label key={row.id} className="flex flex-col gap-1 text-sm">
-                  <span className="text-xs text-foreground-muted">
-                    {row.code} {row.title}
-                  </span>
-                  <Textarea
-                    rows={3}
-                    placeholder="本轮提测范围、注意事项、回归重点…"
-                    value={contents[row.id] ?? ''}
-                    onChange={(e) =>
-                      setContents((map) => ({
-                        ...map,
-                        [row.id]: e.target.value,
-                      }))
-                    }
-                  />
-                </label>
-              ))}
-              {selectedRows.length === 0 && (
-                <p className="text-xs text-foreground-muted">
-                  先选择迭代项后填写提测内容
-                </p>
-              )}
-            </div>
+            )}
 
             {referenceFields.length > 0 && (
               <div className="flex flex-col gap-1 rounded-[var(--radius-md)] bg-background-muted px-3 py-2 text-sm">

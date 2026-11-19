@@ -1000,6 +1000,119 @@ describe('BacklogsService 成员更新（MCP / 网页）', () => {
   });
 });
 
+describe('BacklogsService.getDetail 成员维护入口', () => {
+  /** getDetail 只用到 backlogs / iterations / projects / workers / workflowDefs / chat */
+  function makeDetailFixture(options?: {
+    row?: Backlog;
+    humanWorker?: { id: number; humanUserId: number } | null;
+  }) {
+    const row = options?.row ?? backlogRow();
+    const repository = {
+      findOne: jest.fn().mockResolvedValue(row),
+    };
+    const iterationsRepo = {
+      findOne: jest
+        .fn()
+        .mockResolvedValue({ id: 10, code: '2026W47', type: IterationType.T7 }),
+    };
+    const projectsRepo = {
+      findOne: jest.fn().mockResolvedValue({
+        id: 100,
+        name: '需求 A',
+        owner: null,
+        involvedParties: null,
+      }),
+    };
+    const workersRepo = {
+      findOne: jest.fn().mockResolvedValue(options?.humanWorker ?? null),
+      find: jest.fn().mockResolvedValue([]),
+    };
+    const workflowDefs = { findOne: jest.fn().mockResolvedValue(null) };
+    const chatRepo = { describe: jest.fn().mockResolvedValue(null) };
+    const service = new BacklogsService(
+      repository as never,
+      iterationsRepo as never,
+      projectsRepo as never,
+      workersRepo as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      workflowDefs as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      chatRepo as never,
+      {} as never,
+      {} as never,
+    );
+    return { service };
+  }
+
+  it('管理员可维护成员', async () => {
+    const { service } = makeDetailFixture();
+    const detail = await service.getDetail(1, {
+      userId: 1,
+      userName: '管理员',
+      isAdmin: true,
+    });
+    expect(detail.canManageMembers).toBe(true);
+    expect(detail.canOperate).toBe(true);
+  });
+
+  it('迭代项负责人机器人可维护成员', async () => {
+    const { service } = makeDetailFixture({
+      row: backlogRow({ ownerWorkerId: 2 }),
+    });
+    const detail = await service.getDetail(1, {
+      userId: null,
+      userName: '机器人 A',
+      isAdmin: false,
+      workerId: 2,
+    });
+    expect(detail.canManageMembers).toBe(true);
+    // 自动列入的负责人不计入「可操作」成员权限
+    expect(detail.canOperate).toBe(false);
+  });
+
+  it('网页负责人真人登录（经其真人机器人）可维护成员', async () => {
+    const { service } = makeDetailFixture({
+      row: backlogRow({ ownerWorkerId: 9 }),
+      humanWorker: { id: 9, humanUserId: 7 },
+    });
+    const detail = await service.getDetail(1, {
+      userId: 7,
+      userName: '小明',
+      isAdmin: false,
+    });
+    expect(detail.canManageMembers).toBe(true);
+  });
+
+  it('非管理员且非负责人不可维护成员', async () => {
+    const { service } = makeDetailFixture({
+      row: backlogRow({ ownerWorkerId: 2 }),
+      humanWorker: null,
+    });
+    const detail = await service.getDetail(1, {
+      userId: 7,
+      userName: '小明',
+      isAdmin: false,
+    });
+    expect(detail.canManageMembers).toBe(false);
+  });
+
+  it('未登录查看不可维护成员', async () => {
+    const { service } = makeDetailFixture();
+    const detail = await service.getDetail(1);
+    expect(detail.canManageMembers).toBe(false);
+  });
+});
+
 describe('BacklogsService.list', () => {
   it('默认排除取消项并限制条数', async () => {
     const fixture = makeOwnerFixture();

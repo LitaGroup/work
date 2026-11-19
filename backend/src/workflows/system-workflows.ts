@@ -225,26 +225,34 @@ export const DEPLOY_TICKET_WORKFLOW = {
 /**
  * 提测工单起始字段：以上字段与迭代项提测弹窗绑定。
  * - `backlogs`（backlog_multi）由平台自动代入所选迭代项；
- * - 保留 key（`title` / `description` / `content` / `testEnds` / `testers` / `branch` / `url`）
- *   由提测弹窗的专用控件承载并映射进工单 inputValues；
- * - 其余自定义字段在提测弹窗按类型动态渲染。
+ * - 保留 key（`title` / `description` / `testEnds` / `backlogs`）由提测弹窗的专用控件承载
+ *   并映射进工单 inputValues；
+ * - 其余自定义字段（如代码分支、访问地址）在提测弹窗按类型动态渲染，字段命名与必填
+ *   完全以本工单配置为准。
  */
 const releaseInputFields = [
-  ...inputFields(),
+  {
+    key: 'title',
+    label: '标题',
+    type: 'text' as const,
+    required: true,
+    placeholder: '一句话说明本次提测',
+    defaultValue: null,
+  },
+  {
+    key: 'description',
+    label: '补充描述',
+    type: 'textarea' as const,
+    required: false,
+    placeholder: '补充提测注意事项；平台会自动附带迭代项上下文',
+    defaultValue: null,
+  },
   {
     key: 'backlogs',
     label: '迭代项',
     type: 'backlog_multi' as const,
-    required: false,
+    required: true,
     placeholder: '随所选迭代项自动代入',
-    defaultValue: null,
-  },
-  {
-    key: 'content',
-    label: '提测内容',
-    type: 'textarea' as const,
-    required: false,
-    placeholder: '本轮提测范围、注意事项、回归重点…',
     defaultValue: null,
   },
   {
@@ -256,42 +264,37 @@ const releaseInputFields = [
     placeholder: 'APP / H5 / 后端',
     defaultValue: null,
   },
-  {
-    key: 'testers',
-    label: '测试人员',
-    type: 'text' as const,
-    required: false,
-    placeholder: '须为用户系统内用户，多个用顿号分隔',
-    defaultValue: null,
-  },
-  {
-    key: 'branch',
-    label: '代码分支',
-    type: 'text' as const,
-    required: false,
-    placeholder: '仓库 @ 分支，多个用顿号分隔',
-    defaultValue: null,
-  },
-  {
-    key: 'url',
-    label: '访问地址',
-    type: 'text' as const,
-    required: false,
-    placeholder: '多个用换行分隔',
-    defaultValue: null,
-  },
 ];
+
+/** 提测群通知模板：成员 @ 与迭代项清单取自工单关联迭代项 */
+const RELEASE_NOTICE_TEMPLATE = [
+  '**{{ticket.title}}**',
+  '',
+  '提测工单：[{{ticket.code}}]({{ticket.url}})',
+  '提测端：{{#if values.testEnds}}{{values.testEnds}}{{else}}—{{/if}}',
+  '提测人：{{initiator.mention}}',
+  '{{#if demanders}}需求方：{{#each demanders}}{{mention}} {{/each}}{{/if}}',
+  '{{#if testers}}测试人员：{{#each testers}}{{mention}} {{/each}}{{/if}}',
+  '{{#if developers}}开发人员：{{#each developers}}{{mention}} {{/each}}{{/if}}',
+  '提测时间：{{ticket.createdAt}}',
+  '',
+  '迭代项：',
+  '{{#each backlogs}}',
+  '- [{{code}} {{title}}]({{url}})（{{requirementType}} [{{requirementTitle}}]({{requirementUrl}})）',
+  '{{/each}}',
+].join('\n');
 
 /**
  * 系统内置的提测工单定义（迭代项 Backlog 的「提测」按钮发起）：
- * 发起（自动填入迭代项上下文，人工可补充）→ 提测处理 → 发起人验收。
+ * 发起（自动填入迭代项上下文，人工可补充）→ 提测群通知（平台官方机器人）
+ * → 提测处理 → 发起人验收。
  */
 export const RELEASE_TICKET_WORKFLOW = {
   code: 'release-ticket',
   category: '提测工单',
   name: '提测工单流程',
   description:
-    '迭代项提测申请工单：发起人提交提测说明（平台自动填入迭代项上下文），机器人整理提测材料，最后由发起人验收。',
+    '迭代项提测申请工单：发起人提交提测说明（平台自动填入迭代项上下文），平台向提测群发送通知，机器人整理提测材料，最后由发起人验收。',
   definition: {
     startNode: 'start',
     nodes: [
@@ -305,6 +308,21 @@ export const RELEASE_TICKET_WORKFLOW = {
         autoAccept: false,
         description:
           '由迭代项成员或管理员发起，工单内容自动填入迭代项上下文，可补充提测说明。',
+      },
+      {
+        key: 'notify',
+        name: '提测群通知',
+        kind: 'feishu-message',
+        taskTemplateId: null,
+        responsibleWorkerId: null,
+        inputFields: null,
+        autoAccept: false,
+        feishuChatId: null,
+        feishuChatName: null,
+        messageTemplate: RELEASE_NOTICE_TEMPLATE,
+        messageTitle: '提测-{{ticket.title}}',
+        description:
+          '以平台官方机器人身份向提测群发送提测通知，发送失败只记录不阻断流程。',
       },
       {
         key: 'submit',
@@ -328,7 +346,8 @@ export const RELEASE_TICKET_WORKFLOW = {
       },
     ],
     edges: [
-      { from: 'start', to: 'submit', outcome: null, label: '开始处理' },
+      { from: 'start', to: 'notify', outcome: null, label: '发送提测通知' },
+      { from: 'notify', to: 'submit', outcome: null, label: '开始处理' },
       {
         from: 'submit',
         to: 'acceptance',

@@ -159,7 +159,7 @@
 - **负责人/需求方自动列入成员**（系统维护、不可手动移除、不授予成员操作权限）：负责人取 `ownerWorkerId`（真人或 AI 机器人），需求方取 `projects.owner` 姓名对应的真人机器人；自动行角色为 负责人/需求方，按 `(role, workerId)` 去重，同一人不同角色显示多次。需求方在需求编辑/飞书同步变更时联动刷新该需求全部未取消迭代项的成员行。
 - 成员权限按机器人判定：仅「手动成员」授予操作权限（管理员与负责人既有规则不变），自动列入的负责人/需求方只展示不入权限。
 - 迭代项飞书沟通群按成员机器人进群：真人机器人 → 绑定真人 open_id，AI 机器人 → 绑定的飞书应用 app_id；成员新增（含负责人/需求方自动列入）自动拉入已有群，**只加不减**（移除成员不踢人），`feishu_bot_backlog_chats.memberWorkerIds` 跟踪已入群机器人。升级前的存量群没有成员跟踪，不能假定成员已在群内：迁移 `1801300000000` 重置既有跟踪，对账（非终态）按当前全部成员实际补拉（飞书拉人接口忽略已入群成员，重复调用安全），上线后一轮对账补齐历史遗漏成员；对账校验群存活，飞书侧已解散（`chat_status=dissolved`）或 chat_id 失效（错误码 232006）时把绑定置为 `destroyed` 并记录原因，详情页重新提供「飞书建群」。
-- `lita-work` MCP 的迭代项工具与网页写能力等价（权限复用成员/负责人/管理员规则）：`get_backlog`、`get_iteration`（迭代详情）、`update_backlog_members`、`update_backlog`（预期上线时间、负责人改派）、`change_backlog_status`（状态 + 备注）、`move_backlog`（移动迭代）、`create_backlog_task`（子任务/交付任务）、`create_backlog_release`（批量提测：迭代项 + 提测端/测试人员/分支/地址）。
+- `lita-work` MCP 的迭代项工具与网页写能力等价（权限复用成员/负责人/管理员规则）：`get_backlog`、`get_iteration`（迭代详情）、`update_backlog_members`、`update_backlog`（预期上线时间、负责人改派）、`change_backlog_status`（状态 + 备注）、`move_backlog`（移动迭代）、`create_backlog_task`（子任务/交付任务）、`create_backlog_release`（批量提测：迭代项 + 提测端/补充描述/工单动态字段）。
 - 状态：等待 → 执行 → 测试 → 发布 → 完成，允许回退与取消；由成员或管理员手动流转，记录操作人与各阶段时间；取消时联动取消未结束的交付任务。状态与任务/需求状态解耦。推进走弹窗（选状态 + 备注可空，备注写入事件流），网页两处（迭代表格/迭代项详情）共用同一弹窗组件，不再使用行内下拉。
 - 迭代项有自己的标题：转入后异步用 `title-naming` 场景生成 `「BL-{id}」+ 模型标题`（乐观条件更新，失败保留需求名快照兜底，不覆盖人工修改）；迭代表格展示迭代项标题并链接 `/backlogs/{id}`（需求仅保留 `#id` 提示）。
 - 属性：预期上线时间到小时（`backlogs.expectedOnlineAt`，timestamptz，北京时间展示），成员或管理员可改（`PATCH /api/backlogs/{id}`）。
@@ -167,10 +167,10 @@
 - 文档：原始需求下的全部文档默认自动关联到迭代项（转入时迁移 + 文档新增/导入/同步后自动绑定，取消的迭代项不绑定）；文档 Tab 不提供手动关联/取消关联，可继续新建、导入；删除文档时应用层清理关联，文档本体始终归属需求。
 - 事件流：`backlog_events` append-only 记录 created / status（from/to/remark）/ moved / owner（负责人 from/to/taskId）/ release-ticket（提测工单）等，`GET /api/backlogs/{id}/events`；`.md` 视图附文档清单与最近事件。
 - 任务与工单面板：`GET /api/backlogs/{id}/tasks` 返回交付任务为根的任务树（含全部子任务）与相关工单（`tickets.backlogId` ∪ `tickets.taskId` ∪ `ticket_workflow_runs.taskId` 去重）。
-- 提测：迭代项详情页「提测」按钮按系统工作流 `release-ticket`（代码预置，启动与迁移均按规范定义幂等发布 v1）创建工单，**支持一次选择多个迭代项（不限制同一迭代）**；每个迭代项各创建一张提测工单 + 一条提测记录（`project_releases.ticketId/ticketCode` 互相绑定），多个迭代项汇总为一条提测群消息（平台官方机器人，`RELEASE_FEISHU_CHAT_ID` 配置群）。提测弹窗表单按 `release-ticket` **发布版本**起始节点字段动态渲染（`GET /api/backlogs/{id}` 的 `releaseWorkflow.inputFields` 返回）：`backlog`/`iteration` 类型字段随所选迭代项自动代入（不渲染选择器），保留 key `title` / `description` / `content` / `testEnds` / `testers` / `branch` / `url` / `backlogs` 由弹窗专用控件承载并映射进工单 `inputValues`，其余字段按类型渲染并经 `POST /api/backlogs/release` 的 `inputValues`（MCP `create_backlog_release` 同参）透传。描述预填迭代项上下文且可编辑（人工内容作为补充段落置于自动上下文之前）；`tickets.backlogId` 记录关联，创建成功写 `release-ticket` 事件。提测不与迭代项/迭代状态绑定，同一迭代项可多次发起提测工单（完成、取消后仍可提测）。
+- 提测：迭代项详情页「提测」按钮按系统工作流 `release-ticket`（代码预置；升级迁移按规范定义发布新版本并预填 `RELEASE_FEISHU_CHAT_ID` 提测群）创建工单，**支持一次选择多个迭代项（不限制同一迭代）**；每个迭代项各创建一张提测工单 + 一条提测记录（`project_releases.ticketId/ticketCode` 互相绑定），提测群通知由工单内置的「提测群通知」（`feishu-message`）节点以平台官方机器人发送（每个工单一条，发送失败只记录不阻断）。提测弹窗表单按 `release-ticket` **发布版本**起始节点字段动态渲染（`GET /api/backlogs/{id}` 的 `releaseWorkflow.inputFields` 返回）：`backlog`/`iteration` 类型字段随所选迭代项自动代入（不渲染选择器），保留 key `title` / `description`（补充描述）/ `testEnds`（提测端，选项取自该字段配置，须与工单一致）/ `backlogs` 由弹窗专用控件承载并映射进工单 `inputValues`，其余字段（如代码分支、访问地址）按类型渲染并经 `POST /api/backlogs/release` 的 `inputValues`（MCP `create_backlog_release` 同参）透传。补充描述不预填，工单描述由「人工补充（置前）+ 平台自动生成的迭代项上下文 + 提测端」组成；`tickets.backlogId` 记录关联，创建成功写 `release-ticket` 事件。提测不与迭代项/迭代状态绑定，同一迭代项可多次发起提测工单（完成、取消后仍可提测）。
 - 新建任务：迭代项详情页「任务」分区「新建任务」按 `POST /api/backlogs/{id}/tasks` 处理——已有交付任务时创建其子任务（成员或管理员），任务描述自动附带系统上下文（任务树 / 迭代 / 相关工单 / 交付文档，见「任务处理中心」）；无交付任务时按所选执行机器人创建交付任务（系统任务定义「迭代-Backlog交付」）并登记迭代项负责人（仅管理员，等价于指定负责人）。
 - 迭代项详情页为标准双栏布局 + 右下角可收起 AI 面板（⌥A）；内容分区为 信息 / 文档 / 任务（任务树 + 相关工单）/ 缺陷（按 `backlogId` 关联，支持页内新建）/ 话题 / 事件 / 成员，分区与 URL hash 一一对应（如 `/backlogs/{id}#topics` 直达话题，切换分区同步 `history.replaceState`）；「话题」页签显示话题数（其他页面的 `TopicsPanel` 卡片标题也显示计数）。AI 页面上下文类型 `backlog`（`agent:page:backlog:*`），`contextReadUrl` 固定 `/api/backlogs/{id}.md`。
-- 迭代项成员在详情页「成员」分区内直接维护（管理员）：角色 + 成员（真人或 AI 机器人）选择后「添加」、每个手动成员「移除」，均立即调用 `PATCH /api/backlogs/{id}/members`（整体替换手动成员，负责人/需求方自动维持）。
+- 迭代项成员在详情页「成员」分区内直接维护（管理员或迭代项负责人，`GET /api/backlogs/{id}` 的 `canManageMembers` 决定入口）：角色 + 成员（真人或 AI 机器人）选择后「添加」、每个手动成员「移除」，均立即调用 `PATCH /api/backlogs/{id}/members`（整体替换手动成员，负责人/需求方自动维持）。
 - 支持向已有迭代追加需求、移动 backlog 到其它迭代（移动不重建交付任务与沟通群）；周迭代到期未完成的 backlog 留在原迭代，由管理员手动结转到新迭代。
 - backlog 不再自动建立飞书沟通群：由成员或管理员在迭代项详情页手动「飞书建群」（`POST /api/backlogs/{id}/feishu-chat`，群名 `LitaWork-迭代-{标题} 沟通群`），拉入成员真人与负责人机器人绑定的飞书应用（负责人后续绑定由对账补拉）；已建群直接「打开飞书群」（Feishu AppLink `applink.feishu.cn/client/chat/open?openChatId=...`，仅能打开已加入的群）；完成/取消后保留 7 天自动解散，建群失败保留绑定并由对账重试（每分钟、上限 30 次），终态不再建群；迁移清理从未建成群的残留绑定。
 - Agent 视图：`GET /api/iterations.md`、`GET /api/iterations/{id}.md`、`GET /api/backlogs/{id}.md`。
@@ -297,10 +297,10 @@
 
 ### 提测与缺陷
 
-- 提测是创建 `ProjectRelease` 记录；重复提测追加记录，不改变需求状态（状态由迭代项/创建时间推导）。提测状态：待冒烟 / 进行中 / 已通过 / 未通过。提测记录含提测端（`ends`，APP / H5 / 后端至少 1 个）与关联提测工单（`ticketId/ticketCode`）。
-- 提测入口为 `POST /api/backlogs/release[.md]`（批量，迭代项维度）；旧的 `POST /api/projects/{id}/release[.md]` 与 `RELEASE_WEBHOOK_URL` 群机器人 webhook 已下线，不要再恢复。
-- 提测群消息统一以**平台官方机器人**身份发送（Markdown 卡片，`RELEASE_FEISHU_CHAT_ID` 指定群 chat_id），@ 提测人/需求方/测试人员/开发人员（官方应用 open_id 优先，回退登录 openId，解析不到降级姓名）；属于平台名义发送，不受 `FEISHU_GROUP_SEND_PAUSED` 约束，发送失败只告警不影响提测。
-- 提测至少需要一名用户系统内测试人员，提测端至少 1 个；提测群消息（平台官方机器人，`RELEASE_FEISHU_CHAT_ID`）异步发送，失败不阻断提测；不再发送测试人员/成员私聊卡片。
+- 提测是创建 `ProjectRelease` 记录；重复提测追加记录，不改变需求状态（状态由迭代项/创建时间推导）。提测状态：待冒烟 / 进行中 / 已通过 / 未通过。提测记录含提测端（`ends`，取值须为提测工单 `testEnds` 字段配置的选项）与关联提测工单（`ticketId/ticketCode`）；提测内容/测试人员/代码分支/访问地址不再由记录采集，改由提测工单字段与迭代项成员承载（历史行保留原值）。
+- 提测入口为 `POST /api/backlogs/release[.md]`（批量，迭代项维度，入参 `items[{backlogId}]` / `ends` / `inputValues` / `title` / `taskId`）；旧的 `POST /api/projects/{id}/release[.md]` 与 `RELEASE_WEBHOOK_URL` 群机器人 webhook 已下线，不要再恢复。
+- 提测群通知由提测工单内置的「提测群通知」（`feishu-message`）节点以**平台官方机器人**身份发送（目标群取节点 `feishuChatId`，升级迁移按 `RELEASE_FEISHU_CHAT_ID` 预填），@ 提测人/需求方/测试人员/开发人员（成员按迭代项角色汇总；官方应用 open_id 优先，回退登录 openId，解析不到降级姓名）；属于平台名义发送，不受 `FEISHU_GROUP_SEND_PAUSED` 约束，发送失败只把节点运行记为「已失败」，不阻断工单。
+- 提测端须与提测工单 `testEnds` 字段一致（工单未配置该字段时不采集）；不再要求填写测试人员，也不再发送测试人员/成员私聊卡片。
 - 真实提测状态变化后记录判定人/时间；切回待冒烟或进行中时清空。机器人提测的状态变化写入其收件箱，由 LOOP 在空闲时通知。
 - 缺陷状态：开放 / 修复 / 关闭；优先级：高 / 中 / 低；端：前端 / 后端 / APP端 / 未知。缺陷仅平台内维护，不回写飞书。
 - 缺陷可经 `defects.backlogId` 关联迭代项（应用层软引用，可为空）：迭代项详情页「缺陷」Tab 按 `backlogId` 过滤并支持页内新建（`GET /api/defects?backlogId=`、`POST /api/defects` 带 `backlogId`）；迭代项场景新建默认不关联项目级提测（`releaseId=null`），不触发自动派单；历史缺陷保持为空，仍按项目维度可查。

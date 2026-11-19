@@ -39,8 +39,6 @@ import {
   ReleasesService,
   SubmitReleaseBatchInput,
 } from '../releases/releases.service';
-import type { ReleaseNoticeInput } from '../releases/release-notify.service';
-import type { FeishuOfficialMessageSender } from '../feishu-bot/feishu-bot-official-message.service';
 import { FeishuBotBacklogChatService } from '../feishu-bot/feishu-bot-backlog-chat.service';
 import type { BacklogChatInfo } from '../feishu-bot/feishu-bot-backlog-chat.service';
 import { Backlog, BacklogMember } from './backlog.entity';
@@ -102,16 +100,14 @@ const BACKLOG_LIST_LIMIT = 1000;
 /**
  * 提测工单保留字段：由提测弹窗专用控件承载并映射进工单 inputValues，
  * 不从动态字段区透传（配置驱动渲染时跳过这些 key，避免重复输入）。
+ * 提测端选项、补充描述与迭代项完全以工单配置为准；代码分支/访问地址等
+ * 作为普通字段由工单配置定义并按类型动态渲染。
  */
 const RELEASE_RESERVED_INPUT_KEYS = new Set([
   'title',
   'description',
   'backlogs',
-  'content',
   'testEnds',
-  'testers',
-  'branch',
-  'url',
 ]);
 
 /**
@@ -679,7 +675,7 @@ export class BacklogsService implements OnModuleInit {
     return { from, to: worker.name, previousTaskId };
   }
 
-  /** 详情视图：迭代项 + 需求方/涉及方（实时取自原始需求）+ 所属迭代标识 + 提测工单工作流配置（供前端动态提测表单）+ 提测描述预览 + 飞书沟通群状态（供建群/打开群按钮）+ 当前查看者操作权限 */
+  /** 详情视图：迭代项 + 需求方/涉及方（实时取自原始需求）+ 所属迭代标识 + 提测工单工作流配置（供前端动态提测表单）+ 飞书沟通群状态（供建群/打开群按钮）+ 当前查看者操作权限 */
   async getDetail(
     id: number,
     actor?: IterationActor,
@@ -694,12 +690,12 @@ export class BacklogsService implements OnModuleInit {
         type: Iteration['type'];
       } | null;
       releaseWorkflow: BacklogReleaseWorkflow | null;
-      /** 提测弹窗「详细说明」预填文本（迭代项上下文，不含表单项动态行） */
-      releaseDescriptionPreview: string | null;
       /** 飞书沟通群：未建群/已解散为 null */
       feishuChat: BacklogChatInfo | null;
       /** 当前查看者是否可操作（管理员或手动成员；自动列入的负责人/需求方不计） */
       canOperate: boolean;
+      /** 当前查看者是否可维护成员（管理员或迭代项负责人） */
+      canManageMembers: boolean;
     }
   > {
     const backlog = await this.findOne(id);
@@ -721,6 +717,8 @@ export class BacklogsService implements OnModuleInit {
     ]);
     const canOperate =
       !!actor && (actor.isAdmin || (await this.isMember(backlog, actor)));
+    const canManageMembers =
+      !!actor && (await this.canUpdateMembers(backlog, actor));
     return {
       ...backlog,
       owner: project?.owner ?? null,
@@ -729,13 +727,9 @@ export class BacklogsService implements OnModuleInit {
         ? { id: iteration.id, code: iteration.code, type: iteration.type }
         : null,
       releaseWorkflow: await this.releaseWorkflowInfo(),
-      releaseDescriptionPreview: this.buildReleaseContext(
-        backlog,
-        iteration,
-        project,
-      ),
       feishuChat,
       canOperate,
+      canManageMembers,
     };
   }
 
@@ -1041,7 +1035,7 @@ export class BacklogsService implements OnModuleInit {
 
   /**
    * 批量提测：所选迭代项各创建一张提测工单 + 一条提测记录（互相绑定），
-   * 多个迭代项汇总为一条提测群消息（平台官方机器人）。
+   * 提测群通知由工单「提测群通知」节点发送。
    * 提测不与迭代项/迭代状态绑定，同一迭代项可多次发起。
    */
   async submitRelease(
@@ -1049,13 +1043,13 @@ export class BacklogsService implements OnModuleInit {
     actor: IterationActor,
     creator: { user?: User | null; worker?: Worker | null },
   ): Promise<BacklogReleaseResult> {
-    const requested = (Array.isArray(input.items) ? input.items : [])
-      .map((item) => ({
-        backlogId: Number(item?.backlogId),
-        content: (item?.content ?? '').trim(),
-      }))
-      .filter((item) => Number.isInteger(item.backlogId) && item.backlogId > 0);
-    const ids = [...new Set(requested.map((item) => item.backlogId))];
+    const ids = [
+      ...new Set(
+        (Array.isArray(input.items) ? input.items : [])
+          .map((item) => Number(item?.backlogId))
+          .filter((id) => Number.isInteger(id) && id > 0),
+      ),
+    ];
     if (ids.length === 0) {
       throw new BadRequestException('至少选择一个迭代项');
     }
@@ -1102,11 +1096,18 @@ export class BacklogsService implements OnModuleInit {
       );
     }
 
-    // 整单共用字段：测试人员 / 提测端 / 分支 / 地址 / 来源任务
-    const shared = await this.releases.prepareBatch(input, {
-      operator: actor.userName,
-      workerId: actor.workerId ?? null,
-    });
+    // 提测端选项完全以工单 testEnds 字段配置为准；工单未配置该字段时不采集提测端
+    const endsField = workflow.inputFields.find(
+      (field) => field.key === 'testEnds',
+    );
+    const shared = await this.releases.prepareBatch(
+      input,
+      {
+        operator: actor.userName,
+        workerId: actor.workerId ?? null,
+      },
+      endsField?.options ?? [],
+    );
 
     const iterationIds = [...new Set(ordered.map((row) => row.iterationId))];
     const projectIds = [...new Set(ordered.map((row) => row.projectId))];
@@ -1116,9 +1117,6 @@ export class BacklogsService implements OnModuleInit {
     ]);
     const iterationById = new Map(iterations.map((row) => [row.id, row]));
     const projectById = new Map(projects.map((row) => [row.id, row]));
-    const contentById = new Map(
-      requested.map((item) => [item.backlogId, item.content]),
-    );
 
     const count = ordered.length;
     const baseTitle = input.title?.trim();
@@ -1135,7 +1133,6 @@ export class BacklogsService implements OnModuleInit {
     for (const backlog of ordered) {
       const iteration = iterationById.get(backlog.iterationId) ?? null;
       const project = projectById.get(backlog.projectId) ?? null;
-      const content = contentById.get(backlog.id) ?? '';
       const ticketTitle = (
         count === 1 && baseTitle
           ? baseTitle
@@ -1145,7 +1142,6 @@ export class BacklogsService implements OnModuleInit {
         backlog,
         iteration,
         project,
-        content,
         shared,
         manualDescription,
       );
@@ -1157,16 +1153,12 @@ export class BacklogsService implements OnModuleInit {
             ...dynamicValues,
             title: ticketTitle,
             description,
-            // 提测群消息模板按字段渲染：提测端 / 分支 / 地址 / 提测内容随工单带入；
-            // 发布迭代字段直接带入选中的迭代项，保证必填校验与模板循环一致
+            // 迭代项字段直接带入选中的迭代项，保证必填校验与模板循环一致；
+            // 提测端仅在工单配置了 testEnds 字段时带入（须为其配置的选项）
             backlogs: [backlog.id],
-            content,
-            testEnds: shared.ends,
-            testers: shared.testers.join('、'),
-            branch: shared.branches
-              .map((row) => `${row.repo} @ ${row.branch}`)
-              .join('、'),
-            url: shared.urls.join('\n'),
+            ...(endsField && shared.ends.length > 0
+              ? { testEnds: shared.ends }
+              : {}),
           },
           backlogId: backlog.id,
         },
@@ -1174,11 +1166,7 @@ export class BacklogsService implements OnModuleInit {
       );
       const release = await this.releases.createRecord({
         projectId: backlog.projectId,
-        content,
         ends: shared.ends,
-        testers: shared.testers,
-        branches: shared.branches,
-        urls: shared.urls,
         operator: shared.operator,
         workerId: shared.workerId,
         sourceTaskId: shared.sourceTaskId,
@@ -1208,20 +1196,6 @@ export class BacklogsService implements OnModuleInit {
       });
     }
 
-    // 多迭代项汇总为一条提测群消息；发送失败只告警，不影响提测
-    const notice = this.buildReleaseNotice(
-      title,
-      ordered,
-      projectById,
-      contentById,
-      shared,
-      creator,
-      actor,
-    );
-    void this.releases.notifyBatch(notice).catch((e: Error) => {
-      this.logger.warn(`提测群通知失败：${e.message}`);
-    });
-
     return { title, items: results };
   }
 
@@ -1242,128 +1216,30 @@ export class BacklogsService implements OnModuleInit {
         (item) =>
           `- ${item.code} ${item.title} → 工单 ${item.ticketCode}（#${item.ticketId}），提测记录 #${item.releaseId}`,
       ),
-      '- 提测群：已提交平台官方机器人发送（未配置 RELEASE_FEISHU_CHAT_ID 或暂停时不发送）',
+      '- 提测群：由提测工单「提测群通知」节点以平台官方机器人发送（未配置目标群或发送失败只记录，不阻断工单）',
       '- 提测记录清单：`GET /api/releases.md?projectId={projectId}`',
       '- 推进提测状态：`POST /api/releases/{id}/status.md`',
       '',
     ].join('\n');
   }
 
-  /** 提测群通知上下文：需求方取原始需求 owner，开发人员取前端/后端/客户端成员 */
-  private buildReleaseNotice(
-    title: string,
-    backlogs: Backlog[],
-    projectById: Map<number, Project>,
-    contentById: Map<number, string>,
-    shared: Awaited<ReturnType<ReleasesService['prepareBatch']>>,
-    creator: { user?: User | null; worker?: Worker | null },
-    actor: IterationActor,
-  ): ReleaseNoticeInput {
-    const demanders = new Set<string>();
-    for (const backlog of backlogs) {
-      const project = projectById.get(backlog.projectId);
-      for (const name of splitMemberNames(project?.owner ?? '')) {
-        demanders.add(name);
-      }
-    }
-    const developerRoles = new Set(['前端', '后端', '客户端']);
-    const developers = new Set<string>();
-    for (const backlog of backlogs) {
-      for (const member of backlog.members ?? []) {
-        if (developerRoles.has(member.role)) developers.add(member.name);
-      }
-    }
-    const sender: FeishuOfficialMessageSender = creator.user
-      ? { type: 'user', id: creator.user.id, name: creator.user.name }
-      : creator.worker
-        ? {
-            type: 'worker',
-            id: creator.worker.id,
-            name: creator.worker.name,
-          }
-        : { type: 'user', id: actor.userId ?? 0, name: actor.userName };
-    return {
-      title,
-      ends: shared.ends,
-      operator: shared.operator,
-      testers: shared.testers,
-      demanders: [...demanders],
-      developers: [...developers],
-      branches: shared.branches,
-      urls: shared.urls,
-      items: backlogs.map((backlog) => ({
-        code: backlog.code,
-        title: backlog.title,
-        content: contentById.get(backlog.id) || null,
-      })),
-      createdAt: new Date(),
-      sender,
-    };
-  }
-
-  /** 提测工单描述：迭代项上下文 + 整单共用的提测字段 + 本迭代项提测内容（人工说明按语义处理） */
+  /** 提测工单描述：人工补充描述（置前）+ 迭代项上下文 + 提测端 */
   private buildReleaseDescription(
     backlog: Backlog,
     iteration: Iteration | null,
     project: Project | null,
-    content: string,
     shared: Awaited<ReturnType<ReleasesService['prepareBatch']>>,
     manualDescription?: string | null,
   ): string {
     const context = this.buildReleaseContext(backlog, iteration, project);
-    const extra = [
-      `- 提测端：${shared.ends.join(' / ')}`,
-      `- 测试人员：${shared.testers.join('、')}`,
-      ...(shared.branches.length
-        ? [
-            `- 代码分支：${shared.branches
-              .map((row) => `\`${row.repo}\` @ \`${row.branch}\``)
-              .join('、')}`,
-          ]
-        : []),
-      ...(shared.urls.length ? [`- 访问地址：${shared.urls.join('、')}`] : []),
-    ];
-    // 人工描述分两种：基于预填上下文编辑（含「- 迭代项：」标识）直接作为正文，
-    // 避免与自动上下文重复；简短补充说明则置于自动上下文之前。
-    const manual = this.resolveManualDescription(backlog, manualDescription);
-    const body = manual?.edited
-      ? [manual.text]
-      : manual
-        ? [manual.text, '']
-        : [];
-    const fromContext = manual?.edited ? [] : [context];
-    return [
-      ...body,
-      ...fromContext,
-      ...extra,
-      '',
-      '## 提测内容',
-      '',
-      content || '（无）',
-    ].join('\n');
+    const manual = manualDescription?.trim();
+    const extra = shared.ends.length
+      ? [`- 提测端：${shared.ends.join(' / ')}`]
+      : [];
+    return [...(manual ? [manual, ''] : []), context, ...extra, ''].join('\n');
   }
 
-  /**
-   * 人工描述归类：
-   * - `edited`：用户基于预填上下文修改（含「- 迭代项：」标识），作为完整描述正文；
-   * - 其它（简短补充说明）：置于自动上下文之前；
-   * - 多迭代项批量时，非本迭代项的上下文编辑忽略，避免串用入口迭代项内容。
-   */
-  private resolveManualDescription(
-    backlog: Backlog,
-    manual?: string | null,
-  ): { text: string; edited: boolean } | null {
-    const text = manual?.trim();
-    if (!text) return null;
-    if (text.includes('- 迭代项：')) {
-      return text.includes(`- 迭代项：${backlog.code} ${backlog.title}`)
-        ? { text, edited: true }
-        : null;
-    }
-    return { text, edited: false };
-  }
-
-  /** 迭代项上下文（提测描述静态段，不含表单依赖的提测端/测试人员/分支/地址/提测内容） */
+  /** 迭代项上下文（提测描述静态段，不含提测端等表单字段） */
   private buildReleaseContext(
     backlog: Backlog,
     iteration: Iteration | null,
@@ -1394,7 +1270,7 @@ export class BacklogsService implements OnModuleInit {
     ].join('\n');
   }
 
-  /** 提测弹窗「详细说明」人工填写值（空白视为未填写，由平台自动生成） */
+  /** 提测弹窗「补充描述」人工填写值（空白视为未填写，仅保留平台自动上下文） */
   private releaseManualDescription(
     inputValues?: Record<string, unknown>,
   ): string | null {
@@ -2097,25 +1973,33 @@ export class BacklogsService implements OnModuleInit {
   }
 
   /** 成员维护权限：管理员，或该迭代项的负责人机器人（网页负责人真人登录经其真人机器人判定） */
-  private async assertCanUpdateMembers(
+  private async canUpdateMembers(
     backlog: Backlog,
     actor: IterationActor,
-  ): Promise<void> {
-    if (actor.isAdmin) return;
+  ): Promise<boolean> {
+    if (actor.isAdmin) return true;
     if (
       actor.workerId !== null &&
       actor.workerId !== undefined &&
       backlog.ownerWorkerId === actor.workerId
     ) {
-      return;
+      return true;
     }
     if (actor.userId !== null && backlog.ownerWorkerId !== null) {
       const humanWorker = await this.workers.findOne({
         where: { humanUserId: actor.userId },
         select: { id: true },
       });
-      if (humanWorker && backlog.ownerWorkerId === humanWorker.id) return;
+      if (humanWorker && backlog.ownerWorkerId === humanWorker.id) return true;
     }
+    return false;
+  }
+
+  private async assertCanUpdateMembers(
+    backlog: Backlog,
+    actor: IterationActor,
+  ): Promise<void> {
+    if (await this.canUpdateMembers(backlog, actor)) return;
     throw new ForbiddenException('仅管理员或迭代项负责人可修改成员');
   }
 }

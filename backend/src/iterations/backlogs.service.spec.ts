@@ -171,15 +171,11 @@ function buildTaskService() {
   const releases = {
     prepareBatch: jest.fn().mockResolvedValue({
       ends: ['APP'],
-      testers: ['赵六'],
-      branches: [],
-      urls: [],
       operator: '李四',
       workerId: null,
       sourceTaskId: null,
     }),
     createRecord: jest.fn().mockResolvedValue({ id: 21 }),
-    notifyBatch: jest.fn().mockResolvedValue(true),
   };
   const tickets = { create: jest.fn() };
   const workflowDefs = { findOne: jest.fn() };
@@ -341,11 +337,12 @@ describe('BacklogsService.createTask', () => {
 });
 
 describe('BacklogsService.submitRelease', () => {
-  it('单个迭代项：建工单 + 提测记录（绑定），汇总一条提测群消息', async () => {
+  it('单个迭代项：建工单 + 提测记录（绑定）', async () => {
     const {
       service,
       backlogs,
       workflowDefs,
+      workflowVersions,
       tickets,
       releases,
       backlogEvents,
@@ -364,6 +361,40 @@ describe('BacklogsService.submitRelease', () => {
       enabled: true,
       latestPublishedVersion: 1,
     });
+    workflowVersions.findOne.mockResolvedValue({
+      definition: {
+        startNode: 'start',
+        nodes: [
+          {
+            key: 'start',
+            kind: 'start',
+            inputFields: [
+              { key: 'title', label: '标题', type: 'text', required: true },
+              {
+                key: 'description',
+                label: '补充描述',
+                type: 'textarea',
+                required: false,
+              },
+              {
+                key: 'backlogs',
+                label: '迭代项',
+                type: 'backlog_multi',
+                required: true,
+              },
+              {
+                key: 'testEnds',
+                label: '提测端',
+                type: 'multiselect',
+                required: false,
+                options: ['APP', 'H5', '后端'],
+              },
+            ],
+          },
+        ],
+        edges: [],
+      },
+    });
     tickets.create.mockResolvedValue({
       id: 11,
       code: 'WO-0011',
@@ -374,11 +405,9 @@ describe('BacklogsService.submitRelease', () => {
 
     const result = await service.submitRelease(
       {
-        items: [{ backlogId: 12, content: '回归登录' }],
+        items: [{ backlogId: 12 }],
         ends: ['APP', 'H5'],
-        testers: ['赵六'],
-        branches: [{ repo: 'LitaGroup/lita-h5', branch: 'test' }],
-        urls: ['https://staging.example.com'],
+        inputValues: { description: '请重点回归登录' },
       },
       memberActor,
       { user: { id: 21, name: '李四' } as never, worker: null },
@@ -398,6 +427,12 @@ describe('BacklogsService.submitRelease', () => {
         },
       ],
     });
+    // 提测端选项取工单 testEnds 字段配置
+    expect(releases.prepareBatch).toHaveBeenCalledWith(
+      expect.objectContaining({ ends: ['APP', 'H5'] }),
+      expect.anything(),
+      ['APP', 'H5', '后端'],
+    );
     expect(tickets.create).toHaveBeenCalledWith(
       expect.objectContaining({ backlogId: 12, workflowDefinitionId: 9 }),
       expect.anything(),
@@ -405,9 +440,7 @@ describe('BacklogsService.submitRelease', () => {
     expect(releases.createRecord).toHaveBeenCalledWith(
       expect.objectContaining({
         projectId: 7,
-        content: '回归登录',
         ends: ['APP'],
-        testers: ['赵六'],
         ticketId: 11,
         ticketCode: 'WO-0011',
       }),
@@ -417,10 +450,7 @@ describe('BacklogsService.submitRelease', () => {
         {
           inputValues: {
             description: string;
-            content: string;
             testEnds: string[];
-            branch: string;
-            url: string;
             backlogs: number[];
           };
         },
@@ -430,32 +460,15 @@ describe('BacklogsService.submitRelease', () => {
       '原始需求：礼包改版（#7）',
     );
     expect(ticketInput.inputValues.description).toContain('提测端：APP');
-    expect(ticketInput.inputValues.description).toContain('回归登录');
-    // 提测群消息模板直接引用的字段随工单带入
-    expect(ticketInput.inputValues.content).toBe('回归登录');
+    expect(ticketInput.inputValues.description).toContain('请重点回归登录');
     expect(ticketInput.inputValues.testEnds).toEqual(['APP']);
-    expect(ticketInput.inputValues.branch).toBe('');
-    expect(ticketInput.inputValues.url).toBe('');
     expect(ticketInput.inputValues.backlogs).toEqual([12]);
     expect(backlogEvents.save).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'release-ticket' }),
     );
-
-    await new Promise((r) => setTimeout(r, 0)); // 放行 fire-and-forget 通知
-    expect(releases.notifyBatch).toHaveBeenCalledWith(
-      expect.objectContaining({
-        title: '提测-BL-12 礼包改版',
-        ends: ['APP'],
-        operator: '李四',
-        testers: ['赵六'],
-        demanders: ['王五'],
-        developers: ['李四'],
-        items: [{ code: 'BL-12', title: '礼包改版', content: '回归登录' }],
-      }),
-    );
   });
 
-  it('配置动态字段透传、保留 key 由平台覆盖、人工描述置前', async () => {
+  it('配置动态字段透传、保留 key 由平台覆盖、人工补充描述置前', async () => {
     const {
       service,
       backlogs,
@@ -481,10 +494,23 @@ describe('BacklogsService.submitRelease', () => {
             inputFields: [
               { key: 'title', label: '标题', type: 'text', required: true },
               {
+                key: 'description',
+                label: '补充描述',
+                type: 'textarea',
+                required: false,
+              },
+              {
                 key: 'backlogs',
                 label: '迭代项',
                 type: 'backlog_multi',
                 required: true,
+              },
+              {
+                key: 'testEnds',
+                label: '提测端',
+                type: 'multiselect',
+                required: false,
+                options: ['APP', 'H5', '后端'],
               },
             ],
           },
@@ -497,9 +523,8 @@ describe('BacklogsService.submitRelease', () => {
 
     await service.submitRelease(
       {
-        items: [{ backlogId: 12, content: '回归' }],
+        items: [{ backlogId: 12 }],
         ends: ['APP'],
-        testers: ['赵六'],
         inputValues: {
           expectedDate: '2026-11-20',
           backlogs: [999],
@@ -517,8 +542,8 @@ describe('BacklogsService.submitRelease', () => {
     expect(ticketInput.inputValues.expectedDate).toBe('2026-11-20');
     // 保留 key 由平台按所选迭代项覆盖，客户端传值不生效
     expect(ticketInput.inputValues.backlogs).toEqual([12]);
-    expect(ticketInput.inputValues.testers).toBe('赵六');
-    // 人工描述作为补充段落置于自动上下文之前
+    expect(ticketInput.inputValues.testEnds).toEqual(['APP']);
+    // 人工补充描述作为附加段落置于自动上下文之前
     expect(String(ticketInput.inputValues.description)).toContain(
       '请重点回归登录',
     );
@@ -536,11 +561,13 @@ describe('BacklogsService.submitRelease', () => {
     );
     expect(workflow?.inputFields.map((field) => field.key)).toEqual([
       'title',
+      'description',
       'backlogs',
+      'testEnds',
     ]);
   });
 
-  it('基于预填上下文编辑的描述直接作为正文，不重复自动上下文', async () => {
+  it('工单未配置提测端字段时不带 testEnds', async () => {
     const { service, backlogs, workflowDefs, tickets, releases } =
       buildTaskService();
     backlogs.find.mockResolvedValue([{ ...backlogRow, members: [] }]);
@@ -551,16 +578,9 @@ describe('BacklogsService.submitRelease', () => {
     });
     tickets.create.mockResolvedValue({ id: 11, code: 'WO-0011', title: 't' });
     releases.createRecord.mockResolvedValue({ id: 21 });
-    const edited =
-      '## 迭代项提测信息\n\n- 迭代项：BL-12 礼包改版（状态：执行）\n- 人工补充：注意回归';
 
     await service.submitRelease(
-      {
-        items: [{ backlogId: 12, content: '回归' }],
-        ends: ['APP'],
-        testers: ['赵六'],
-        inputValues: { description: edited },
-      },
+      { items: [{ backlogId: 12 }], ends: ['APP'] },
       adminActor,
       { user: { id: 1, name: '管理员' } as never, worker: null },
     );
@@ -568,10 +588,7 @@ describe('BacklogsService.submitRelease', () => {
     const [[ticketInput]] = tickets.create.mock.calls as [
       [{ inputValues: Record<string, unknown> }],
     ];
-    const description = String(ticketInput.inputValues.description);
-    expect(description.startsWith(edited)).toBe(true);
-    // 不再追加自动上下文，避免重复
-    expect(description.split('## 迭代项提测信息').length - 1).toBe(1);
+    expect(ticketInput.inputValues.testEnds).toBeUndefined();
   });
 
   it('多个迭代项：标题自动「等x个迭代」，每个迭代项各建工单与提测记录', async () => {
@@ -618,12 +635,8 @@ describe('BacklogsService.submitRelease', () => {
 
     const result = await service.submitRelease(
       {
-        items: [
-          { backlogId: 12, content: '回归登录' },
-          { backlogId: 13, content: '回归签到' },
-        ],
+        items: [{ backlogId: 12 }, { backlogId: 13 }],
         ends: ['APP'],
-        testers: ['钱七'],
       },
       adminActor,
       { user: { id: 1, name: '管理员' } as never, worker: null },
@@ -636,18 +649,6 @@ describe('BacklogsService.submitRelease', () => {
     ]);
     expect(tickets.create).toHaveBeenCalledTimes(2);
     expect(releases.createRecord).toHaveBeenCalledTimes(2);
-    await new Promise((r) => setTimeout(r, 0));
-    expect(releases.notifyBatch).toHaveBeenCalledTimes(1);
-    expect(releases.notifyBatch).toHaveBeenCalledWith(
-      expect.objectContaining({
-        title: '礼包改版 等2个迭代',
-        demanders: ['王五', '赵六'],
-        items: [
-          { code: 'BL-12', title: '礼包改版', content: '回归登录' },
-          { code: 'BL-13', title: '签到优化', content: '回归签到' },
-        ],
-      }),
-    );
   });
 
   it('非成员非管理员不可发起提测', async () => {
@@ -656,7 +657,7 @@ describe('BacklogsService.submitRelease', () => {
 
     await expect(
       service.submitRelease(
-        { items: [{ backlogId: 12 }], ends: ['APP'], testers: ['赵六'] },
+        { items: [{ backlogId: 12 }], ends: ['APP'] },
         memberActor,
         { user: { id: 21, name: '李四' } as never, worker: null },
       ),
@@ -667,11 +668,10 @@ describe('BacklogsService.submitRelease', () => {
   it('未选择迭代项 → 400', async () => {
     const { service } = buildTaskService();
     await expect(
-      service.submitRelease(
-        { items: [], ends: ['APP'], testers: ['赵六'] },
-        adminActor,
-        { user: { id: 1, name: '管理员' } as never, worker: null },
-      ),
+      service.submitRelease({ items: [], ends: ['APP'] }, adminActor, {
+        user: { id: 1, name: '管理员' } as never,
+        worker: null,
+      }),
     ).rejects.toThrow('至少选择一个迭代项');
   });
 
@@ -682,7 +682,7 @@ describe('BacklogsService.submitRelease', () => {
     ]);
     await expect(
       service.submitRelease(
-        { items: [{ backlogId: 12 }], ends: ['APP'], testers: ['赵六'] },
+        { items: [{ backlogId: 12 }], ends: ['APP'] },
         adminActor,
         { user: { id: 1, name: '管理员' } as never, worker: null },
       ),

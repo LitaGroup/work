@@ -214,7 +214,7 @@ const BACKLOG_DETAIL_TABS: BacklogDetailTab[] = [
 /**
  * 迭代项详情：基本信息（需求方/备注/预期上线时间）、文档（转入时自需求迁入）、
  * 任务树与关联工单、缺陷（按迭代项关联，可页内新建）、事件流与成员；
- * 成员或管理员可推进状态（弹窗 + 备注）、发起提测（创建提测工单），管理员可编辑成员/移动迭代。
+ * 成员或管理员可推进状态（弹窗 + 备注）、发起提测（创建提测工单），管理员或负责人可编辑成员，管理员可移动迭代。
  */
 export function BacklogDetailPage() {
   const { backlogId, topicId } = useParams<{
@@ -296,7 +296,7 @@ export function BacklogDetailPage() {
   // 提测
   const [releaseOpen, setReleaseOpen] = useState(false)
 
-  // 成员维护（管理员）：成员 Tab 内直接添加/移除
+  // 成员维护（管理员或迭代项负责人）：成员 Tab 内直接添加/移除
   const [users, setUsers] = useState<PlatformUser[] | null>(null)
   const [addRole, setAddRole] = useState<BacklogMemberRole>('产品')
   // 选择目标：真人用 `u:{userId}`，AI 机器人用 `w:{workerId}`
@@ -503,6 +503,8 @@ export function BacklogDetailPage() {
 
   const terminal = backlog.status === '完成' || backlog.status === '取消'
   const canOperate = isAdmin || (backlog.canOperate ?? false)
+  /** 成员维护：管理员或迭代项负责人（后端 canManageMembers 判定，真人负责人经其真人机器人） */
+  const canManageMembers = backlog.canManageMembers ?? false
   const releaseWorkflowReady = backlog.releaseWorkflow?.enabled ?? false
   // 新建任务：无交付任务时仅管理员可创建；已有交付任务时成员或管理员可建子任务
   const taskCreateDisabledReason = !backlog.taskId
@@ -1532,7 +1534,7 @@ export function BacklogDetailPage() {
           </TabsContent>
 
           <TabsContent value="members" keepMounted className="pt-4">
-            {/* 成员：管理员可直接添加/移除（立即保存，整体替换语义） */}
+            {/* 成员：管理员或负责人可直接添加/移除（立即保存，整体替换语义） */}
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
@@ -1558,7 +1560,7 @@ export function BacklogDetailPage() {
                       {auto && (
                         <span className="text-xs text-foreground-muted">自动</span>
                       )}
-                      {isAdmin && !auto && (
+                      {canManageMembers && !auto && (
                         <button
                           type="button"
                           className="text-foreground-muted underline"
@@ -1577,7 +1579,7 @@ export function BacklogDetailPage() {
                   )
                 })}
               </div>
-              {isAdmin && (
+              {canManageMembers && (
                 <div className="flex flex-wrap items-end gap-2 px-4 pb-4">
                   <label className="flex flex-col gap-1 text-sm">
                     角色
@@ -1745,7 +1747,7 @@ export function BacklogDetailPage() {
         </DialogContent>
       </Dialog>
 
-      {/* 提测弹窗：可跨迭代多选，每个迭代项各生成工单+提测记录，提测群汇总一条消息 */}
+      {/* 提测弹窗：可跨迭代多选，每个迭代项各生成工单+提测记录，提测群通知由工单节点发送 */}
       <BacklogReleaseDialog
         backlog={backlog}
         open={releaseOpen}

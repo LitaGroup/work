@@ -206,23 +206,16 @@ describe('WorkIterationTools', () => {
       worker: { id: 1002, name: '迭代负责人机器人' },
     });
     const result = (await tools.get('create_backlog_release')!({
-      items: [{ backlogId: 33, content: '请重点验证登录' }, { backlogId: 34 }],
+      items: [{ backlogId: 33 }, { backlogId: 34 }],
       ends: ['APP', 'H5'],
-      testers: ['赵六'],
-      branches: [{ repo: 'LitaGroup/lita-h5', branch: 'test' }],
-      urls: ['https://staging.example.com'],
+      inputValues: { branch: 'test' },
     })) as { content: { text: string }[] };
     expect(backlogs.submitReleaseMarkdown).toHaveBeenCalledWith(
       {
-        items: [
-          { backlogId: 33, content: '请重点验证登录' },
-          { backlogId: 34, content: undefined },
-        ],
+        items: [{ backlogId: 33 }, { backlogId: 34 }],
         title: undefined,
         ends: ['APP', 'H5'],
-        testers: ['赵六'],
-        branches: [{ repo: 'LitaGroup/lita-h5', branch: 'test' }],
-        urls: ['https://staging.example.com'],
+        inputValues: { branch: 'test' },
         taskId: undefined,
       },
       expect.objectContaining({

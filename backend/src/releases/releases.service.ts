@@ -7,22 +7,12 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import { ReleaseStatus, TaskStatus, TaskSubStatus } from '../common/enums';
-import { splitMemberNames } from '../common/names';
 import { beijingTime, mdFrontmatter } from '../common/frontmatter';
 import { Project } from '../projects/project.entity';
 import { User } from '../auth/user.entity';
 import { Task } from '../tasks/task.entity';
 import { TaskWorkerInboxService } from '../tasks/task-worker-inbox.service';
-import {
-  ProjectRelease,
-  RELEASE_END_VALUES,
-  ReleaseBranch,
-  ReleaseEnd,
-} from './project-release.entity';
-import {
-  ReleaseNoticeInput,
-  ReleaseNotifyService,
-} from './release-notify.service';
+import { ProjectRelease } from './project-release.entity';
 
 /** 提测状态可选值（待冒烟 / 进行中 / 已通过 / 未通过） */
 export const RELEASE_STATUS_VALUES: string[] = Object.values(ReleaseStatus);
@@ -34,23 +24,17 @@ function releaseStatusOf(status?: string | null): ReleaseStatus {
     : ReleaseStatus.PENDING;
 }
 
-/** 批量提测入参（迭代项维度；多条汇总为一条提测群消息） */
+/** 批量提测入参（迭代项维度；每个迭代项生成一张提测工单 + 一条提测记录） */
 export interface SubmitReleaseBatchInput {
-  /** 迭代项 + 各自的提测内容 */
-  items: Array<{ backlogId: number; content?: string }>;
+  /** 参与提测的迭代项 */
+  items: Array<{ backlogId: number }>;
   /** 提测标题（多迭代项缺省「{首个迭代项标题} 等x个迭代」） */
   title?: string;
-  /** 提测端（APP / H5 / 后端，至少 1 个） */
-  ends: string[];
-  /** 测试人员（至少 1 人，须为用户系统内用户） */
-  testers: string[];
-  /** 代码分支（整单共用，可空） */
-  branches?: { repo: string; branch: string }[];
-  /** 访问地址（整单共用，可空） */
-  urls?: string[];
+  /** 提测端（取值须为提测工单 testEnds 字段配置的选项） */
+  ends?: string[];
   /**
-   * 提测工单配置（release-ticket）动态字段值：除保留 key（title/description/content/
-   * testEnds/testers/branch/url/backlogs）外的起始节点字段原样透传进工单 inputValues。
+   * 提测工单配置（release-ticket）动态字段值：除保留 key（title/description/
+   * backlogs/testEnds）外的起始节点字段原样透传进工单 inputValues。
    */
   inputValues?: Record<string, unknown>;
   /** 来源任务（机器人可选；缺省自动取当前执行中的任务） */
@@ -68,10 +52,7 @@ export type ReleaseActorInput = ReleaseActor | string | null | undefined;
 
 /** 一次批量提测的整单共用字段（校验并归一后） */
 export interface ReleaseBatchShared {
-  ends: ReleaseEnd[];
-  testers: string[];
-  branches: ReleaseBranch[];
-  urls: string[];
+  ends: string[];
   operator: string | null;
   workerId: number | null;
   sourceTaskId: number | null;
@@ -80,11 +61,7 @@ export interface ReleaseBatchShared {
 /** 单条提测记录落库入参 */
 export interface ReleaseRecordInput {
   projectId: number;
-  content?: string | null;
   ends: string[];
-  testers: string[];
-  branches: ReleaseBranch[];
-  urls: string[];
   operator: string | null;
   workerId: number | null;
   sourceTaskId: number | null;
@@ -107,35 +84,26 @@ export class ReleasesService {
     @InjectRepository(Task)
     private readonly tasks: Repository<Task>,
     private readonly workerInbox: TaskWorkerInboxService,
-    private readonly notify: ReleaseNotifyService,
   ) {}
 
   /**
    * 批量提测的公共字段校验：
-   * - 测试人员至少 1 人且须存在于用户系统；
-   * - 提测端至少 1 个（APP / H5 / 后端）；
+   * - 提测端取值须为提测工单 testEnds 字段配置的选项（未配置该字段时不校验、不落库）；
    * - 解析机器人来源任务（网页人工提测不自动关联任务）。
    */
   async prepareBatch(
     input: SubmitReleaseBatchInput,
     actorInput?: ReleaseActorInput,
+    endOptions: string[] = [],
   ): Promise<ReleaseBatchShared> {
     const actor = this.normalizeActor(actorInput);
-    const testers = splitMemberNames((input.testers ?? []).join('、'));
-    if (testers.length === 0) {
-      throw new BadRequestException('测试人员至少填写 1 人');
-    }
-    await this.assertNamesInUserSystem(testers, '测试人员');
-    const ends = this.normalizeEnds(input.ends);
+    const ends = this.normalizeEnds(input.ends, endOptions);
     const sourceTask = await this.resolveSourceTask(
       actor.workerId ?? null,
       input.taskId ?? actor.sourceTaskId ?? null,
     );
     return {
       ends,
-      testers,
-      branches: this.normalizeBranches(input.branches),
-      urls: this.normalizeUrls(input.urls),
       operator: actor.operator?.trim() || null,
       workerId: actor.workerId ?? null,
       sourceTaskId: sourceTask?.id ?? null,
@@ -146,11 +114,13 @@ export class ReleasesService {
   async createRecord(input: ReleaseRecordInput): Promise<ProjectRelease> {
     const release = this.releases.create({
       projectId: input.projectId,
-      content: input.content?.trim() || null,
-      urls: input.urls.length > 0 ? input.urls : null,
-      branches: input.branches.length > 0 ? input.branches : null,
+      // 提测内容 / 分支 / 地址 / 测试人员已由简化后的提测工单字段与迭代项成员承载，
+      // 记录侧不再采集（历史行保留原值）
+      content: null,
+      urls: null,
+      branches: null,
+      testers: [],
       ends: input.ends.length > 0 ? input.ends : null,
-      testers: input.testers,
       operator: input.operator,
       workerId: input.workerId,
       sourceTaskId: input.sourceTaskId,
@@ -162,11 +132,6 @@ export class ReleasesService {
       verifiedAt: null,
     });
     return this.releases.save(release);
-  }
-
-  /** 批量提测群通知（平台官方机器人；失败只告警，不阻断提测） */
-  async notifyBatch(notice: ReleaseNoticeInput): Promise<boolean> {
-    return this.notify.notify(notice);
   }
 
   /** 提测记录列表（倒序）；不传 projectId 返回全部 */
@@ -253,7 +218,9 @@ export class ReleasesService {
       `- 提测记录：id ${release.id}（提测时间 ${beijingTime(release.createdAt)}）`,
       `- 提测人：${release.operator ?? '—'}`,
       `- 提测端：${release.ends?.length ? release.ends.join(' / ') : '—'}`,
-      `- 测试人员：${release.testers.join('、')}`,
+      release.testers.length
+        ? `- 测试人员：${release.testers.join('、')}`
+        : null,
       release.ticketCode ? `- 提测工单：${release.ticketCode}` : null,
       `- 当前状态：**${releaseStatusOf(release.status)}**`,
       release.verifier ? `- 判定人：${release.verifier}` : null,
@@ -277,7 +244,7 @@ export class ReleasesService {
       const head = `- **${beijingTime(r.createdAt)}**（id：${r.id}）提测人 ${r.operator ?? '—'} — 状态：**${status}**`;
       const detail = [
         `提测端：${r.ends?.length ? r.ends.join(' / ') : '—'}`,
-        `测试人员：${r.testers.join('、')}`,
+        r.testers.length ? `测试人员：${r.testers.join('、')}` : null,
         r.ticketCode
           ? `提测工单：${r.ticketCode}${r.ticketId ? `（#${r.ticketId}）` : ''}`
           : null,
@@ -297,7 +264,7 @@ export class ReleasesService {
       mdFrontmatter({ title }),
       `# ${title}`,
       '',
-      `共 ${items.length} 条（按提测时间倒序）。提测：\`POST /api/backlogs/release.md\`，body \`{"items": [{"backlogId": 123, "content": "提测内容 Markdown"}], "ends": ["APP"], "testers": ["张三"], "branches": [{"repo": "LitaGroup/xxx", "branch": "test"}], "urls": ["https://..."], "inputValues": {"自定义字段key": "值"}, "title": "可选", "taskId": 123}\`（提测端至少 1 个：APP / H5 / 后端；测试人员至少 1 人且须为用户系统内用户；inputValues 透传提测工单配置中除保留 key 外的起始字段；多个迭代项汇总为一条提测群消息；机器人令牌会记录提测机器人，taskId 可省略，缺省自动取当前执行中的任务）`,
+      `共 ${items.length} 条（按提测时间倒序）。提测：\`POST /api/backlogs/release.md\`，body \`{"items": [{"backlogId": 123}], "ends": ["APP"], "inputValues": {"自定义字段key": "值"}, "title": "可选", "taskId": 123}\`（每个迭代项生成提测工单与提测记录；提测端取值须为提测工单 testEnds 字段配置的选项；测试人员/代码分支/访问地址/补充描述等由提测工单字段与迭代项成员承载，inputValues 透传提测工单配置中除保留 key 外的起始字段；提测群通知由工单「提测群通知」节点发送；taskId 可省略，缺省自动关联当前执行中的任务）`,
       `推进提测状态（由测试同学操作）：\`POST /api/releases/{id}/status.md\`，body \`{"status": "待冒烟" | "进行中" | "已通过" | "未通过"}\`——新提测默认「待冒烟」，开始测试后改为「进行中」；仅「已通过 / 未通过」记录判定人/判定时间，切回「待冒烟 / 进行中」会清空`,
       '',
       ...(lines.length > 0 ? lines : ['（暂无提测记录）']),
@@ -367,51 +334,35 @@ export class ReleasesService {
     });
   }
 
-  /** 提测端：至少 1 个，仅允许 APP / H5 / 后端（去重） */
-  private normalizeEnds(ends?: string[]): ReleaseEnd[] {
-    if (!Array.isArray(ends)) {
-      throw new BadRequestException('提测端至少选择 1 个（APP / H5 / 后端）');
-    }
+  /**
+   * 提测端：取值须来自提测工单 testEnds 字段配置的选项（去重）。
+   * 工单未配置该字段时不校验也不落库；配置了字段则至少选择 1 个。
+   */
+  private normalizeEnds(
+    ends: string[] | undefined,
+    options: string[],
+  ): string[] {
+    const allowed = [
+      ...new Set(options.map((item) => item.trim()).filter(Boolean)),
+    ];
+    if (allowed.length === 0) return [];
     const unique = [
       ...new Set(
-        ends
+        (Array.isArray(ends) ? ends : [])
           .map((end) => (typeof end === 'string' ? end.trim() : ''))
           .filter(Boolean),
       ),
     ];
     if (unique.length === 0) {
-      throw new BadRequestException('提测端至少选择 1 个（APP / H5 / 后端）');
+      throw new BadRequestException('提测端至少选择 1 个');
     }
-    const invalid = unique.filter(
-      (end) => !RELEASE_END_VALUES.includes(end as ReleaseEnd),
-    );
+    const invalid = unique.filter((end) => !allowed.includes(end));
     if (invalid.length > 0) {
       throw new BadRequestException(
-        `提测端包含无效值「${invalid.join('、')}」，可选值：${RELEASE_END_VALUES.join(' / ')}`,
+        `提测端包含无效值「${invalid.join('、')}」，可选值：${allowed.join(' / ')}`,
       );
     }
-    return unique as ReleaseEnd[];
-  }
-
-  /** 访问地址：trim 去空（格式宽松，允许内网地址） */
-  private normalizeUrls(urls?: string[]): string[] {
-    if (!Array.isArray(urls)) return [];
-    return urls
-      .map((u) => (typeof u === 'string' ? u.trim() : ''))
-      .filter(Boolean);
-  }
-
-  /** 代码分支：仓库与分支均非空才保留 */
-  private normalizeBranches(
-    branches?: { repo: string; branch: string }[],
-  ): ReleaseBranch[] {
-    if (!Array.isArray(branches)) return [];
-    return branches
-      .map((b) => ({
-        repo: (b?.repo ?? '').trim(),
-        branch: (b?.branch ?? '').trim(),
-      }))
-      .filter((b) => b.repo && b.branch);
+    return unique;
   }
 }
 

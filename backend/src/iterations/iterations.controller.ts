@@ -113,20 +113,14 @@ class CreateBacklogTaskDto implements CreateBacklogTaskInput {
   agentId?: number | null;
 }
 
-/** 批量提测入参：迭代项 + 整单共用的测试人员/提测端/分支/地址 */
+/** 批量提测入参：迭代项 + 提测端 + 提测工单动态字段 */
 class SubmitBacklogReleaseDto implements SubmitReleaseBatchInput {
-  /** 迭代项与各自的提测内容（至少 1 个） */
-  items: Array<{ backlogId: number; content?: string }>;
+  /** 参与提测的迭代项（至少 1 个） */
+  items: Array<{ backlogId: number }>;
   /** 提测标题（多迭代项缺省「{首个迭代项标题} 等x个迭代」） */
   title?: string;
-  /** 提测端（APP / H5 / 后端，至少 1 个） */
-  ends: string[];
-  /** 测试人员（至少 1 人） */
-  testers: string[];
-  /** 代码分支（整单共用，可空） */
-  branches?: { repo: string; branch: string }[];
-  /** 访问地址（整单共用，可空） */
-  urls?: string[];
+  /** 提测端（取值须为提测工单 testEnds 字段配置的选项） */
+  ends?: string[];
   /** 提测工单配置动态字段值（非保留 key），原样透传进工单 inputValues */
   inputValues?: Record<string, unknown>;
   /** 来源任务（机器人可选） */
@@ -344,7 +338,7 @@ export class BacklogsController {
 
   /**
    * 批量提测：每个迭代项创建提测工单 + 提测记录（互相绑定），
-   * 多个迭代项汇总为一条提测群消息（平台官方机器人）；成员或管理员。
+   * 提测群通知由工单「提测群通知」节点发送；成员或管理员。
    */
   @Post('release')
   submitRelease(
@@ -390,7 +384,7 @@ export class BacklogsController {
     return this.backlogsService.createFeishuChat(id, iterationActor(req));
   }
 
-  /** 更新成员（仅管理员） */
+  /** 更新成员（管理员或迭代项负责人） */
   @Patch(':id/members')
   updateMembers(
     @Param('id', ParseIntPipe) id: number,

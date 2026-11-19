@@ -659,16 +659,11 @@ export interface CodeEvent {
   projects: { id: number; name: string }[]
 }
 
-/** 提测单上的代码分支（仓库 + 分支，提测时快照） */
+/** 提测单上的代码分支（仓库 + 分支，历史提测快照；新提测不再采集） */
 export interface ReleaseBranch {
   repo: string
   branch: string
 }
-
-/** 提测端（多选，至少 1 个） */
-export const RELEASE_ENDS = ['APP', 'H5', '后端'] as const
-
-export type ReleaseEnd = (typeof RELEASE_ENDS)[number]
 
 /** 批量提测单条结果：每个迭代项一张工单 + 一条提测记录（互相绑定） */
 export interface BacklogReleaseItemResult {
@@ -681,7 +676,7 @@ export interface BacklogReleaseItemResult {
   releaseId: number
 }
 
-/** 批量提测结果：多迭代项汇总为一条提测群消息 */
+/** 批量提测结果：提测群通知由各提测工单节点发送 */
 export interface BacklogReleaseResult {
   title: string
   items: BacklogReleaseItemResult[]
@@ -691,15 +686,15 @@ export interface BacklogReleaseResult {
 export interface ProjectRelease {
   id: number
   projectId: number
-  /** 提测内容（Markdown，可空） */
+  /** 提测内容（Markdown，历史字段：新提测不再采集） */
   content: string | null
-  /** 访问地址（可空） */
+  /** 访问地址（历史字段：新提测由提测工单字段承载） */
   urls: string[] | null
-  /** 代码分支（仓库+分支 列表，可空） */
+  /** 代码分支（仓库+分支 列表，历史字段：新提测由提测工单字段承载） */
   branches: ReleaseBranch[] | null
-  /** 测试人员姓名（至少 1 个，均为用户系统内用户） */
+  /** 测试人员姓名（历史字段：新提测为空数组，测试人员由迭代项成员承载） */
   testers: string[]
-  /** 提测端（APP / H5 / 后端，至少 1 个） */
+  /** 提测端（取值须为提测工单 testEnds 字段配置的选项） */
   ends: string[] | null
   /** 关联提测工单（tickets.id，可空） */
   ticketId: number | null
@@ -900,16 +895,16 @@ export interface BacklogFeishuChat {
   lastError: string | null
 }
 
-/** 迭代项详情（GET /backlogs/:id）：迭代项 + 提测工作流配置 + 提测描述预览 + 飞书沟通群状态 */
+/** 迭代项详情（GET /backlogs/:id）：迭代项 + 提测工作流配置 + 飞书沟通群状态 */
 export interface BacklogDetail extends Backlog {
   /** 所属迭代（唯一标识，供详情展示 2026WXX） */
   iteration: { id: number; code: string; type: IterationType } | null
   releaseWorkflow: BacklogReleaseWorkflow | null
-  /** 提测弹窗「详细说明」预填文本（迭代项上下文，不含表单项动态行） */
-  releaseDescriptionPreview: string | null
   feishuChat: BacklogFeishuChat | null
   /** 当前查看者是否可操作（管理员或手动成员；自动列入的负责人/需求方不计） */
   canOperate: boolean
+  /** 当前查看者是否可维护成员（管理员或迭代项负责人） */
+  canManageMembers: boolean
 }
 
 /** 迭代项关联文档摘要（不含正文大字段） */
@@ -2859,18 +2854,16 @@ export const api = {
     ),
   /**
    * 批量提测：每个迭代项创建提测工单 + 提测记录（互相绑定），
-   * 多迭代项汇总为一条提测群消息（平台官方机器人）。
+   * 提测群通知由提测工单「提测群通知」节点发送。
    */
   submitBacklogRelease: (input: {
-    items: Array<{ backlogId: number; content?: string }>
+    items: Array<{ backlogId: number }>
     title?: string
-    ends: ReleaseEnd[]
-    testers: string[]
-    branches?: ReleaseBranch[]
-    urls?: string[]
+    /** 提测端：取值须为工单 testEnds 字段配置的选项 */
+    ends?: string[]
     /**
      * 提测工单配置（release-ticket）动态字段值：
-     * 除保留 key（title/description/content/testEnds/testers/branch/url/backlogs）外原样透传
+     * 除保留 key（title/description/backlogs/testEnds）外原样透传
      */
     inputValues?: Record<string, unknown>
     /** 来源任务（机器人调用时可显式指定；网页提测一般不传） */
@@ -2886,7 +2879,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ iterationId }),
     }),
-  /** 更新迭代项成员（仅管理员）；成员为机器人：workerId 直接选机器人，或 userId 选真人自动映射 */
+  /** 更新迭代项成员（管理员或迭代项负责人）；成员为机器人：workerId 直接选机器人，或 userId 选真人自动映射 */
   updateBacklogMembers: (
     id: number,
     members: Array<{

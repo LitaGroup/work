@@ -7,7 +7,6 @@ import { User } from '../auth/user.entity';
 import { Task } from '../tasks/task.entity';
 import { TaskWorkerInboxService } from '../tasks/task-worker-inbox.service';
 import { ProjectRelease } from './project-release.entity';
-import { ReleaseNotifyService } from './release-notify.service';
 import { ReleasesService } from './releases.service';
 
 describe('ReleasesService', () => {
@@ -17,7 +16,6 @@ describe('ReleasesService', () => {
   let releasesSave: jest.Mock;
   let usersFind: jest.Mock;
   let tasksFindOne: jest.Mock;
-  let notify: jest.Mock;
   let enqueueReleaseStatus: jest.Mock;
 
   const buildModule = async () =>
@@ -49,7 +47,6 @@ describe('ReleasesService', () => {
           provide: TaskWorkerInboxService,
           useValue: { enqueueReleaseStatus },
         },
-        { provide: ReleaseNotifyService, useValue: { notify } },
       ],
     }).compile();
 
@@ -72,7 +69,6 @@ describe('ReleasesService', () => {
       return Promise.resolve([...names].map((name) => ({ name })));
     });
     tasksFindOne = jest.fn();
-    notify = jest.fn().mockResolvedValue(true);
     enqueueReleaseStatus = jest.fn().mockResolvedValue(null);
 
     const moduleRef = await buildModule();
@@ -80,27 +76,19 @@ describe('ReleasesService', () => {
   });
 
   describe('prepareBatch', () => {
-    it('归一测试人员/提测端/分支/地址，并解析机器人来源任务', async () => {
+    it('按工单 testEnds 选项归一提测端，并解析机器人来源任务', async () => {
       tasksFindOne.mockResolvedValue({ id: 88, agentId: 7 });
       const shared = await service.prepareBatch(
         {
           items: [{ backlogId: 12 }],
           ends: ['APP', ' APP ', 'H5'],
-          testers: ['王五、赵六, 孙七'],
-          branches: [
-            { repo: ' LitaGroup/lita-h5 ', branch: ' test ' },
-            { repo: '', branch: '' },
-          ],
-          urls: [' https://staging.example.com ', ''],
         },
         { operator: ' 活动开发机器人 ', workerId: 7 },
+        ['APP', 'H5', '后端'],
       );
 
       expect(shared).toEqual({
         ends: ['APP', 'H5'],
-        testers: ['王五', '赵六', '孙七'],
-        branches: [{ repo: 'LitaGroup/lita-h5', branch: 'test' }],
-        urls: ['https://staging.example.com'],
         operator: '活动开发机器人',
         workerId: 7,
         sourceTaskId: 88,
@@ -111,38 +99,30 @@ describe('ReleasesService', () => {
       expect(taskQuery.where.agentId).toBe(7);
     });
 
-    it('测试人员为空 → 400', async () => {
+    it('工单配置了提测端时至少选择 1 个且仅允许配置的选项', async () => {
       await expect(
-        service.prepareBatch({
-          items: [{ backlogId: 12 }],
-          ends: ['APP'],
-          testers: [],
-        }),
-      ).rejects.toThrow(BadRequestException);
-      await expect(
-        service.prepareBatch({
-          items: [{ backlogId: 12 }],
-          ends: ['APP'],
-          testers: [' 、，'],
-        }),
-      ).rejects.toThrow(BadRequestException);
-    });
-
-    it('提测端至少 1 个且仅允许 APP / H5 / 后端', async () => {
-      await expect(
-        service.prepareBatch({
-          items: [{ backlogId: 12 }],
-          ends: [],
-          testers: ['王五'],
-        }),
+        service.prepareBatch(
+          { items: [{ backlogId: 12 }], ends: [] },
+          undefined,
+          ['APP', 'H5', '后端'],
+        ),
       ).rejects.toThrow(/提测端至少/);
       await expect(
-        service.prepareBatch({
-          items: [{ backlogId: 12 }],
-          ends: ['小程序'],
-          testers: ['王五'],
-        }),
+        service.prepareBatch(
+          { items: [{ backlogId: 12 }], ends: ['小程序'] },
+          undefined,
+          ['APP', 'H5', '后端'],
+        ),
       ).rejects.toThrow(/无效值/);
+    });
+
+    it('工单未配置提测端字段时不采集提测端', async () => {
+      const shared = await service.prepareBatch(
+        { items: [{ backlogId: 12 }], ends: ['APP'] },
+        undefined,
+        [],
+      );
+      expect(shared.ends).toEqual([]);
     });
 
     it('机器人显式传入非本人执行的任务 → 400', async () => {
@@ -152,10 +132,10 @@ describe('ReleasesService', () => {
           {
             items: [{ backlogId: 12 }],
             ends: ['APP'],
-            testers: ['王五'],
             taskId: 89,
           },
           { workerId: 7 },
+          ['APP'],
         ),
       ).rejects.toThrow(BadRequestException);
     });
@@ -164,11 +144,7 @@ describe('ReleasesService', () => {
   it('createRecord：提测端/工单绑定落库，状态默认待冒烟', async () => {
     const release = await service.createRecord({
       projectId: 1,
-      content: ' 回归登录 ',
       ends: ['APP', 'H5'],
-      testers: ['王五'],
-      branches: [{ repo: 'LitaGroup/lita-h5', branch: 'test' }],
-      urls: ['https://staging.example.com'],
       operator: '胡峰',
       workerId: null,
       sourceTaskId: null,
@@ -180,9 +156,9 @@ describe('ReleasesService', () => {
     expect(release).toEqual(
       expect.objectContaining({
         projectId: 1,
-        content: '回归登录',
+        content: null,
         ends: ['APP', 'H5'],
-        testers: ['王五'],
+        testers: [],
         operator: '胡峰',
         ticketId: 11,
         ticketCode: 'WO-0011',
@@ -198,12 +174,12 @@ describe('ReleasesService', () => {
       {
         id: 9,
         projectId: 1,
-        testers: ['王五'],
+        testers: [],
         ends: ['APP'],
         ticketId: 11,
         ticketCode: 'WO-0011',
         operator: '胡峰',
-        content: '回归登录',
+        content: null,
         urls: null,
         branches: null,
         workerId: null,
@@ -218,6 +194,7 @@ describe('ReleasesService', () => {
     expect(markdown).toContain('POST /api/backlogs/release.md');
     expect(markdown).toContain('提测端：APP');
     expect(markdown).toContain('提测工单：WO-0011（#11）');
+    expect(markdown).not.toContain('测试人员：');
   });
 
   it('推进提测状态：仅已通过/未通过记录判定人与时间，进行中/待冒烟清空', async () => {
@@ -228,7 +205,7 @@ describe('ReleasesService', () => {
       verifier: null,
       verifiedAt: null,
       createdAt: new Date('2026-01-01T00:00:00Z'),
-      testers: ['王五'],
+      testers: [],
       operator: null,
       content: null,
       urls: null,
@@ -273,7 +250,7 @@ describe('ReleasesService', () => {
       verifier: null,
       verifiedAt: null,
       createdAt: new Date('2026-01-01T00:00:00Z'),
-      testers: ['王五'],
+      testers: [],
       operator: null,
       content: null,
       urls: null,
@@ -293,14 +270,10 @@ describe('ReleasesService', () => {
     );
   });
 
-  it('测试人员不存在于用户系统 → 400 并列出无效姓名', async () => {
+  it('姓名不存在于用户系统 → 400 并列出无效姓名', async () => {
     usersFind.mockResolvedValue([{ name: '王五' }]);
     await expect(
-      service.prepareBatch({
-        items: [{ backlogId: 12 }],
-        ends: ['APP'],
-        testers: ['王五', '赵六'],
-      }),
+      service.assertNamesInUserSystem(['王五', '赵六'], '需求方'),
     ).rejects.toThrow(/赵六/);
   });
 });
