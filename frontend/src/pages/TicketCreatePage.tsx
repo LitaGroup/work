@@ -103,8 +103,8 @@ export function TicketCreatePage() {
     setValues((current) => ({ ...current, [key]: value }))
 
   return (
-    <div className="flex h-full flex-col gap-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
+    <div className="flex h-full min-h-0 flex-col gap-4">
+      <div className="flex shrink-0 flex-wrap items-start justify-between gap-3">
         <div>
           <PageBreadcrumb
             items={[
@@ -141,7 +141,7 @@ export function TicketCreatePage() {
         </p>
       )}
 
-      <div className="flex min-h-0 flex-1 flex-col gap-4 lg:flex-row">
+      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pe-1 lg:flex-row lg:items-start">
         <Card className="min-w-0 flex-1">
           <CardHeader className="flex-none">
             <CardTitle>工单信息</CardTitle>
