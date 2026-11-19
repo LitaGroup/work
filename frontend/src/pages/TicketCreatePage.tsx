@@ -181,13 +181,11 @@ export function TicketCreatePage() {
               由起始节点定义；必填字段完整后才能创建
             </CardDescription>
           </CardHeader>
-          <div className="grid gap-4 px-4 pb-4 md:grid-cols-2">
+          <div className="grid gap-4 px-4 pb-4">
             {fields.map((field) => (
               <label
                 key={field.key}
-                className={`flex flex-col gap-1.5 text-sm ${
-                  field.type === 'textarea' ? 'md:col-span-2' : ''
-                }`}
+                className="flex min-w-0 flex-col gap-1.5 text-sm"
               >
                 <span className="flex items-center gap-1">
                   {field.label}

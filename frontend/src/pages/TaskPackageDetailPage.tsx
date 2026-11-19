@@ -106,7 +106,7 @@ export function TaskDetailView({
   hideBreadcrumb?: boolean
   /** 工作台模式：需求方/执行方可在「交付」Tab 创建与编辑交付文档 */
   handoffEditable?: boolean
-  /** 普通详情页：右侧「我的助理」外置并默认收起；工作台保持常驻 */
+  /** 常规详情页与工作台：右侧「我的助理」可收起且默认收起；无 AI 停靠位时回退普通双栏 */
   collapsibleCollaboration?: boolean
   /** 分区与 URL hash 双向同步（/tasks/302#documents 直达）；工作台不开启 */
   syncTabHash?: boolean

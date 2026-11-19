@@ -250,6 +250,7 @@ export function WorkbenchPage() {
               taskId={selectedId}
               hideBreadcrumb
               handoffEditable
+              collapsibleCollaboration
               onTaskChange={loadSummary}
               onOpenTask={openRelatedTask}
             />

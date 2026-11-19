@@ -136,7 +136,12 @@ export function IterationMultiPicker({
         <ComboboxValue>
           {(selected: string[]) =>
             selected.map((id) => (
-              <ComboboxChip key={id} aria-label={id}>
+              <ComboboxChip
+                key={id}
+                aria-label={id}
+                className="max-w-full min-w-0"
+                title={labelById.get(id) ?? `#${id}`}
+              >
                 {labelById.get(id) ?? `#${id}`}
               </ComboboxChip>
             ))
