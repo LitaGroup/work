@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  '@milkdown/components@7.22.3': eb92f6723a0c3bd4d061621a6270abc8cee9d3fe2c4892a745921bc44d20b970
+
 importers:
 
   .: {}
@@ -7686,7 +7689,7 @@ snapshots:
     dependencies:
       '@chevrotain/types': 13.2.0
 
-  '@milkdown/components@7.22.3(@codemirror/language@6.13.1)(@codemirror/state@6.7.6)(@codemirror/view@6.43.15)(supports-color@8.1.1)(typescript@6.0.3)':
+  '@milkdown/components@7.22.3(patch_hash=eb92f6723a0c3bd4d061621a6270abc8cee9d3fe2c4892a745921bc44d20b970)(@codemirror/language@6.13.1)(@codemirror/state@6.7.6)(@codemirror/view@6.43.15)(supports-color@8.1.1)(typescript@6.0.3)':
     dependencies:
       '@codemirror/language': 6.13.1
       '@codemirror/state': 6.7.6
@@ -7759,7 +7762,7 @@ snapshots:
 
   '@milkdown/kit@7.22.3(@codemirror/language@6.13.1)(@codemirror/state@6.7.6)(@codemirror/view@6.43.15)(supports-color@8.1.1)(typescript@6.0.3)':
     dependencies:
-      '@milkdown/components': 7.22.3(@codemirror/language@6.13.1)(@codemirror/state@6.7.6)(@codemirror/view@6.43.15)(supports-color@8.1.1)(typescript@6.0.3)
+      '@milkdown/components': 7.22.3(patch_hash=eb92f6723a0c3bd4d061621a6270abc8cee9d3fe2c4892a745921bc44d20b970)(@codemirror/language@6.13.1)(@codemirror/state@6.7.6)(@codemirror/view@6.43.15)(supports-color@8.1.1)(typescript@6.0.3)
       '@milkdown/core': 7.22.3(supports-color@8.1.1)
       '@milkdown/ctx': 7.22.3
       '@milkdown/exception': 7.22.3

@@ -6,3 +6,5 @@ allowBuilds:
   '@google/genai': false
   protobufjs: false
   unrs-resolver: true
+patchedDependencies:
+  '@milkdown/components@7.22.3': patches/@milkdown__components@7.22.3.patch

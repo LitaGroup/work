@@ -1,0 +1,37 @@
+diff --git a/lib/list-item-block/index.js b/lib/list-item-block/index.js
+index d1926c0f730d5437f2110e3b51e87dd50d0ab6d7..fe3ca16a9d5aa28aa673b3291e9a10ea8c5c42e8 100644
+--- a/lib/list-item-block/index.js
++++ b/lib/list-item-block/index.js
+@@ -183,13 +183,32 @@ const ListItem = defineComponent({
+ });
+ 
+ const pendingRestores = /* @__PURE__ */ new WeakMap();
++// 用户已接管输入时取消本帧的光标恢复：捕获的位置不会随输入映射，无条件恢复
++// 会把光标拉回到刚输入文字之前（Milkdown 官方 issue #2501，表现为“光标不动、
++// 字往左长”）。等上游修复发版后移除此补丁。
++const restoreCancelEvents = [
++  "keydown",
++  "pointerdown",
++  "beforeinput",
++  "paste",
++  "cut",
++  "drop"
++];
+ function scheduleRestore(view, item, capture) {
+   let captures = pendingRestores.get(view);
+   if (!captures) {
+     const frameCaptures = /* @__PURE__ */ new Map();
+     captures = frameCaptures;
+     pendingRestores.set(view, frameCaptures);
++    const root = view.dom.ownerDocument;
++    const cancelRestore = () => frameCaptures.clear();
++    for (const type of restoreCancelEvents) {
++      root.addEventListener(type, cancelRestore, true);
++    }
+     requestAnimationFrame(() => {
++      for (const type of restoreCancelEvents) {
++        root.removeEventListener(type, cancelRestore, true);
++      }
+       pendingRestores.delete(view);
+       if (view.isDestroyed) return;
+       const { state } = view;
