@@ -46,7 +46,10 @@ import { Project } from '../projects/project.entity';
 import { FeishuBotConfigService } from '../feishu-bot/feishu-bot-config.service';
 import type { FeishuBotConfig } from '../feishu-bot/feishu-bot-config.entity';
 import { FeishuBotIdentityService } from '../feishu-bot/feishu-bot-identity.service';
-import { FeishuBotOfficialMessageService } from '../feishu-bot/feishu-bot-official-message.service';
+import {
+  FEISHU_CARD_TITLE_MAX_LENGTH,
+  FeishuBotOfficialMessageService,
+} from '../feishu-bot/feishu-bot-official-message.service';
 import {
   renderMessageTemplate,
   type TicketMessageTemplateBacklog,
@@ -1133,16 +1136,17 @@ export class TicketWorkflowRuntimeService {
     } else {
       try {
         const context = await this.buildMessageContext(ticket, fields);
-        const content = renderMessageTemplate(node.messageTemplate, {
-          ...context,
-          node: { name: node.name },
-        });
+        const renderedContext = { ...context, node: { name: node.name } };
+        const content = renderMessageTemplate(
+          node.messageTemplate,
+          renderedContext,
+        );
         if (!content) throw new Error('模板渲染结果为空');
         await this.officialMessages.send(
           {
             chatId: node.feishuChatId,
             content,
-            title: `${ticket.code} ${node.name}`,
+            title: this.renderMessageTitle(ticket, node, renderedContext),
           },
           {
             type: 'worker',
@@ -1181,6 +1185,34 @@ export class TicketWorkflowRuntimeService {
     return (
       this.config.get<string>('APP_URL') ?? 'http://localhost:5273'
     ).replace(/\/+$/, '');
+  }
+
+  /**
+   * 卡片标题：优先渲染节点配置的 Handlebars 标题模板；留空或渲染结果为空时回退
+   * 「工单编号 + 节点名称」。标题是纯文本（不支持 @ 与颜色标签），换行压成空格，
+   * 超过飞书上限直接截断，避免标题问题导致整条消息发送失败。
+   */
+  private renderMessageTitle(
+    ticket: Ticket,
+    node: WorkflowNodeDefinition,
+    context: TicketMessageTemplateContext,
+  ): string {
+    const fallback = `${ticket.code} ${node.name}`.trim();
+    const template = node.messageTitle?.trim();
+    if (!template) return fallback;
+    let title: string;
+    try {
+      title = renderMessageTemplate(template, context)
+        .replace(/\s*\n\s*/g, ' ')
+        .trim();
+    } catch (error) {
+      this.logger.warn(
+        `工单 ${ticket.code} 飞书群消息节点「${node.name}」标题渲染失败，改用默认标题：${(error as Error).message}`,
+      );
+      return fallback;
+    }
+    if (!title) return fallback;
+    return title.slice(0, FEISHU_CARD_TITLE_MAX_LENGTH);
   }
 
   /** 消息模板中的工单上下文（链接取 APP_URL） */

@@ -444,6 +444,7 @@ export function TicketDefinitionEditPage() {
       feishuChatId: null,
       feishuChatName: null,
       messageTemplate: null,
+      messageTitle: null,
       description: null,
     }
     const insertAt = acceptanceNode
@@ -932,6 +933,10 @@ export function TicketDefinitionEditPage() {
                                   kind === 'feishu-message'
                                     ? (node.messageTemplate ?? null)
                                     : null,
+                                messageTitle:
+                                  kind === 'feishu-message'
+                                    ? (node.messageTitle ?? null)
+                                    : null,
                               })
                               const nextOptions = outcomeOptions(kind)
                               setEdges((current) =>
@@ -1141,6 +1146,22 @@ export function TicketDefinitionEditPage() {
                             进入节点后以平台官方机器人身份发送；发送失败只记录运行说明，不阻断流程
                           </div>
                         </div>
+                        <label className="mt-3 flex flex-col gap-1 text-sm">
+                          卡片标题（可选，Handlebars，纯文本）
+                          <Input
+                            value={node.messageTitle ?? ''}
+                            onChange={(event) =>
+                              updateNode(index, {
+                                messageTitle: event.target.value,
+                              })
+                            }
+                            placeholder="{{ ticket.code }} {{ values.title }}"
+                          />
+                          <span className="text-xs text-foreground-muted">
+                            留空默认「工单编号 + 节点名称」；标题为纯文本（不支持
+                            @ 与颜色标签），超过 80 字符自动截断
+                          </span>
+                        </label>
                         <label className="mt-3 flex flex-col gap-1 text-sm">
                           消息模板（Handlebars，Markdown）
                           <Textarea

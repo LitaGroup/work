@@ -342,6 +342,16 @@ describe('WorkflowDefinitionsService 迭代字段与飞书群消息', () => {
     ).rejects.toThrow('消息模板语法错误');
   });
 
+  it('卡片标题模板语法错误时拒绝发布', async () => {
+    const invalid = definitionJson();
+    const notify = invalid.nodes.find((node) => node.kind === 'feishu-message');
+    if (!notify) throw new Error('飞书群消息节点缺失');
+    notify.messageTitle = '{{#each testers}}未闭合';
+    await expect(
+      service.publish(7, { definition: invalid }, { id: 1, name: '管理员' }),
+    ).rejects.toThrow('消息模板语法错误');
+  });
+
   it('读取平台官方机器人所在群并排序缓存', async () => {
     botConfigs.loadEnabledOfficial.mockResolvedValue({ id: 3 });
     botClient.listChats.mockResolvedValue([

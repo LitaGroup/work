@@ -2236,6 +2236,8 @@ export interface WorkflowNodeDefinition {
   feishuChatName?: string | null
   /** 仅飞书群消息节点：Handlebars 消息模板 */
   messageTemplate?: string | null
+  /** 仅飞书群消息节点：Handlebars 卡片标题模板（纯文本，留空用「工单编号 + 节点名称」） */
+  messageTitle?: string | null
   description: string | null
 }
 

@@ -578,6 +578,9 @@ export class WorkflowDefinitionsService implements OnModuleInit {
         // 模板语法错误在保存/发布阶段直接暴露，避免运行时才发送失败
         validateMessageTemplate(node.messageTemplate);
       }
+      if (node.kind === 'feishu-message' && node.messageTitle) {
+        validateMessageTemplate(node.messageTitle);
+      }
       if (node.taskTemplateId) {
         const template = templateById.get(node.taskTemplateId);
         if (!template) {

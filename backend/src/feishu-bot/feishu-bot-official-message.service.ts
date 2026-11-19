@@ -25,8 +25,8 @@ import {
 /** 单条消息正文上限（字符；超长正文由发送层自动分片） */
 const MAX_CONTENT_LENGTH = 20000;
 
-/** 卡片标题上限（飞书卡片标题不宜过长） */
-const MAX_TITLE_LENGTH = 80;
+/** 卡片标题上限（飞书卡片标题不宜过长；模板渲染结果按此截断） */
+export const FEISHU_CARD_TITLE_MAX_LENGTH = 80;
 
 /** 审计列表默认/最大分页 */
 const DEFAULT_PAGE_SIZE = 20;
@@ -115,9 +115,9 @@ export class FeishuBotOfficialMessageService {
       );
     }
     const title = input.title?.trim() || null;
-    if (title && title.length > MAX_TITLE_LENGTH) {
+    if (title && title.length > FEISHU_CARD_TITLE_MAX_LENGTH) {
       throw new BadRequestException(
-        `卡片标题不能超过 ${MAX_TITLE_LENGTH} 字符`,
+        `卡片标题不能超过 ${FEISHU_CARD_TITLE_MAX_LENGTH} 字符`,
       );
     }
     const replyToMessageId = input.replyToMessageId?.trim() || null;

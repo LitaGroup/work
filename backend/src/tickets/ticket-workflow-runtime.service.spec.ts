@@ -1418,6 +1418,65 @@ describe('TicketWorkflowRuntimeService', () => {
       expect(advance).toHaveBeenCalledWith(5, workflow, 'notify', null, 1);
     });
 
+    it('飞书群消息节点支持配置卡片标题模板，渲染为空时回退默认标题', async () => {
+      iterations.find.mockResolvedValue([{ id: 12, code: '2026W47' }]);
+      const sent: Array<{ title?: string; content?: string }> = [];
+      officialMessages.send.mockImplementation(
+        (input: { title?: string; content: string }) => {
+          sent.push(input);
+          return Promise.resolve({ messageIds: ['om_1'] });
+        },
+      );
+      jest
+        .spyOn(
+          service as unknown as {
+            advance: (
+              ticketId: number,
+              workflow: WorkflowDefinitionJson,
+              fromKey: string,
+              outcome: string | null,
+              depth?: number,
+            ) => Promise<void>;
+          },
+          'advance',
+        )
+        .mockResolvedValue(undefined);
+      const withTitle = (
+        messageTitle: string | null,
+      ): WorkflowDefinitionJson => ({
+        ...workflow,
+        nodes: workflow.nodes.map((node) =>
+          node.kind === 'feishu-message' ? { ...node, messageTitle } : node,
+        ),
+      });
+
+      const enter = (
+        service as unknown as {
+          enterNode: (
+            ticket: Ticket,
+            workflow: WorkflowDefinitionJson,
+            nodeKey: string | null,
+            depth?: number,
+          ) => Promise<void>;
+        }
+      ).enterNode.bind(service);
+
+      await enter(
+        ticket,
+        withTitle(
+          '【{{ values.iteration }}】{{ ticket.code }} {{ node.name }}',
+        ),
+        'notify',
+      );
+      await enter(ticket, withTitle('{{ values.notConfigured }}'), 'notify');
+      await enter(ticket, withTitle(null), 'notify');
+
+      expect(sent[0].title).toBe('【2026W47】WO-0005 通知群');
+      // 渲染为空与未配置都回退「工单编号 + 节点名称」
+      expect(sent[1].title).toBe('WO-0005 通知群');
+      expect(sent[2].title).toBe('WO-0005 通知群');
+    });
+
     it('飞书群消息发送失败只记录说明并继续流转', async () => {
       iterations.find.mockResolvedValue([{ id: 12, code: '2026W47' }]);
       officialMessages.send.mockRejectedValue(new Error('飞书接口调用失败'));

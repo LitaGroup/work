@@ -227,6 +227,12 @@ function normalizeNode(value: unknown, index: number): WorkflowNodeDefinition {
             `节点「${key}」的消息模板`,
             20000,
           ),
+          // 卡片标题是纯文本，渲染后超过飞书上限会截断，模板本身放宽到 200 字符
+          messageTitle: optionalText(
+            item.messageTitle,
+            `节点「${key}」的卡片标题`,
+            200,
+          ),
         }
       : {}),
     description: optionalText(

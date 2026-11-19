@@ -115,6 +115,11 @@ export interface WorkflowNodeDefinition {
   feishuChatName?: string | null;
   /** 飞书群消息节点：Handlebars 消息模板；上下文见 message-template.ts */
   messageTemplate?: string | null;
+  /**
+   * 飞书群消息节点：卡片标题模板（Handlebars，纯文本，最长 80 字符）；
+   * 留空时使用「工单编号 + 节点名称」。
+   */
+  messageTitle?: string | null;
   /** 节点说明，作为节点任务上下文 */
   description: string | null;
 }
