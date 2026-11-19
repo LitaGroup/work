@@ -4355,12 +4355,11 @@ export const api = {
       method: 'POST',
     }),
   workbenchCreateSubtask: (id: number, input: {
-    perspective: 'requester' | 'responsible'
     templateId: number
-    title: string
-    description?: string | null
-    input?: string | null
-    outputSpec?: string | null
+    /** 指定处理机器人；为空时按任务定义分配 */
+    agentId?: number | null
+    /** 子任务内容（Markdown）；标题由内容首行兜底并异步 AI 命名 */
+    content: string
   }) =>
     request<TaskPackage>(`/workbench/tasks/${id}/subtasks`, {
       method: 'POST',

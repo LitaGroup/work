@@ -505,40 +505,34 @@ export class WorkbenchService {
     );
   }
 
-  /** 真人作为父任务需求方或执行方创建子任务 */
+  /** 父任务执行方（当前执行机器人的绑定真人）创建子任务 */
   async createSubtask(
     user: User,
     taskId: number,
     input: {
-      /** 双角色用户按当前 Tab 明确指定身份；未传时保留旧的自动判断 */
-      perspective?: 'requester' | 'responsible';
       templateId: number;
-      title: string;
-      description?: string | null;
-      input?: string | null;
-      outputSpec?: string | null;
+      /** 子任务内容（Markdown） */
+      content: string;
+      /** 指定处理机器人；为空时按任务定义分配 */
+      agentId?: number | null;
     },
   ): Promise<Task> {
     const worker = await this.workersService.mustHumanWorker(user.id);
     const task = await this.tasks.findOne({ where: { id: taskId } });
     if (!task) throw new BadRequestException('任务不存在');
-    let actor: TaskActor;
-    if (input.perspective === 'requester') {
-      actor = (await this.requesterTask(user, taskId)).actor;
-    } else if (input.perspective === 'responsible') {
-      if (task.agentId !== worker.id) {
-        throw new ForbiddenException(
-          '仅任务的执行机器人可以以执行方身份创建子任务',
-        );
-      }
-      actor = { type: 'worker', worker };
-    } else {
-      actor =
-        task.agentId === worker.id
-          ? { type: 'worker', worker }
-          : (await this.requesterTask(user, taskId)).actor;
+    if (task.agentId !== worker.id) {
+      throw new ForbiddenException('仅父任务当前执行机器人可以创建子任务');
     }
-    return this.collaboration.createSubtaskForActor(taskId, actor, input);
+    return this.collaboration.createSubtaskForActor(
+      taskId,
+      { type: 'worker', worker },
+      {
+        templateId: input.templateId,
+        description: input.content,
+        agentId: input.agentId ?? null,
+        titleNaming: true,
+      },
+    );
   }
 
   /** 停止任务：发起者或管理员；级联取消全部未结束子任务 */

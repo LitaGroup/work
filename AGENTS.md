@@ -283,7 +283,7 @@
 - 管理区「模型配置」（`model_scenarios`）按固定场景维护 OpenAI 兼容连接：`baseUrl` / `apiKey` / `model` / 思考等级（`off/low/medium/high`）。场景来自 `backend/src/model-config/model-scenarios.ts` 代码注册表，新增场景无需迁移；`apiKey` 明文落库但 `select:false`，只写不回显，列表仅返回 `hasApiKey`。
 - `LlmService` 提供通用单次调用 `ask`（非流式、20s 超时、全局并发 3）与标题生成 `generateTitle`；场景未配置返回 null，由调用方降级，失败不得影响主流程。
 - 工单与根任务创建后异步生成标题 `「T-{id}」+ 模型生成内容`（`title-naming` 场景，`T-` 后为数字 ID，与 code `WO-/TK-` 并存），不阻塞创建、派发与节点流转，失败只告警。更新使用乐观条件（标题仍为创建时值），不覆盖人工修改。
-- 仅工单与根任务入口（`POST /api/tickets` / MCP `create_ticket`、任务 `create.md` / MCP `create_task`、项目交付任务）触发生成；子任务、工单节点任务、缺陷自动派单任务保留原结构化标题。
+- 工单与根任务入口（`POST /api/tickets` / MCP `create_ticket`、任务 `create.md` / MCP `create_task`、项目交付任务）以及父任务执行方在任务详情页新建子任务（`POST /api/workbench/tasks/{id}/subtasks`，身份固定为父任务执行方，内容以 Markdown 提交、首行兜底标题）触发生成；机器人经 MCP `create_subtask` / `subtasks/create.md` 创建的子任务、工单节点任务、缺陷自动派单任务保留原结构化标题。
 
 ### 单点登录（SSO）
 

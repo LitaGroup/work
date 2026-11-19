@@ -52,6 +52,8 @@ import {
   type Worker,
 } from '../../lib/api'
 import { matchesPinyinSearch } from '../../lib/pinyin-search'
+import { MarkdownField } from '../MarkdownField'
+import type { MarkdownEditorHandle } from '../MarkdownEditor'
 import { useAuth } from '../../context/AuthContext'
 import {
   ApprovalActions,
@@ -70,7 +72,6 @@ type DialogKind =
   | 'subtask'
   | 'stop'
   | null
-type SubtaskPerspective = 'requester' | 'responsible'
 
 type Feedback = { kind: 'success' | 'failure'; message: string } | null
 
@@ -116,11 +117,11 @@ export function TaskActions({
   const [templates, setTemplates] = useState<TaskTemplate[]>([])
   const [assignWorkerId, setAssignWorkerId] = useState('')
   const [subtaskTemplateId, setSubtaskTemplateId] = useState('')
-  const [subtaskTitle, setSubtaskTitle] = useState('')
-  const [subtaskInput, setSubtaskInput] = useState('')
-  const [subtaskOutputSpec, setSubtaskOutputSpec] = useState('')
-  const [subtaskPerspective, setSubtaskPerspective] =
-    useState<SubtaskPerspective>('requester')
+  const [subtaskAgentId, setSubtaskAgentId] = useState('')
+  const [subtaskContent, setSubtaskContent] = useState('')
+  const subtaskContentRef = useRef<MarkdownEditorHandle>(null)
+  /** 上一次由任务定义自动带入的指定人；手动选择/清空后置空 */
+  const autoSubtaskAgentIdRef = useRef<number | null>(null)
 
   const roles = task?.workbenchRoles ?? []
   const isAgent = roles.includes('agent')
@@ -171,16 +172,11 @@ export function TaskActions({
   const canAssign = Boolean(
     task && !finished && !isApprovalTask && (isRequester || isAgent),
   )
-  const requesterSubtaskAvailable = Boolean(task && isRequester && !finished)
   const responsibleSubtaskAvailable = Boolean(
-    task &&
-      !isApprovalTask &&
-      isAgent &&
-      (executing || pendingApply) &&
-      !delivered,
+    task && !isApprovalTask && isAgent && executing && !delivered,
   )
-  const canCreateSubtask =
-    !isApprovalTask && (requesterSubtaskAvailable || responsibleSubtaskAvailable)
+  /** 子任务固定以父任务执行方身份创建，仅执行机器人主人可见入口 */
+  const canCreateSubtask = responsibleSubtaskAvailable
   const canRegenerateReview = Boolean(
     task && isRequester && completed && !isApprovalTask,
   )
@@ -205,24 +201,13 @@ export function TaskActions({
       }),
     [templates],
   )
-  const subtaskPerspectives = useMemo(
-    () => [
-      ...(requesterSubtaskAvailable
-        ? [{ value: 'requester' as const, label: '需求方' }]
-        : []),
-      ...(responsibleSubtaskAvailable
-        ? [{ value: 'responsible' as const, label: '执行方' }]
-        : []),
-    ],
-    [requesterSubtaskAvailable, responsibleSubtaskAvailable],
-  )
-  const subtaskPerspectiveItems = useMemo(
+  const subtaskAgentItems = useMemo(
     () =>
-      createComboboxItems(subtaskPerspectives, {
-        getValue: (item) => item.value,
-        getLabel: (item) => item.label,
+      createComboboxItems(workers, {
+        getValue: (worker) => String(worker.id),
+        getLabel: (worker) => worker.name,
       }),
-    [subtaskPerspectives],
+    [workers],
   )
 
   const resetDialogFields = useCallback(() => {
@@ -230,9 +215,9 @@ export function TaskActions({
     setDialogError(null)
     setAssignWorkerId('')
     setSubtaskTemplateId('')
-    setSubtaskTitle('')
-    setSubtaskInput('')
-    setSubtaskOutputSpec('')
+    setSubtaskAgentId('')
+    setSubtaskContent('')
+    autoSubtaskAgentIdRef.current = null
   }, [])
 
   useEffect(() => {
@@ -242,7 +227,7 @@ export function TaskActions({
   }, [task?.id, resetDialogFields])
 
   useEffect(() => {
-    if (dialog !== 'assign') return
+    if (dialog !== 'assign' && dialog !== 'subtask') return
     let closed = false
     api
       .listWorkers({ role: '工作者' })
@@ -301,19 +286,44 @@ export function TaskActions({
     [request, onRefresh],
   )
 
-  const openDialog = useCallback(
-    (kind: Exclude<DialogKind, null>) => {
-      setDialogError(null)
-      if (kind === 'subtask') {
-        setSubtaskPerspective(
-          responsibleSubtaskAvailable && !requesterSubtaskAvailable
-            ? 'responsible'
-            : 'requester',
-        )
+  const openDialog = useCallback((kind: Exclude<DialogKind, null>) => {
+    setDialogError(null)
+    setDialog(kind)
+  }, [])
+
+  /**
+   * 选择任务定义时自动带入该定义默认处理机器人（第一个启用机器人）；
+   * 手动指定过「指定人」后不再覆盖，清空指定人则由平台按任务定义分配。
+   */
+  const changeSubtaskTemplate = useCallback(
+    (value: string | null) => {
+      const next = String(value ?? '')
+      setSubtaskTemplateId(next)
+      const template = templates.find((item) => String(item.id) === next)
+      const current = workers.find(
+        (worker) => String(worker.id) === subtaskAgentId,
+      )
+      const isAutoAgent =
+        autoSubtaskAgentIdRef.current !== null &&
+        current?.id === autoSubtaskAgentIdRef.current
+      if (!template) {
+        autoSubtaskAgentIdRef.current = null
+        if (isAutoAgent) setSubtaskAgentId('')
+        return
       }
-      setDialog(kind)
+      if (subtaskAgentId.trim() && !isAutoAgent) return
+      const candidates = [...new Set(template.agentIds)]
+        .map((id) => workers.find((worker) => worker.id === id))
+        .filter((worker): worker is Worker => Boolean(worker))
+      if (candidates.length === 0) {
+        autoSubtaskAgentIdRef.current = null
+        if (isAutoAgent) setSubtaskAgentId('')
+        return
+      }
+      autoSubtaskAgentIdRef.current = candidates[0].id
+      setSubtaskAgentId(String(candidates[0].id))
     },
-    [requesterSubtaskAvailable, responsibleSubtaskAvailable],
+    [templates, workers, subtaskAgentId],
   )
 
   const submitDialog = useCallback(async () => {
@@ -337,14 +347,15 @@ export function TaskActions({
         api.workbenchCancelTask(task.id),
       )
     } else if (dialog === 'subtask') {
-      if (!subtaskTemplateId || !subtaskTitle.trim()) return
+      // 取编辑器当前内容：onChange 有防抖，避免刚输入就创建丢字
+      const content =
+        subtaskContentRef.current?.getMarkdown() ?? subtaskContent
+      if (!subtaskTemplateId || !content.trim()) return
       failure = await requestAndRefresh(() =>
         api.workbenchCreateSubtask(task.id, {
-          perspective: subtaskPerspective,
           templateId: Number(subtaskTemplateId),
-          title: subtaskTitle.trim(),
-          input: subtaskInput.trim() || null,
-          outputSpec: subtaskOutputSpec.trim() || null,
+          agentId: subtaskAgentId ? Number(subtaskAgentId) : null,
+          content: content.trim(),
         }),
       )
     }
@@ -361,10 +372,8 @@ export function TaskActions({
     dialogText,
     assignWorkerId,
     subtaskTemplateId,
-    subtaskTitle,
-    subtaskInput,
-    subtaskOutputSpec,
-    subtaskPerspective,
+    subtaskAgentId,
+    subtaskContent,
     requestAndRefresh,
     resetDialogFields,
   ])
@@ -521,7 +530,11 @@ export function TaskActions({
         }}
       >
         <DialogContent
-          className={dialog === 'handoff' ? 'sm:max-w-2xl' : undefined}
+          className={
+            dialog === 'handoff' || dialog === 'subtask'
+              ? 'sm:max-w-2xl'
+              : undefined
+          }
         >
           <DialogHeader>
             <DialogTitle>
@@ -611,47 +624,12 @@ export function TaskActions({
           {dialog === 'subtask' && (
             <DialogBody>
               <div className="space-y-3">
-                {subtaskPerspectives.length > 1 && (
-                  <label className="block space-y-1">
-                    <span className="text-xs text-foreground-muted">
-                      创建身份
-                    </span>
-                    <Combobox
-                      items={subtaskPerspectiveItems}
-                      value={subtaskPerspective}
-                      onValueChange={(value) => {
-                        if (
-                          value === 'requester' ||
-                          value === 'responsible'
-                        ) {
-                          setSubtaskPerspective(value)
-                        }
-                      }}
-                    >
-                      <ComboboxInput aria-label="创建身份" />
-                      <ComboboxContent>
-                        <ComboboxList>
-                          {(item: {
-                            value: SubtaskPerspective
-                            label: string
-                          }) => (
-                            <ComboboxItem key={item.value} value={item.value}>
-                              {item.label}
-                            </ComboboxItem>
-                          )}
-                        </ComboboxList>
-                      </ComboboxContent>
-                    </Combobox>
-                  </label>
-                )}
                 <label className="block space-y-1">
                   <span className="text-xs text-foreground-muted">任务定义</span>
                   <Combobox
                     items={subtaskTemplateItems}
                     value={subtaskTemplateId || null}
-                    onValueChange={(value) =>
-                      setSubtaskTemplateId(String(value ?? ''))
-                    }
+                    onValueChange={changeSubtaskTemplate}
                     filter={(template: TaskTemplate, query: string) =>
                       matchesPinyinSearch(query, [template.name])
                     }
@@ -676,34 +654,42 @@ export function TaskActions({
                   </Combobox>
                 </label>
                 <label className="block space-y-1">
-                  <span className="text-xs text-foreground-muted">标题</span>
-                  <input
-                    value={subtaskTitle}
-                    onChange={(event) => setSubtaskTitle(event.target.value)}
-                    placeholder="子任务标题"
-                    className="w-full rounded-[var(--radius-md)] border border-border bg-background px-3 py-2 text-sm outline-none focus:border-border-strong"
-                  />
-                </label>
-                <label className="block space-y-1">
-                  <span className="text-xs text-foreground-muted">输入</span>
-                  <textarea
-                    value={subtaskInput}
-                    rows={3}
-                    onChange={(event) => setSubtaskInput(event.target.value)}
-                    className="w-full rounded-[var(--radius-md)] border border-border bg-background px-3 py-2 text-sm outline-none focus:border-border-strong"
-                  />
-                </label>
-                <label className="block space-y-1">
-                  <span className="text-xs text-foreground-muted">交付要求</span>
-                  <textarea
-                    value={subtaskOutputSpec}
-                    rows={3}
-                    onChange={(event) =>
-                      setSubtaskOutputSpec(event.target.value)
+                  <span className="text-xs text-foreground-muted">指定人</span>
+                  <Combobox
+                    items={subtaskAgentItems}
+                    value={subtaskAgentId || null}
+                    onValueChange={(value) => {
+                      autoSubtaskAgentIdRef.current = null
+                      setSubtaskAgentId(String(value ?? ''))
+                    }}
+                    filter={(worker: Worker, query: string) =>
+                      matchesPinyinSearch(query, [worker.name])
                     }
-                    className="w-full rounded-[var(--radius-md)] border border-border bg-background px-3 py-2 text-sm outline-none focus:border-border-strong"
-                  />
+                  >
+                    <ComboboxInput
+                      placeholder="跟随任务定义自动分配，可手动指定"
+                      aria-label="指定人"
+                    />
+                    <ComboboxContent>
+                      <ComboboxEmpty>没有匹配的机器人</ComboboxEmpty>
+                      <ComboboxList>
+                        {(worker: Worker) => (
+                          <ComboboxItem key={worker.id} value={String(worker.id)}>
+                            {worker.name}
+                          </ComboboxItem>
+                        )}
+                      </ComboboxList>
+                    </ComboboxContent>
+                  </Combobox>
                 </label>
+                <MarkdownField
+                  label="任务内容"
+                  value={subtaskContent}
+                  onChange={setSubtaskContent}
+                  handleRef={subtaskContentRef}
+                  editorKey={`subtask-${task?.id ?? 0}`}
+                  heightClassName="h-56"
+                />
               </div>
             </DialogBody>
           )}
@@ -735,7 +721,7 @@ export function TaskActions({
                 (dialog === 'refuse' && !dialogText.trim()) ||
                 (dialog === 'assign' && !assignWorkerId) ||
                 (dialog === 'subtask' &&
-                  (!subtaskTemplateId || !subtaskTitle.trim())) ||
+                  (!subtaskTemplateId || !subtaskContent.trim())) ||
                 (dialog === 'handoff' && !handoffReady)
               }
               onClick={() => void submitDialog()}

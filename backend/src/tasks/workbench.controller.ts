@@ -61,13 +61,11 @@ class WorkbenchHandoffUpdateDto {
 }
 
 class WorkbenchSubtaskDto {
-  /** 当前操作身份：需求方 / 执行方（双身份用户由前端 Tab 显式指定） */
-  perspective?: 'requester' | 'responsible';
   templateId?: number;
-  title?: string;
-  description?: string | null;
-  input?: string | null;
-  outputSpec?: string | null;
+  /** 子任务内容（Markdown）；标题按内容首行兜底并异步 AI 命名 */
+  content?: string;
+  /** 指定处理机器人；为空时按任务定义分配 */
+  agentId?: number | null;
 }
 
 class WorkbenchRejectDto {
@@ -420,25 +418,20 @@ export class WorkbenchController {
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: WorkbenchSubtaskDto,
   ): Promise<Task> {
-    if (!dto.templateId || !dto.title?.trim()) {
-      throw new ForbiddenException('templateId 与 title 不能为空');
+    if (!dto.templateId || !dto.content?.trim()) {
+      throw new ForbiddenException('templateId 与 content 不能为空');
     }
     if (
-      dto.perspective &&
-      dto.perspective !== 'requester' &&
-      dto.perspective !== 'responsible'
+      dto.agentId !== undefined &&
+      dto.agentId !== null &&
+      (!Number.isInteger(dto.agentId) || dto.agentId < 1)
     ) {
-      throw new ForbiddenException(
-        'perspective 必须为 requester 或 responsible',
-      );
+      throw new ForbiddenException('agentId 必须为正整数');
     }
     return this.workbench.createSubtask(this.requireUser(req), id, {
-      perspective: dto.perspective,
       templateId: dto.templateId,
-      title: dto.title,
-      description: dto.description ?? null,
-      input: dto.input ?? null,
-      outputSpec: dto.outputSpec ?? null,
+      content: dto.content,
+      agentId: dto.agentId ?? null,
     });
   }
 

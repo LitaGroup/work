@@ -58,6 +58,8 @@ describe('TaskCollaborationService 多机器人协同动作', () => {
     completeForChild: jest.Mock;
     completeDeliveredForChild: jest.Mock;
   };
+  let templatesRepo: { find: jest.Mock; findOne: jest.Mock };
+  let workersRepo: { find: jest.Mock; findOne: jest.Mock };
   let service: TaskCollaborationService;
 
   beforeEach(() => {
@@ -107,10 +109,12 @@ describe('TaskCollaborationService 多机器人协同动作', () => {
       completeForChild: jest.fn().mockResolvedValue(undefined),
       completeDeliveredForChild: jest.fn().mockResolvedValue(undefined),
     };
+    templatesRepo = { find: jest.fn(), findOne: jest.fn() };
+    workersRepo = { find: jest.fn(), findOne: jest.fn() };
     service = new TaskCollaborationService(
       tasksRepo as never,
-      { find: jest.fn(), findOne: jest.fn() } as never,
-      { find: jest.fn(), findOne: jest.fn() } as never,
+      templatesRepo as never,
+      workersRepo as never,
       messagesRepo as never,
       tasksService as never,
       dispatchService as never,
@@ -147,6 +151,59 @@ describe('TaskCollaborationService 多机器人协同动作', () => {
   it('非负责机器人不能接受任务', async () => {
     await expect(
       service.accept(1, { id: 1002, name: '其他机器人' } as Worker),
+    ).rejects.toThrow(ForbiddenException);
+  });
+
+  it('执行方创建子任务：内容作描述、指定人与 AI 命名透传', async () => {
+    task.status = TaskStatus.RUNNING;
+    task.subStatus = TaskSubStatus.EXECUTING;
+    templatesRepo.findOne.mockResolvedValue({ id: 3, name: '调研' });
+    workersRepo.find.mockResolvedValue([{ id: 1002, name: '调研机器人' }]);
+    tasksService.create.mockResolvedValue({
+      id: 5,
+      code: 'TK-0005',
+      title: '整理竞品资料',
+    });
+
+    const child = await service.createSubtaskForActor(
+      1,
+      { type: 'worker', worker },
+      {
+        templateId: 3,
+        description: '整理竞品资料',
+        agentId: 1002,
+        titleNaming: true,
+      },
+    );
+
+    expect(child.id).toBe(5);
+    expect(tasksService.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: '',
+        description: '整理竞品资料',
+        templateId: 3,
+        agentId: 1002,
+        titleNaming: true,
+        requesterType: 'worker',
+        requesterId: worker.id,
+      }),
+    );
+    expect(tasksService.addEvent).toHaveBeenCalledWith(
+      1,
+      '操作',
+      expect.stringContaining('创建子任务'),
+      '父机器人',
+      expect.objectContaining({ agentId: 1002, templateId: 3 }),
+    );
+  });
+
+  it('既非父任务执行方也非需求方不能创建子任务', async () => {
+    await expect(
+      service.createSubtaskForActor(
+        1,
+        { type: 'user', user: { id: 9, name: '李四' } as User },
+        { templateId: 3, description: '内容' },
+      ),
     ).rejects.toThrow(ForbiddenException);
   });
 

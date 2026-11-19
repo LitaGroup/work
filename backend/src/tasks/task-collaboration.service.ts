@@ -33,10 +33,15 @@ import { TaskWorkerInboxService } from './task-worker-inbox.service';
 
 export interface CreateSubtaskInput {
   templateId: number;
-  title: string;
+  /** 标题（可空：按任务描述首行推导） */
+  title?: string | null;
   description?: string | null;
   input?: string | null;
   outputSpec?: string | null;
+  /** 显式指定的处理机器人（人工预分配）；为空时由任务定义分配 */
+  agentId?: number | null;
+  /** 父任务执行方在网页创建时开启异步 AI 标题命名 */
+  titleNaming?: boolean;
 }
 
 export interface AskQuestionInput {
@@ -164,23 +169,29 @@ export class TaskCollaborationService {
     }
     const operatorName = actorName(actor);
     const child = await this.tasksService.create({
-      title: input.title,
+      title: input.title?.trim() ?? '',
       description: input.description ?? input.input ?? null,
       input: input.input ?? null,
       outputSpec: input.outputSpec ?? null,
       templateId: template.id,
       parentId: parent.id,
+      agentId: input.agentId ?? null,
       createdById: actor.type === 'user' ? actor.user.id : parent.createdById,
       requesterType: actor.type,
       requesterId: actor.type === 'worker' ? actor.worker.id : actor.user.id,
       operatorName,
+      titleNaming: input.titleNaming,
     });
     await this.tasksService.addEvent(
       parent.id,
       '操作',
       `创建子任务 ${child.code}「${child.title}」（任务定义：${template.name}）`,
       operatorName,
-      { childTaskId: child.id, templateId: template.id },
+      {
+        childTaskId: child.id,
+        templateId: template.id,
+        ...(input.agentId ? { agentId: input.agentId } : {}),
+      },
     );
     return child;
   }
