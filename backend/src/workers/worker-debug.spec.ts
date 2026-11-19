@@ -1,3 +1,4 @@
+import { resetModelAvailability } from '../executors/model-availability';
 import {
   applyDebugStreamEvent,
   normalizeDebugAnswers,
@@ -11,6 +12,7 @@ import {
   settleDebugRunningTools,
   upsertDebugQuestion,
   WorkerDebugMessage,
+  WorkerDebugService,
 } from './worker-debug.service';
 
 describe('applyDebugStreamEvent', () => {
@@ -427,5 +429,130 @@ describe('normalizeDebugMode', () => {
     expect(normalizeDebugMode('')).toBe('build');
     expect(normalizeDebugMode(undefined)).toBe('build');
     expect(normalizeDebugMode('PLAN')).toBe('build');
+  });
+});
+
+describe('WorkerDebugService 模型选择记忆', () => {
+  const worker = {
+    id: 1001,
+    name: '我的助理',
+    executorId: 1,
+    providerId: 'openai',
+    modelId: 'gpt-4.1',
+    variant: 'medium',
+    backupProviderId: null,
+    backupModelId: null,
+    backupVariant: null,
+  };
+  const context = { worker, executor: { id: 1 }, workdir: '/tmp/w' };
+  const catalog = [
+    {
+      providerID: 'openai',
+      modelID: 'gpt-4.1',
+      id: 'gpt-4.1',
+      enabled: true,
+      capabilities: { tools: true },
+      variants: [{ id: 'low' }, { id: 'high' }],
+    },
+  ];
+
+  interface SessionQuery {
+    where: Record<string, unknown>;
+    order: { updatedAt: string };
+  }
+
+  const makeService = (row: unknown) => {
+    const queries: SessionQuery[] = [];
+    const findOne = jest.fn((options: SessionQuery) => {
+      queries.push(options);
+      return Promise.resolve(row);
+    });
+    const debugSessions = {
+      findOne,
+      find: jest.fn().mockResolvedValue([]),
+    };
+    const service = new WorkerDebugService(
+      {} as never,
+      {} as never,
+      debugSessions as never,
+      {} as never,
+      { onEvent: () => () => undefined } as never,
+    );
+    return { service, queries };
+  };
+
+  /** 直接调用私有初始值解析，避免构造完整的 Nest 上下文 */
+  const initialModelOf = (
+    service: WorkerDebugService,
+    userId: number,
+  ): Promise<unknown> =>
+    (
+      service as unknown as {
+        initialModelOf: (
+          userId: number,
+          workerId: number,
+          context: unknown,
+          catalog: unknown,
+        ) => Promise<unknown>;
+      }
+    ).initialModelOf(userId, worker.id, context, catalog);
+
+  beforeEach(() => resetModelAvailability());
+
+  it('没有历史会话时使用机器人默认模型与思考等级', async () => {
+    const { service } = makeService(null);
+    await expect(initialModelOf(service, 7)).resolves.toEqual({
+      providerId: 'openai',
+      modelId: 'gpt-4.1',
+      variant: 'medium',
+    });
+    service.onModuleDestroy();
+  });
+
+  it('沿用该用户最近一次会话的模型与思考等级', async () => {
+    const { service, queries } = makeService({
+      activeProviderId: 'openai',
+      activeModelId: 'gpt-4.1',
+      activeVariant: 'high',
+    });
+    await expect(initialModelOf(service, 7)).resolves.toEqual({
+      providerId: 'openai',
+      modelId: 'gpt-4.1',
+      variant: 'high',
+    });
+    expect(queries[0].where).toMatchObject({
+      userId: 7,
+      workerId: worker.id,
+    });
+    expect(queries[0].order).toEqual({ updatedAt: 'DESC' });
+    service.onModuleDestroy();
+  });
+
+  it('思考等级已下线时保留模型并回到模型默认等级', async () => {
+    const { service } = makeService({
+      activeProviderId: 'openai',
+      activeModelId: 'gpt-4.1',
+      activeVariant: 'gone',
+    });
+    await expect(initialModelOf(service, 7)).resolves.toEqual({
+      providerId: 'openai',
+      modelId: 'gpt-4.1',
+      variant: null,
+    });
+    service.onModuleDestroy();
+  });
+
+  it('记忆中的模型已下线时回退机器人默认', async () => {
+    const { service } = makeService({
+      activeProviderId: 'openai',
+      activeModelId: 'gpt-3.5',
+      activeVariant: null,
+    });
+    await expect(initialModelOf(service, 7)).resolves.toEqual({
+      providerId: 'openai',
+      modelId: 'gpt-4.1',
+      variant: 'medium',
+    });
+    service.onModuleDestroy();
   });
 });

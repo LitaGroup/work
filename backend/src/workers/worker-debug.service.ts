@@ -36,6 +36,7 @@ import {
   OpencodeClientError,
   formEventToQuestionEvent,
   isFreshOutcome,
+  type OpencodeModelInfo,
   type OpencodeQuestionRequest,
 } from '../executors/opencode-client';
 import {
@@ -661,7 +662,12 @@ export class WorkerDebugService implements OnModuleInit, OnModuleDestroy {
   ): Promise<WorkerDebugSnapshot> {
     const context = await this.resolveContext(workerId);
     const session = await this.findSession(userId, workerId, context, scope);
-    if (!session) return this.emptySnapshot(context.option);
+    if (!session) {
+      return this.emptySnapshot(
+        context.option,
+        await this.initialModelOf(userId, workerId, context),
+      );
+    }
     // 进入页面/服务重启后对账一次：漏收 question/form 事件的提问补建卡片，
     // opencode 侧已不存在的本地待答卡片置为失效。
     await this.reconcileDebugQuestions(session, session.runSeq);
@@ -707,7 +713,11 @@ export class WorkerDebugService implements OnModuleInit, OnModuleDestroy {
       grouped.set(providerId, group);
     }
     return {
-      current: { ...(session?.activeModel ?? this.defaultModelOf(context)) },
+      current: {
+        ...(session?.activeModel ??
+          (await this.rememberedModelOf(userId, workerId, context, models)) ??
+          this.defaultModelOf(context)),
+      },
       providers: [...grouped.values()].sort((a, b) =>
         a.name.localeCompare(b.name, 'zh-CN'),
       ),
@@ -825,7 +835,13 @@ export class WorkerDebugService implements OnModuleInit, OnModuleDestroy {
       throw new ConflictException('机器人执行配置已变更，请先重置调试会话');
     }
     if (!session) {
-      session = this.newSession(userId, workerId, context, scope);
+      session = this.newSession(
+        userId,
+        workerId,
+        context,
+        scope,
+        await this.initialModelOf(userId, workerId, context),
+      );
       this.sessions.set(key, session);
     } else {
       session.context = context;
@@ -884,7 +900,12 @@ export class WorkerDebugService implements OnModuleInit, OnModuleDestroy {
   ): Promise<WorkerDebugSnapshot> {
     const context = await this.resolveContext(workerId);
     const session = await this.findSession(userId, workerId, context, scope);
-    if (!session) return this.emptySnapshot(context.option);
+    if (!session) {
+      return this.emptySnapshot(
+        context.option,
+        await this.initialModelOf(userId, workerId, context),
+      );
+    }
     if (!session.running) return this.toSnapshot(session);
     session.interruptRequested = true;
     session.runSeq += 1;
@@ -910,7 +931,13 @@ export class WorkerDebugService implements OnModuleInit, OnModuleDestroy {
   ): Promise<WorkerDebugSnapshot> {
     const context = await this.resolveContext(workerId);
     const key = this.keyOf(userId, workerId, scope);
-    const previous = this.sessions.get(key);
+    const previous =
+      this.sessions.get(key) ??
+      (await this.findSession(userId, workerId, context, scope));
+    // 重置只解绑 opencode 会话，保留模型/思考等级：下一个会话继续沿用
+    const carriedModel = previous
+      ? { ...previous.activeModel }
+      : await this.initialModelOf(userId, workerId, context);
     this.sessions.delete(key);
     this.clearPersistTimer(key);
     await this.debugSessions
@@ -927,7 +954,16 @@ export class WorkerDebugService implements OnModuleInit, OnModuleDestroy {
           this.logger.warn(`重置时中断旧会话失败：${error.message}`);
         });
     }
-    const empty = this.emptySnapshot(context.option);
+    const session = this.newSession(
+      userId,
+      workerId,
+      context,
+      scope,
+      carriedModel,
+    );
+    this.sessions.set(key, session);
+    await this.persist(session);
+    const empty = this.toSnapshot(session);
     this.updates.emit(key, {
       type: 'snapshot',
       snapshot: empty,
@@ -1729,6 +1765,7 @@ export class WorkerDebugService implements OnModuleInit, OnModuleDestroy {
     workerId: number,
     context: DebugContext,
     scope: string = DEBUG_SCOPE,
+    activeModel?: WorkerDebugModelSelection,
   ): DebugSession {
     return {
       key: this.keyOf(userId, workerId, scope),
@@ -1740,7 +1777,9 @@ export class WorkerDebugService implements OnModuleInit, OnModuleDestroy {
       client: new OpencodeClient(context.executor),
       sessionId: null,
       bound: null,
-      activeModel: this.defaultModelOf(context),
+      activeModel: activeModel
+        ? { ...activeModel }
+        : this.defaultModelOf(context),
       activeAgent: 'build',
       appliedModelKey: null,
       appliedAgent: null,
@@ -1859,6 +1898,77 @@ export class WorkerDebugService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
+  /**
+   * 新会话的初始模型/思考等级：优先沿用该用户在同一机器人下最近一次显式选择。
+   * 「我的 AI」按任务/页面隔离会话，没有这条记忆的话每个新会话都要重新选。
+   */
+  private async initialModelOf(
+    userId: number,
+    workerId: number,
+    context: DebugContext,
+    catalog?: OpencodeModelInfo[],
+  ): Promise<WorkerDebugModelSelection> {
+    const remembered = await this.rememberedModelOf(
+      userId,
+      workerId,
+      context,
+      catalog,
+    );
+    return remembered ?? this.defaultModelOf(context);
+  }
+
+  /** 最近一次会话选择过的模型/思考等级（已下线或不可用的选择回退到机器人默认） */
+  private async rememberedModelOf(
+    userId: number,
+    workerId: number,
+    context: DebugContext,
+    catalog?: OpencodeModelInfo[],
+  ): Promise<WorkerDebugModelSelection | null> {
+    const row = await this.debugSessions
+      .findOne({
+        where: {
+          userId,
+          workerId,
+          updatedAt: MoreThanOrEqual(new Date(Date.now() - SESSION_TTL_MS)),
+        },
+        order: { updatedAt: 'DESC' },
+      })
+      .catch((error: Error) => {
+        this.logger.warn(`读取模型记忆失败: ${error.message}`);
+        return null;
+      });
+    if (!row?.activeProviderId || !row.activeModelId) return null;
+    const remember: WorkerDebugModelSelection = {
+      providerId: row.activeProviderId,
+      modelId: row.activeModelId,
+      variant: row.activeVariant ?? null,
+    };
+    const models =
+      catalog ??
+      (await new OpencodeClient(context.executor).models().catch(() => null));
+    if (!models) return null;
+    const model = models.find(
+      (item) =>
+        item.providerID === remember.providerId &&
+        (item.modelID ?? item.id) === remember.modelId,
+    );
+    if (
+      !model ||
+      model.enabled === false ||
+      model.capabilities?.tools === false
+    ) {
+      return null;
+    }
+    // 思考等级已不可用时保留模型，回到模型默认等级
+    if (
+      remember.variant &&
+      !(model.variants ?? []).some((item) => item.id === remember.variant)
+    ) {
+      remember.variant = null;
+    }
+    return remember;
+  }
+
   /** 机器人配置的默认模型（用户未显式选择时使用；主模型限额冷却中改用备用模型） */
   private defaultModelOf(context: DebugContext): WorkerDebugModelSelection {
     const model = resolveWorkerModel(context.worker)?.model ?? {
@@ -1951,14 +2061,19 @@ export class WorkerDebugService implements OnModuleInit, OnModuleDestroy {
     session.rowId = saved.id;
   }
 
-  private emptySnapshot(worker: WorkerDebugOption): WorkerDebugSnapshot {
+  private emptySnapshot(
+    worker: WorkerDebugOption,
+    model?: WorkerDebugModelSelection,
+  ): WorkerDebugSnapshot {
     return {
       worker,
-      model: {
-        providerId: worker.providerId,
-        modelId: worker.modelId,
-        variant: worker.variant,
-      },
+      model: model
+        ? { ...model }
+        : {
+            providerId: worker.providerId,
+            modelId: worker.modelId,
+            variant: worker.variant,
+          },
       sessionId: null,
       status: 'idle',
       messages: [],
