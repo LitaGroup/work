@@ -880,11 +880,15 @@ export interface Backlog {
   updatedAt: string
 }
 
-/** 迭代项提测工单工作流可用性（详情接口返回，供提测按钮置灰） */
+/** 迭代项提测工单工作流信息（详情接口返回，供提测弹窗动态渲染与按钮置灰） */
 export interface BacklogReleaseWorkflow {
   id: number
+  /** 工单配置名称 */
+  name: string
   /** 已启用且已发布版本（可创建工单） */
   enabled: boolean
+  /** 发布版本起始节点输入字段（弹窗按此动态渲染；未发布时为空数组） */
+  inputFields: TicketWorkflowInputField[]
 }
 
 /** 迭代项飞书沟通群状态：未建群/已解散为 null */
@@ -896,11 +900,13 @@ export interface BacklogFeishuChat {
   lastError: string | null
 }
 
-/** 迭代项详情（GET /backlogs/:id）：迭代项 + 提测工作流信息 + 飞书沟通群状态 */
+/** 迭代项详情（GET /backlogs/:id）：迭代项 + 提测工作流配置 + 提测描述预览 + 飞书沟通群状态 */
 export interface BacklogDetail extends Backlog {
   /** 所属迭代（唯一标识，供详情展示 2026WXX） */
   iteration: { id: number; code: string; type: IterationType } | null
   releaseWorkflow: BacklogReleaseWorkflow | null
+  /** 提测弹窗「详细说明」预填文本（迭代项上下文，不含表单项动态行） */
+  releaseDescriptionPreview: string | null
   feishuChat: BacklogFeishuChat | null
   /** 当前查看者是否可操作（管理员或手动成员；自动列入的负责人/需求方不计） */
   canOperate: boolean
@@ -2862,6 +2868,11 @@ export const api = {
     testers: string[]
     branches?: ReleaseBranch[]
     urls?: string[]
+    /**
+     * 提测工单配置（release-ticket）动态字段值：
+     * 除保留 key（title/description/content/testEnds/testers/branch/url/backlogs）外原样透传
+     */
+    inputValues?: Record<string, unknown>
     /** 来源任务（机器人调用时可显式指定；网页提测一般不传） */
     taskId?: number
   }) =>

@@ -223,6 +223,66 @@ export const DEPLOY_TICKET_WORKFLOW = {
 } satisfies SystemTicketWorkflow;
 
 /**
+ * 提测工单起始字段：以上字段与迭代项提测弹窗绑定。
+ * - `backlogs`（backlog_multi）由平台自动代入所选迭代项；
+ * - 保留 key（`title` / `description` / `content` / `testEnds` / `testers` / `branch` / `url`）
+ *   由提测弹窗的专用控件承载并映射进工单 inputValues；
+ * - 其余自定义字段在提测弹窗按类型动态渲染。
+ */
+const releaseInputFields = [
+  ...inputFields(),
+  {
+    key: 'backlogs',
+    label: '迭代项',
+    type: 'backlog_multi' as const,
+    required: false,
+    placeholder: '随所选迭代项自动代入',
+    defaultValue: null,
+  },
+  {
+    key: 'content',
+    label: '提测内容',
+    type: 'textarea' as const,
+    required: false,
+    placeholder: '本轮提测范围、注意事项、回归重点…',
+    defaultValue: null,
+  },
+  {
+    key: 'testEnds',
+    label: '提测端',
+    type: 'multiselect' as const,
+    required: false,
+    options: ['APP', 'H5', '后端'],
+    placeholder: 'APP / H5 / 后端',
+    defaultValue: null,
+  },
+  {
+    key: 'testers',
+    label: '测试人员',
+    type: 'text' as const,
+    required: false,
+    placeholder: '须为用户系统内用户，多个用顿号分隔',
+    defaultValue: null,
+  },
+  {
+    key: 'branch',
+    label: '代码分支',
+    type: 'text' as const,
+    required: false,
+    placeholder: '仓库 @ 分支，多个用顿号分隔',
+    defaultValue: null,
+  },
+  {
+    key: 'url',
+    label: '访问地址',
+    type: 'text' as const,
+    required: false,
+    placeholder: '多个用换行分隔',
+    defaultValue: null,
+  },
+];
+
+/**
  * 系统内置的提测工单定义（迭代项 Backlog 的「提测」按钮发起）：
  * 发起（自动填入迭代项上下文，人工可补充）→ 提测处理 → 发起人验收。
  */
@@ -241,7 +301,7 @@ export const RELEASE_TICKET_WORKFLOW = {
         kind: 'start',
         taskTemplateId: null,
         responsibleWorkerId: null,
-        inputFields: inputFields(),
+        inputFields: releaseInputFields,
         autoAccept: false,
         description:
           '由迭代项成员或管理员发起，工单内容自动填入迭代项上下文，可补充提测说明。',

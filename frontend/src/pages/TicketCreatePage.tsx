@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Badge } from '@appica/ui-react/badge'
 import { Button } from '@appica/ui-react/button'
@@ -8,40 +8,9 @@ import {
   CardHeader,
   CardTitle,
 } from '@appica/ui-react/card'
-import { Input } from '@appica/ui-react/input'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@appica/ui-react/select'
 import { api, type BacklogSummary, type IterationSummary } from '../lib/api'
-import { MarkdownEditor } from '../components/MarkdownEditor'
+import { WorkflowField, uploadWorkflowFile } from '../components/WorkflowFieldInput'
 import { PageBreadcrumb } from '../components/PageBreadcrumb'
-import {
-  IterationMultiPicker,
-  IterationPicker,
-} from '../components/IterationPicker'
-import {
-  BacklogMultiPicker,
-  BacklogPicker,
-} from '../components/BacklogPicker'
-
-const NO_OPTION = '__none__'
-
-function readFile(file: File): Promise<string> {
-  const body = new FormData()
-  body.append('file', file)
-  return fetch('/api/files/upload.md', { method: 'POST', body })
-    .then(async (response) => {
-      const text = await response.text()
-      if (!response.ok) throw new Error(text || '文件上传失败')
-      const match = text.match(/\(\/(files\/[^)\s]+)\)/)
-      if (!match) throw new Error('上传结果中缺少文件地址')
-      return `/${match[1]}`
-    })
-}
 
 /** 新建工作流工单：按工单配置起始节点的结构化字段发起 */
 export function TicketCreatePage() {
@@ -57,7 +26,6 @@ export function TicketCreatePage() {
   const [uploading, setUploading] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const fileRefs = useRef<Record<string, HTMLInputElement | null>>({})
 
   useEffect(() => {
     if (!Number.isInteger(id) || id <= 0) {
@@ -183,162 +151,27 @@ export function TicketCreatePage() {
           </CardHeader>
           <div className="grid gap-4 px-4 pb-4">
             {fields.map((field) => (
-              <label
+              <WorkflowField
                 key={field.key}
-                className="flex min-w-0 flex-col gap-1.5 text-sm"
-              >
-                <span className="flex items-center gap-1">
-                  {field.label}
-                  {field.required && <span className="text-error-foreground">*</span>}
-                  <Badge variant="outline" size="sm">
-                    {field.type === 'text' && '文本'}
-                    {field.type === 'textarea' && '多行文本'}
-                    {field.type === 'number' && '数字'}
-                    {field.type === 'date' && '日期'}
-                    {field.type === 'select' && '单选'}
-                    {field.type === 'multiselect' && '多选'}
-                    {field.type === 'file' && '文件'}
-                    {field.type === 'iteration' && '迭代'}
-                    {field.type === 'iteration_multi' && '迭代（多选）'}
-                    {field.type === 'backlog' && '迭代项'}
-                    {field.type === 'backlog_multi' && '迭代项（多选）'}
-                  </Badge>
-                </span>
-                {field.type === 'textarea' ? (
-                  <div className="h-56 md-editor-scroll rounded-none border border-border-strong bg-background-muted">
-                    <MarkdownEditor
-                      key={`${start?.key ?? 'start'}-${field.key}`}
-                      value={values[field.key] ?? ''}
-                      compact
-                      appica
-                      onChange={(markdown) => update(field.key, markdown)}
-                    />
-                  </div>
-                ) : field.type === 'select' ? (
-                  <Select
-                    value={values[field.key] || NO_OPTION}
-                    onValueChange={(value) =>
-                      update(field.key, value === NO_OPTION ? '' : String(value))
-                    }
-                    items={{
-                      [NO_OPTION]: field.placeholder ?? '请选择',
-                      ...Object.fromEntries(
-                        (field.options ?? []).map((option) => [option, option]),
-                      ),
-                    }}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder={field.placeholder ?? '请选择'} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value={NO_OPTION}>
-                        {field.placeholder ?? '请选择'}
-                      </SelectItem>
-                      {(field.options ?? []).map((option) => (
-                        <SelectItem key={option} value={option}>
-                          {option}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                ) : field.type === 'multiselect' ? (
-                  <Select
-                    multiple
-                    value={(values[field.key] ?? '').split(',').filter(Boolean)}
-                    onValueChange={(value) =>
-                      update(field.key, (value as string[]).join(','))
-                    }
-                    items={Object.fromEntries(
-                      (field.options ?? []).map((option) => [option, option]),
-                    )}
-                  >
-                    <SelectTrigger clearable>
-                      <SelectValue placeholder={field.placeholder ?? '请选择'}>
-                        {(selected: string[]) =>
-                          selected.length === 0
-                            ? (field.placeholder ?? '请选择')
-                            : selected.join('、')
-                        }
-                      </SelectValue>
-                    </SelectTrigger>
-                    <SelectContent>
-                      {(field.options ?? []).map((option) => (
-                        <SelectItem key={option} value={option}>
-                          {option}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                ) : field.type === 'iteration' ? (
-                  <IterationPicker
-                    iterations={iterations}
-                    value={values[field.key] ?? ''}
-                    onChange={(next) => update(field.key, next)}
-                    placeholder={field.placeholder ?? '选择迭代'}
-                  />
-                ) : field.type === 'iteration_multi' ? (
-                  <IterationMultiPicker
-                    iterations={iterations}
-                    value={(values[field.key] ?? '').split(',').filter(Boolean)}
-                    onChange={(next) => update(field.key, next.join(','))}
-                    placeholder={field.placeholder ?? '选择迭代'}
-                  />
-                ) : field.type === 'backlog' ? (
-                  <BacklogPicker
-                    backlogs={backlogs}
-                    value={values[field.key] ?? ''}
-                    onChange={(next) => update(field.key, next)}
-                    placeholder={field.placeholder ?? '选择迭代项'}
-                  />
-                ) : field.type === 'backlog_multi' ? (
-                  <BacklogMultiPicker
-                    backlogs={backlogs}
-                    value={(values[field.key] ?? '').split(',').filter(Boolean)}
-                    onChange={(next) => update(field.key, next.join(','))}
-                    placeholder={field.placeholder ?? '选择迭代项'}
-                  />
-                ) : field.type === 'file' ? (
-                  <span className="flex items-center gap-2">
-                    <input
-                      ref={(element) => {
-                        fileRefs.current[field.key] = element
-                      }}
-                      type="file"
-                      className="text-sm"
-                      onChange={async (event) => {
-                        const file = event.target.files?.[0]
-                        if (!file) return
-                        setUploading(field.key)
-                        setError(null)
-                        try {
-                          update(field.key, await readFile(file))
-                        } catch (e) {
-                          setError((e as Error).message)
-                        } finally {
-                          setUploading(null)
-                          const fileInput = fileRefs.current[field.key]
-                          if (fileInput) fileInput.value = ''
-                        }
-                      }}
-                    />
-                    {uploading === field.key && (
-                      <span className="text-xs text-foreground-muted">上传中…</span>
-                    )}
-                  </span>
-                ) : (
-                  <Input
-                    type={field.type === 'date' ? 'date' : field.type === 'number' ? 'number' : 'text'}
-                    value={values[field.key] ?? ''}
-                    onChange={(event) => update(field.key, event.target.value)}
-                    placeholder={field.placeholder ?? ''}
-                  />
-                )}
-                {field.type === 'file' && values[field.key] && (
-                  <span className="truncate text-xs text-foreground-muted">
-                    已上传：{values[field.key]}
-                  </span>
-                )}
-              </label>
+                field={field}
+                value={values[field.key] ?? ''}
+                onChange={(next) => update(field.key, next)}
+                iterations={iterations}
+                backlogs={backlogs}
+                uploading={uploading === field.key}
+                onUploadFile={async (file) => {
+                  setUploading(field.key)
+                  setError(null)
+                  try {
+                    return await uploadWorkflowFile(file)
+                  } catch (e) {
+                    setError((e as Error).message)
+                    throw e
+                  } finally {
+                    setUploading(null)
+                  }
+                }}
+              />
             ))}
             {fields.length === 0 && (
               <p className="text-sm text-foreground-muted">

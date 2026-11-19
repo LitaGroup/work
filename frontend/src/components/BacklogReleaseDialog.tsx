@@ -31,8 +31,10 @@ import {
   type Project,
   type ReleaseBranch,
   type ReleaseEnd,
+  type TicketWorkflowInputField,
 } from '../lib/api'
 import { matchesPinyinSearch } from '../lib/pinyin-search'
+import { WorkflowField } from './WorkflowFieldInput'
 
 /** 端映射：需求「涉及方」→ 提测端默认值（Android/iOS → APP，Backend → 后端） */
 const INVOLVED_END_MAP: Record<string, ReleaseEnd> = {
@@ -41,6 +43,30 @@ const INVOLVED_END_MAP: Record<string, ReleaseEnd> = {
   H5: 'H5',
   Backend: '后端',
 }
+
+/**
+ * 提测工单保留字段：由提测弹窗的专用控件承载（迭代项选择、标题、提测端、
+ * 测试人员、分支、地址、各迭代项内容、详细说明），不进入动态字段区。
+ * 与后端 `RELEASE_RESERVED_INPUT_KEYS` 保持一致。
+ */
+const RELEASE_RESERVED_INPUT_KEYS = new Set([
+  'title',
+  'description',
+  'backlogs',
+  'content',
+  'testEnds',
+  'testers',
+  'branch',
+  'url',
+])
+
+/** 迭代 / 迭代项引用字段：随所选迭代项自动代入，不渲染选择器 */
+const RELEASE_REFERENCE_TYPES = new Set<TicketWorkflowInputField['type']>([
+  'iteration',
+  'iteration_multi',
+  'backlog',
+  'backlog_multi',
+])
 
 /** 批量提测标题：单迭代「提测-{code} {标题}」，多迭代「{首个标题} 等x个迭代」 */
 function defaultReleaseTitle(rows: BacklogSummary[], codes: string[]): string {
@@ -69,10 +95,30 @@ function defaultReleaseEnds(
   return [...ends]
 }
 
+/** 引用字段自动代入值：迭代项 → BL 编号 + 标题；迭代 → 标识 */
+function referenceSummary(
+  field: TicketWorkflowInputField,
+  rows: BacklogSummary[],
+): string {
+  if (field.type === 'backlog' || field.type === 'backlog_multi') {
+    return rows.length > 0
+      ? rows.map((row) => `${row.code} ${row.title}`).join('、')
+      : '未选择迭代项'
+  }
+  const codes = [
+    ...new Set(
+      rows.map((row) => row.iteration?.code ?? `#${row.iterationId}`),
+    ),
+  ]
+  return codes.length > 0 ? codes.join('、') : '未选择迭代项'
+}
+
 /**
  * 批量提测弹窗：
  * - 可跨迭代多选迭代项（默认预选当前迭代项），每个迭代项填写各自的提测内容；
  * - 整单共用提测端（APP / H5 / 后端，多选至少 1 个）、测试人员、代码分支、访问地址；
+ * - 表单按「提测工单」（release-ticket）发布版本起始节点的字段配置动态渲染：
+ *   迭代项 / 迭代引用字段随所选迭代项自动代入，其余自定义字段按类型渲染；
  * - 提交后每个迭代项各生成提测工单 + 提测记录，汇总一条提测群消息。
  */
 export function BacklogReleaseDialog({
@@ -93,6 +139,9 @@ export function BacklogReleaseDialog({
   const [contents, setContents] = useState<Record<number, string>>({})
   const [title, setTitle] = useState('')
   const [titleTouched, setTitleTouched] = useState(false)
+  const [description, setDescription] = useState('')
+  const [descriptionTouched, setDescriptionTouched] = useState(false)
+  const [dynamicValues, setDynamicValues] = useState<Record<string, string>>({})
   const [ends, setEnds] = useState<ReleaseEnd[]>([])
   const [endsTouched, setEndsTouched] = useState(false)
   const [testers, setTesters] = useState<string[]>([''])
@@ -102,12 +151,54 @@ export function BacklogReleaseDialog({
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
 
+  /** 工单配置起始节点字段（弹窗动态渲染的依据） */
+  const configFields = useMemo(
+    () => backlog.releaseWorkflow?.inputFields ?? [],
+    [backlog.releaseWorkflow],
+  )
+  const configFieldByKey = useMemo(
+    () => new Map(configFields.map((field) => [field.key, field])),
+    [configFields],
+  )
+  /** 自定义动态字段：排除保留 key 与迭代/迭代项引用字段 */
+  const dynamicFields = useMemo(
+    () =>
+      configFields.filter(
+        (field) =>
+          !RELEASE_RESERVED_INPUT_KEYS.has(field.key) &&
+          !RELEASE_REFERENCE_TYPES.has(field.type),
+      ),
+    [configFields],
+  )
+  /** 引用字段：随所选迭代项自动代入（只读展示） */
+  const referenceFields = useMemo(
+    () =>
+      configFields.filter(
+        (field) =>
+          !RELEASE_RESERVED_INPUT_KEYS.has(field.key) &&
+          RELEASE_REFERENCE_TYPES.has(field.type),
+      ),
+    [configFields],
+  )
+  const reservedRequired = (key: string) =>
+    configFieldByKey.get(key)?.required ?? false
+
   useEffect(() => {
     if (!open) return
     setSelected([backlog.id])
     setContents({})
     setTitle('')
     setTitleTouched(false)
+    setDescription(backlog.releaseDescriptionPreview ?? '')
+    setDescriptionTouched(false)
+    setDynamicValues(
+      Object.fromEntries(
+        configFields.map((field) => [
+          field.key,
+          field.defaultValue == null ? '' : String(field.defaultValue),
+        ]),
+      ),
+    )
     setEnds([])
     setEndsTouched(false)
     setTesters([''])
@@ -128,6 +219,8 @@ export function BacklogReleaseDialog({
       .listUsers()
       .then((users) => setUserNames(users.map((user) => user.name)))
       .catch(() => setUserNames([]))
+    // configFields 仅在迭代项切换/打开时变化，随 open 一起重置即可
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, backlog.id])
 
   /** 候选列表：当前迭代项始终可选项（即使未在列表中） */
@@ -232,16 +325,52 @@ export function BacklogReleaseDialog({
     const validBranches = branches
       .map((row) => ({ repo: row.repo.trim(), branch: row.branch.trim() }))
       .filter((row) => row.repo || row.branch)
+    const validUrls = urls.map((url) => url.trim()).filter(Boolean)
     let message: string | null = null
     if (items.length === 0) message = '至少选择一个迭代项'
     else if (ends.length === 0) message = '提测端至少选择 1 个'
     else if (validTesters.length === 0) message = '测试人员至少填写 1 人'
     else if (validBranches.some((row) => !row.repo || !row.branch)) {
       message = '代码分支需同时填写仓库与分支'
+    } else if (reservedRequired('branch') && validBranches.length === 0) {
+      message = '代码分支为必填项'
+    } else if (reservedRequired('url') && validUrls.length === 0) {
+      message = '访问地址为必填项'
+    } else if (
+      reservedRequired('content') &&
+      selectedRows.some((row) => !contents[row.id]?.trim())
+    ) {
+      message = '每个迭代项的提测内容均为必填项'
+    } else {
+      const missingDynamic = dynamicFields.find(
+        (field) => field.required && !(dynamicValues[field.key] ?? '').trim(),
+      )
+      if (missingDynamic) message = `「${missingDynamic.label}」不能为空`
     }
     if (message) {
       setError(message)
       return
+    }
+    // 动态字段透传（保留 key 由后端按提测表单映射）；详细说明仅在人工修改后提交
+    const inputValues: Record<string, unknown> = {}
+    for (const field of dynamicFields) {
+      const value = (dynamicValues[field.key] ?? '').trim()
+      if (value) inputValues[field.key] = value
+    }
+    // 引用字段自动代入：迭代项 / 迭代（按所选迭代项与所属迭代生成）
+    for (const field of referenceFields) {
+      const isBacklog =
+        field.type === 'backlog' || field.type === 'backlog_multi'
+      const isMulti =
+        field.type === 'backlog_multi' || field.type === 'iteration_multi'
+      const ids = isBacklog
+        ? selectedRows.map((row) => String(row.id))
+        : [...new Set(selectedRows.map((row) => String(row.iterationId)))]
+      const value = isMulti ? ids.join(',') : (ids[0] ?? '')
+      if (value) inputValues[field.key] = value
+    }
+    if (descriptionTouched && description.trim()) {
+      inputValues.description = description.trim()
     }
     setSaving(true)
     setError(null)
@@ -252,7 +381,9 @@ export function BacklogReleaseDialog({
         ends,
         testers: validTesters,
         branches: validBranches,
-        urls: urls.map((url) => url.trim()).filter(Boolean),
+        urls: validUrls,
+        inputValues:
+          Object.keys(inputValues).length > 0 ? inputValues : undefined,
       })
       onOpenChange(false)
       onDone(result)
@@ -275,6 +406,8 @@ export function BacklogReleaseDialog({
           <div className="flex max-h-[70vh] flex-col gap-4 overflow-y-auto pe-1">
             <p className="text-xs text-foreground-muted">
               可跨迭代多选迭代项；每个迭代项各生成一张提测工单与一条提测记录，提测群只推送一条汇总消息。
+              {configFields.length > 0 &&
+                '表单字段按「提测工单」配置动态生成，迭代项等引用字段自动代入。'}
             </p>
 
             <div className="flex flex-col gap-2">
@@ -327,7 +460,7 @@ export function BacklogReleaseDialog({
             </div>
 
             <label className="flex flex-col gap-1 text-sm">
-              提测标题
+              {configFieldByKey.get('title')?.label ?? '提测标题'}
               <Input
                 value={title}
                 onChange={(e) => {
@@ -335,6 +468,24 @@ export function BacklogReleaseDialog({
                   setTitle(e.target.value)
                 }}
                 placeholder="多个迭代项自动生成「xxx 等x个迭代」"
+              />
+            </label>
+
+            <label className="flex flex-col gap-1 text-sm">
+              {configFieldByKey.get('description')?.label ?? '详细说明'}
+              {reservedRequired('description') && (
+                <span className="text-xs text-foreground-muted">
+                  已按当前迭代项预填上下文，可修改；留空表示使用自动生成内容
+                </span>
+              )}
+              <Textarea
+                rows={5}
+                value={description}
+                onChange={(e) => {
+                  setDescriptionTouched(true)
+                  setDescription(e.target.value)
+                }}
+                placeholder="补充提测背景、注意事项；留空自动生成迭代项上下文"
               />
             </label>
 
@@ -420,7 +571,10 @@ export function BacklogReleaseDialog({
             </div>
 
             <div className="flex flex-col gap-2">
-              <span className="text-sm">代码分支（可空，整单共用）</span>
+              <span className="text-sm">
+                代码分支
+                {reservedRequired('branch') ? '（必填，整单共用）' : '（可空，整单共用）'}
+              </span>
               {branches.map((branch, index) => (
                 <div key={index} className="flex items-center gap-2">
                   <Input
@@ -476,7 +630,10 @@ export function BacklogReleaseDialog({
             </div>
 
             <div className="flex flex-col gap-2">
-              <span className="text-sm">访问地址（可空，整单共用）</span>
+              <span className="text-sm">
+                访问地址
+                {reservedRequired('url') ? '（必填，整单共用）' : '（可空，整单共用）'}
+              </span>
               {urls.map((url, index) => (
                 <div key={index} className="flex items-center gap-2">
                   <Input
@@ -514,7 +671,10 @@ export function BacklogReleaseDialog({
             </div>
 
             <div className="flex flex-col gap-2">
-              <span className="text-sm">各迭代项提测内容</span>
+              <span className="text-sm">
+                各迭代项提测内容
+                {reservedRequired('content') ? '（必填）' : ''}
+              </span>
               {selectedRows.map((row) => (
                 <label key={row.id} className="flex flex-col gap-1 text-sm">
                   <span className="text-xs text-foreground-muted">
@@ -539,6 +699,35 @@ export function BacklogReleaseDialog({
                 </p>
               )}
             </div>
+
+            {referenceFields.length > 0 && (
+              <div className="flex flex-col gap-1 rounded-[var(--radius-md)] bg-background-muted px-3 py-2 text-sm">
+                {referenceFields.map((field) => (
+                  <p key={field.key} className="text-xs text-foreground-muted">
+                    {field.label}：{referenceSummary(field, selectedRows)}
+                    <span className="ms-1">（随所选迭代项自动代入）</span>
+                  </p>
+                ))}
+              </div>
+            )}
+
+            {dynamicFields.length > 0 && (
+              <div className="flex flex-col gap-4">
+                {dynamicFields.map((field) => (
+                  <WorkflowField
+                    key={field.key}
+                    field={field}
+                    value={dynamicValues[field.key] ?? ''}
+                    onChange={(next) =>
+                      setDynamicValues((map) => ({
+                        ...map,
+                        [field.key]: next,
+                      }))
+                    }
+                  />
+                ))}
+              </div>
+            )}
 
             {error && <p className="text-sm text-foreground-danger">{error}</p>}
           </div>

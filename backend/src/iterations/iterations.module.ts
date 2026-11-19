@@ -13,6 +13,7 @@ import { TicketWorkflowRun } from '../tickets/ticket-workflow-run.entity';
 import { TicketsModule } from '../tickets/tickets.module';
 import { Worker } from '../workers/worker.entity';
 import { WorkflowDefinition } from '../workflows/workflow-definition.entity';
+import { WorkflowDefinitionVersion } from '../workflows/workflow-definition-version.entity';
 import { Topic } from '../topics/topic.entity';
 import { Backlog } from './backlog.entity';
 import { BacklogDocument } from './backlog-document.entity';
@@ -46,6 +47,7 @@ import { IterationsService } from './iterations.service';
       Ticket,
       TicketWorkflowRun,
       WorkflowDefinition,
+      WorkflowDefinitionVersion,
       Topic,
     ]),
     TasksModule,

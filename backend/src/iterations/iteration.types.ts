@@ -4,6 +4,7 @@ import {
   IterationStatus,
   IterationType,
 } from '../common/enums';
+import type { WorkflowInputField } from '../workflows/workflow.types';
 
 /** 操作用户身份（网页为真人登录；只有管理员可创建/追加/移动迭代项） */
 export interface IterationActor {
@@ -70,12 +71,16 @@ export interface CreateBacklogTaskInput {
   agentId?: number | null;
 }
 
-/** 提测工单工作流可用性（迭代项详情返回，供前端提测按钮置灰） */
+/** 提测工单工作流信息（迭代项详情返回，供前端提测按钮置灰与动态表单） */
 export interface BacklogReleaseWorkflow {
   /** 工单配置（workflow_definitions.id） */
   id: number;
+  /** 工单配置名称 */
+  name: string;
   /** 已启用且已发布版本（可创建工单） */
   enabled: boolean;
+  /** 发布版本起始节点输入字段（弹窗按此动态渲染；未发布时为空数组） */
+  inputFields: WorkflowInputField[];
 }
 
 /** 批量提测单条结果：每个迭代项一张工单 + 一条提测记录（互相绑定） */

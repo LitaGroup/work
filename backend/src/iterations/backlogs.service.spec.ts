@@ -26,6 +26,8 @@ function buildService() {
     {} as never,
     {} as never,
     {} as never,
+    {} as never,
+    {} as never,
   );
   return { service, backlogs, iterations, projects };
 }
@@ -181,6 +183,7 @@ function buildTaskService() {
   };
   const tickets = { create: jest.fn() };
   const workflowDefs = { findOne: jest.fn() };
+  const workflowVersions = { findOne: jest.fn().mockResolvedValue(null) };
   const service = new BacklogsService(
     backlogs as never,
     iterations as never,
@@ -194,6 +197,7 @@ function buildTaskService() {
     {} as never,
     {} as never,
     workflowDefs as never,
+    workflowVersions as never,
     {} as never,
     tickets as never,
     tasks as never,
@@ -216,6 +220,7 @@ function buildTaskService() {
     releases,
     tickets,
     workflowDefs,
+    workflowVersions,
   };
 }
 
@@ -448,6 +453,125 @@ describe('BacklogsService.submitRelease', () => {
         items: [{ code: 'BL-12', title: '礼包改版', content: '回归登录' }],
       }),
     );
+  });
+
+  it('配置动态字段透传、保留 key 由平台覆盖、人工描述置前', async () => {
+    const {
+      service,
+      backlogs,
+      workflowDefs,
+      workflowVersions,
+      tickets,
+      releases,
+    } = buildTaskService();
+    backlogs.find.mockResolvedValue([{ ...backlogRow, members: [] }]);
+    workflowDefs.findOne.mockResolvedValue({
+      id: 9,
+      name: '提测工单流程',
+      enabled: true,
+      latestPublishedVersion: 2,
+    });
+    workflowVersions.findOne.mockResolvedValue({
+      definition: {
+        startNode: 'start',
+        nodes: [
+          {
+            key: 'start',
+            kind: 'start',
+            inputFields: [
+              { key: 'title', label: '标题', type: 'text', required: true },
+              {
+                key: 'backlogs',
+                label: '迭代项',
+                type: 'backlog_multi',
+                required: true,
+              },
+            ],
+          },
+        ],
+        edges: [],
+      },
+    });
+    tickets.create.mockResolvedValue({ id: 11, code: 'WO-0011', title: 't' });
+    releases.createRecord.mockResolvedValue({ id: 21 });
+
+    await service.submitRelease(
+      {
+        items: [{ backlogId: 12, content: '回归' }],
+        ends: ['APP'],
+        testers: ['赵六'],
+        inputValues: {
+          expectedDate: '2026-11-20',
+          backlogs: [999],
+          description: '请重点回归登录',
+        },
+      },
+      adminActor,
+      { user: { id: 1, name: '管理员' } as never, worker: null },
+    );
+
+    const [[ticketInput]] = tickets.create.mock.calls as [
+      [{ inputValues: Record<string, unknown> }],
+    ];
+    // 非保留 key 动态透传
+    expect(ticketInput.inputValues.expectedDate).toBe('2026-11-20');
+    // 保留 key 由平台按所选迭代项覆盖，客户端传值不生效
+    expect(ticketInput.inputValues.backlogs).toEqual([12]);
+    expect(ticketInput.inputValues.testers).toBe('赵六');
+    // 人工描述作为补充段落置于自动上下文之前
+    expect(String(ticketInput.inputValues.description)).toContain(
+      '请重点回归登录',
+    );
+    expect(String(ticketInput.inputValues.description)).toContain(
+      '## 迭代项提测信息',
+    );
+
+    const workflow = await service.releaseWorkflowInfo();
+    expect(workflow).toEqual(
+      expect.objectContaining({
+        id: 9,
+        name: '提测工单流程',
+        enabled: true,
+      }),
+    );
+    expect(workflow?.inputFields.map((field) => field.key)).toEqual([
+      'title',
+      'backlogs',
+    ]);
+  });
+
+  it('基于预填上下文编辑的描述直接作为正文，不重复自动上下文', async () => {
+    const { service, backlogs, workflowDefs, tickets, releases } =
+      buildTaskService();
+    backlogs.find.mockResolvedValue([{ ...backlogRow, members: [] }]);
+    workflowDefs.findOne.mockResolvedValue({
+      id: 9,
+      enabled: true,
+      latestPublishedVersion: 1,
+    });
+    tickets.create.mockResolvedValue({ id: 11, code: 'WO-0011', title: 't' });
+    releases.createRecord.mockResolvedValue({ id: 21 });
+    const edited =
+      '## 迭代项提测信息\n\n- 迭代项：BL-12 礼包改版（状态：执行）\n- 人工补充：注意回归';
+
+    await service.submitRelease(
+      {
+        items: [{ backlogId: 12, content: '回归' }],
+        ends: ['APP'],
+        testers: ['赵六'],
+        inputValues: { description: edited },
+      },
+      adminActor,
+      { user: { id: 1, name: '管理员' } as never, worker: null },
+    );
+
+    const [[ticketInput]] = tickets.create.mock.calls as [
+      [{ inputValues: Record<string, unknown> }],
+    ];
+    const description = String(ticketInput.inputValues.description);
+    expect(description.startsWith(edited)).toBe(true);
+    // 不再追加自动上下文，避免重复
+    expect(description.split('## 迭代项提测信息').length - 1).toBe(1);
   });
 
   it('多个迭代项：标题自动「等x个迭代」，每个迭代项各建工单与提测记录', async () => {

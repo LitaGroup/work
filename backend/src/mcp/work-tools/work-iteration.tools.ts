@@ -309,6 +309,12 @@ export class WorkIterationTools implements WorkToolRegistrar {
             .array(z.string())
             .optional()
             .describe('访问地址（整单共用，可空）'),
+          inputValues: z
+            .record(z.string(), z.unknown())
+            .optional()
+            .describe(
+              '提测工单配置（release-ticket）动态字段值：除保留 key（title/description/content/testEnds/testers/branch/url/backlogs）外的起始字段原样透传',
+            ),
           taskId: z
             .number()
             .int()
@@ -331,6 +337,7 @@ export class WorkIterationTools implements WorkToolRegistrar {
                 testers: args.testers,
                 branches: args.branches,
                 urls: args.urls,
+                inputValues: args.inputValues,
                 taskId: args.taskId,
               },
               iterationActorOf(principal),

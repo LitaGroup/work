@@ -48,6 +48,11 @@ export interface SubmitReleaseBatchInput {
   branches?: { repo: string; branch: string }[];
   /** 访问地址（整单共用，可空） */
   urls?: string[];
+  /**
+   * 提测工单配置（release-ticket）动态字段值：除保留 key（title/description/content/
+   * testEnds/testers/branch/url/backlogs）外的起始节点字段原样透传进工单 inputValues。
+   */
+  inputValues?: Record<string, unknown>;
   /** 来源任务（机器人可选；缺省自动取当前执行中的任务） */
   taskId?: number;
 }
@@ -292,7 +297,7 @@ export class ReleasesService {
       mdFrontmatter({ title }),
       `# ${title}`,
       '',
-      `共 ${items.length} 条（按提测时间倒序）。提测：\`POST /api/backlogs/release.md\`，body \`{"items": [{"backlogId": 123, "content": "提测内容 Markdown"}], "ends": ["APP"], "testers": ["张三"], "branches": [{"repo": "LitaGroup/xxx", "branch": "test"}], "urls": ["https://..."], "title": "可选", "taskId": 123}\`（提测端至少 1 个：APP / H5 / 后端；测试人员至少 1 人且须为用户系统内用户；多个迭代项汇总为一条提测群消息；机器人令牌会记录提测机器人，taskId 可省略，缺省自动取当前执行中的任务）`,
+      `共 ${items.length} 条（按提测时间倒序）。提测：\`POST /api/backlogs/release.md\`，body \`{"items": [{"backlogId": 123, "content": "提测内容 Markdown"}], "ends": ["APP"], "testers": ["张三"], "branches": [{"repo": "LitaGroup/xxx", "branch": "test"}], "urls": ["https://..."], "inputValues": {"自定义字段key": "值"}, "title": "可选", "taskId": 123}\`（提测端至少 1 个：APP / H5 / 后端；测试人员至少 1 人且须为用户系统内用户；inputValues 透传提测工单配置中除保留 key 外的起始字段；多个迭代项汇总为一条提测群消息；机器人令牌会记录提测机器人，taskId 可省略，缺省自动取当前执行中的任务）`,
       `推进提测状态（由测试同学操作）：\`POST /api/releases/{id}/status.md\`，body \`{"status": "待冒烟" | "进行中" | "已通过" | "未通过"}\`——新提测默认「待冒烟」，开始测试后改为「进行中」；仅「已通过 / 未通过」记录判定人/判定时间，切回「待冒烟 / 进行中」会清空`,
       '',
       ...(lines.length > 0 ? lines : ['（暂无提测记录）']),

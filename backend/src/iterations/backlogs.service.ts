@@ -32,6 +32,7 @@ import { TicketWorkflowRun } from '../tickets/ticket-workflow-run.entity';
 import { TicketsService } from '../tickets/tickets.service';
 import { Worker } from '../workers/worker.entity';
 import { WorkflowDefinition } from '../workflows/workflow-definition.entity';
+import { WorkflowDefinitionVersion } from '../workflows/workflow-definition-version.entity';
 import { RELEASE_TICKET_WORKFLOW } from '../workflows/system-workflows';
 import { LlmService } from '../model-config/llm.service';
 import {
@@ -99,6 +100,21 @@ export type BacklogListItem = Pick<
 const BACKLOG_LIST_LIMIT = 1000;
 
 /**
+ * 提测工单保留字段：由提测弹窗专用控件承载并映射进工单 inputValues，
+ * 不从动态字段区透传（配置驱动渲染时跳过这些 key，避免重复输入）。
+ */
+const RELEASE_RESERVED_INPUT_KEYS = new Set([
+  'title',
+  'description',
+  'backlogs',
+  'content',
+  'testEnds',
+  'testers',
+  'branch',
+  'url',
+]);
+
+/**
  * 迭代项（Backlog）：从需求转入，负责人可暂不指定（指定后自动创建交付任务）；
  * 飞书沟通群由成员/管理员在详情页手动创建；状态由成员/管理员手动流转。
  */
@@ -134,6 +150,8 @@ export class BacklogsService implements OnModuleInit {
     private readonly ticketRunRows: Repository<TicketWorkflowRun>,
     @InjectRepository(WorkflowDefinition)
     private readonly workflowDefs: Repository<WorkflowDefinition>,
+    @InjectRepository(WorkflowDefinitionVersion)
+    private readonly workflowVersions: Repository<WorkflowDefinitionVersion>,
     @InjectRepository(Topic)
     private readonly topicRows: Repository<Topic>,
     private readonly ticketsService: TicketsService,
@@ -661,7 +679,7 @@ export class BacklogsService implements OnModuleInit {
     return { from, to: worker.name, previousTaskId };
   }
 
-  /** 详情视图：迭代项 + 需求方/涉及方（实时取自原始需求）+ 所属迭代标识 + 提测工单工作流可用性（供前端提测按钮置灰）+ 飞书沟通群状态（供建群/打开群按钮）+ 当前查看者操作权限 */
+  /** 详情视图：迭代项 + 需求方/涉及方（实时取自原始需求）+ 所属迭代标识 + 提测工单工作流配置（供前端动态提测表单）+ 提测描述预览 + 飞书沟通群状态（供建群/打开群按钮）+ 当前查看者操作权限 */
   async getDetail(
     id: number,
     actor?: IterationActor,
@@ -676,6 +694,8 @@ export class BacklogsService implements OnModuleInit {
         type: Iteration['type'];
       } | null;
       releaseWorkflow: BacklogReleaseWorkflow | null;
+      /** 提测弹窗「详细说明」预填文本（迭代项上下文，不含表单项动态行） */
+      releaseDescriptionPreview: string | null;
       /** 飞书沟通群：未建群/已解散为 null */
       feishuChat: BacklogChatInfo | null;
       /** 当前查看者是否可操作（管理员或手动成员；自动列入的负责人/需求方不计） */
@@ -686,7 +706,12 @@ export class BacklogsService implements OnModuleInit {
     const [project, iteration, feishuChat] = await Promise.all([
       this.projects.findOne({
         where: { id: backlog.projectId },
-        select: { id: true, owner: true, involvedParties: true },
+        select: {
+          id: true,
+          name: true,
+          owner: true,
+          involvedParties: true,
+        },
       }),
       this.iterations.findOne({
         where: { id: backlog.iterationId },
@@ -704,21 +729,38 @@ export class BacklogsService implements OnModuleInit {
         ? { id: iteration.id, code: iteration.code, type: iteration.type }
         : null,
       releaseWorkflow: await this.releaseWorkflowInfo(),
+      releaseDescriptionPreview: this.buildReleaseContext(
+        backlog,
+        iteration,
+        project,
+      ),
       feishuChat,
       canOperate,
     };
   }
 
-  /** 提测工单工作流信息（code 固定 release-ticket） */
+  /** 提测工单工作流信息（code 固定 release-ticket；含发布版本起始字段供动态表单） */
   async releaseWorkflowInfo(): Promise<BacklogReleaseWorkflow | null> {
     const definition = await this.workflowDefs.findOne({
       where: { code: RELEASE_TICKET_WORKFLOW.code },
     });
     if (!definition) return null;
+    const version = definition.latestPublishedVersion
+      ? await this.workflowVersions.findOne({
+          where: {
+            definitionId: definition.id,
+            version: definition.latestPublishedVersion,
+          },
+        })
+      : null;
+    const start =
+      version?.definition.nodes.find((node) => node.kind === 'start') ?? null;
     return {
       id: definition.id,
+      name: definition.name,
       enabled:
         definition.enabled && (definition.latestPublishedVersion ?? 0) > 0,
+      inputFields: start?.inputFields ?? [],
     };
   }
 
@@ -1087,6 +1129,9 @@ export class BacklogsService implements OnModuleInit {
     ).slice(0, 200);
 
     const results: BacklogReleaseItemResult[] = [];
+    // 动态字段值：除保留 key 外的配置字段原样透传到每张工单 inputValues
+    const dynamicValues = this.pickReleaseDynamicValues(input.inputValues);
+    const manualDescription = this.releaseManualDescription(input.inputValues);
     for (const backlog of ordered) {
       const iteration = iterationById.get(backlog.iterationId) ?? null;
       const project = projectById.get(backlog.projectId) ?? null;
@@ -1102,12 +1147,14 @@ export class BacklogsService implements OnModuleInit {
         project,
         content,
         shared,
+        manualDescription,
       );
       const ticket = await this.ticketsService.create(
         {
           workflowDefinitionId: workflow.id,
           title: ticketTitle,
           inputValues: {
+            ...dynamicValues,
             title: ticketTitle,
             description,
             // 提测群消息模板按字段渲染：提测端 / 分支 / 地址 / 提测内容随工单带入；
@@ -1115,6 +1162,7 @@ export class BacklogsService implements OnModuleInit {
             backlogs: [backlog.id],
             content,
             testEnds: shared.ends,
+            testers: shared.testers.join('、'),
             branch: shared.branches
               .map((row) => `${row.repo} @ ${row.branch}`)
               .join('、'),
@@ -1253,13 +1301,73 @@ export class BacklogsService implements OnModuleInit {
     };
   }
 
-  /** 提测工单描述：迭代项上下文 + 整单共用的提测字段 + 本迭代项提测内容 */
+  /** 提测工单描述：迭代项上下文 + 整单共用的提测字段 + 本迭代项提测内容（人工说明按语义处理） */
   private buildReleaseDescription(
     backlog: Backlog,
     iteration: Iteration | null,
     project: Project | null,
     content: string,
     shared: Awaited<ReturnType<ReleasesService['prepareBatch']>>,
+    manualDescription?: string | null,
+  ): string {
+    const context = this.buildReleaseContext(backlog, iteration, project);
+    const extra = [
+      `- 提测端：${shared.ends.join(' / ')}`,
+      `- 测试人员：${shared.testers.join('、')}`,
+      ...(shared.branches.length
+        ? [
+            `- 代码分支：${shared.branches
+              .map((row) => `\`${row.repo}\` @ \`${row.branch}\``)
+              .join('、')}`,
+          ]
+        : []),
+      ...(shared.urls.length ? [`- 访问地址：${shared.urls.join('、')}`] : []),
+    ];
+    // 人工描述分两种：基于预填上下文编辑（含「- 迭代项：」标识）直接作为正文，
+    // 避免与自动上下文重复；简短补充说明则置于自动上下文之前。
+    const manual = this.resolveManualDescription(backlog, manualDescription);
+    const body = manual?.edited
+      ? [manual.text]
+      : manual
+        ? [manual.text, '']
+        : [];
+    const fromContext = manual?.edited ? [] : [context];
+    return [
+      ...body,
+      ...fromContext,
+      ...extra,
+      '',
+      '## 提测内容',
+      '',
+      content || '（无）',
+    ].join('\n');
+  }
+
+  /**
+   * 人工描述归类：
+   * - `edited`：用户基于预填上下文修改（含「- 迭代项：」标识），作为完整描述正文；
+   * - 其它（简短补充说明）：置于自动上下文之前；
+   * - 多迭代项批量时，非本迭代项的上下文编辑忽略，避免串用入口迭代项内容。
+   */
+  private resolveManualDescription(
+    backlog: Backlog,
+    manual?: string | null,
+  ): { text: string; edited: boolean } | null {
+    const text = manual?.trim();
+    if (!text) return null;
+    if (text.includes('- 迭代项：')) {
+      return text.includes(`- 迭代项：${backlog.code} ${backlog.title}`)
+        ? { text, edited: true }
+        : null;
+    }
+    return { text, edited: false };
+  }
+
+  /** 迭代项上下文（提测描述静态段，不含表单依赖的提测端/测试人员/分支/地址/提测内容） */
+  private buildReleaseContext(
+    backlog: Backlog,
+    iteration: Iteration | null,
+    project: { id: number; name?: string | null } | null,
   ): string {
     return [
       '## 迭代项提测信息',
@@ -1282,22 +1390,30 @@ export class BacklogsService implements OnModuleInit {
           ? `#${backlog.taskId}｜\`GET /api/tasks/${backlog.taskId}.md\``
           : '（未创建）'
       }`,
-      `- 提测端：${shared.ends.join(' / ')}`,
-      `- 测试人员：${shared.testers.join('、')}`,
-      ...(shared.branches.length
-        ? [
-            `- 代码分支：${shared.branches
-              .map((row) => `\`${row.repo}\` @ \`${row.branch}\``)
-              .join('、')}`,
-          ]
-        : []),
-      ...(shared.urls.length ? [`- 访问地址：${shared.urls.join('、')}`] : []),
       `- 迭代项详情：\`GET /api/backlogs/${backlog.id}.md\``,
-      '',
-      '## 提测内容',
-      '',
-      content || '（无）',
     ].join('\n');
+  }
+
+  /** 提测弹窗「详细说明」人工填写值（空白视为未填写，由平台自动生成） */
+  private releaseManualDescription(
+    inputValues?: Record<string, unknown>,
+  ): string | null {
+    const raw = inputValues?.description;
+    const text = typeof raw === 'string' ? raw.trim() : '';
+    return text || null;
+  }
+
+  /** 动态字段值：过滤保留 key（由平台按提测表单映射），其余原样透传 */
+  private pickReleaseDynamicValues(
+    inputValues?: Record<string, unknown>,
+  ): Record<string, unknown> {
+    if (!inputValues) return {};
+    const values: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(inputValues)) {
+      if (RELEASE_RESERVED_INPUT_KEYS.has(key)) continue;
+      values[key] = value;
+    }
+    return values;
   }
 
   /**

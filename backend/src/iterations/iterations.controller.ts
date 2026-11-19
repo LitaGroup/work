@@ -127,6 +127,8 @@ class SubmitBacklogReleaseDto implements SubmitReleaseBatchInput {
   branches?: { repo: string; branch: string }[];
   /** 访问地址（整单共用，可空） */
   urls?: string[];
+  /** 提测工单配置动态字段值（非保留 key），原样透传进工单 inputValues */
+  inputValues?: Record<string, unknown>;
   /** 来源任务（机器人可选） */
   taskId?: number;
 }
