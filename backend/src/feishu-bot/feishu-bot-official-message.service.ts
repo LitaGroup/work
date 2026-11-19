@@ -13,7 +13,6 @@ import { UserRole } from '../common/enums';
 import type { Worker } from '../workers/worker.entity';
 import type { FeishuReceiveIdType } from './feishu-bot-client.service';
 import { FeishuBotConfigService } from './feishu-bot-config.service';
-import { feishuGroupSendPaused } from './feishu-bot-group-pause';
 import { FeishuBotIdentityService } from './feishu-bot-identity.service';
 import { FeishuBotMessageService } from './feishu-bot-message.service';
 import {
@@ -85,7 +84,9 @@ interface ResolvedTarget {
  * 平台名义飞书消息：统一以「平台官方机器人」身份发送 Markdown 卡片。
  * - REST（POST /api/feishu-bot/messages）与 MCP（feishu_send_message）共用本服务；
  * - 收件人支持平台用户（自动解析 open_id）、指定 open_id、群 chat_id；
- * - 每次发送（成功/失败）都写审计表，记录发送方、目标与正文。
+ * - 每次发送（成功/失败）都写审计表，记录发送方、目标与正文；
+ * - 平台名义发送不受 FEISHU_GROUP_SEND_PAUSED 止血开关约束（工单飞书群消息节点、
+ *   提测群消息、平台/机器人显式发送需要能在暂停期间照常送达）。
  */
 @Injectable()
 export class FeishuBotOfficialMessageService {
@@ -150,12 +151,6 @@ export class FeishuBotOfficialMessageService {
     }
 
     try {
-      // 指定群 chat_id 属于群外发：暂停期间直接拒绝并记审计失败（target 为私聊时照常发送）
-      if (target.type === 'chat' && feishuGroupSendPaused()) {
-        throw new ServiceUnavailableException(
-          '平台已暂停飞书群消息发送（FEISHU_GROUP_SEND_PAUSED），恢复后再试',
-        );
-      }
       const results = await this.messages.sendMarkdown(
         config.id,
         this.configs.secretsOf(config),

@@ -5,7 +5,6 @@ import { In, Repository } from 'typeorm';
 import { User } from '../auth/user.entity';
 import { beijingTime } from '../common/frontmatter';
 import { FeishuBotConfigService } from '../feishu-bot/feishu-bot-config.service';
-import { feishuGroupSendPaused } from '../feishu-bot/feishu-bot-group-pause';
 import { FeishuBotIdentityService } from '../feishu-bot/feishu-bot-identity.service';
 import {
   FeishuBotOfficialMessageService,
@@ -44,7 +43,8 @@ export interface ReleaseNoticeInput {
  * 提测群通知：统一以「平台官方机器人」身份发送 Markdown 卡片。
  * - 群 chat_id 由 RELEASE_FEISHU_CHAT_ID 配置（开发/生产各配各的提测群）；
  * - 人员按姓名解析飞书 open_id 做 @（官方应用映射优先，回退登录 openId，解析不到降级纯文本）；
- * - 受 FEISHU_GROUP_SEND_PAUSED 止血开关约束，发送失败只告警不阻断提测。
+ * - 属于平台名义发送，不受 FEISHU_GROUP_SEND_PAUSED 止血开关约束；
+ *   发送失败只告警不阻断提测。
  */
 @Injectable()
 export class ReleaseNotifyService {
@@ -62,17 +62,11 @@ export class ReleaseNotifyService {
     this.chatId = (config.get<string>('RELEASE_FEISHU_CHAT_ID') ?? '').trim();
   }
 
-  /** 发送提测群消息；未配置群 / 暂停 / 发送失败时返回 false（只告警） */
+  /** 发送提测群消息；未配置群 / 发送失败时返回 false（只告警） */
   async notify(input: ReleaseNoticeInput): Promise<boolean> {
     if (!this.chatId) {
       this.logger.debug(
         `提测群消息未发送：未配置 RELEASE_FEISHU_CHAT_ID（${input.title}）`,
-      );
-      return false;
-    }
-    if (feishuGroupSendPaused()) {
-      this.logger.debug(
-        `提测群消息已暂停（FEISHU_GROUP_SEND_PAUSED）：${input.title}`,
       );
       return false;
     }

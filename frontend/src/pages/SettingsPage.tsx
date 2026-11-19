@@ -191,7 +191,9 @@ export function SettingsPage() {
                 hint="FEISHU_PROJECT_SOURCE_URL（未配置用内置默认）"
               />
               <div className="flex items-center justify-between gap-2">
-                <span className="text-sm">飞书群消息（运维止血开关）</span>
+                <span className="text-sm">
+                  飞书群消息（运维止血开关，平台名义发送不受限）
+                </span>
                 <Badge
                   variant={settings.feishuGroupSendPaused ? 'soft' : 'success'}
                 >

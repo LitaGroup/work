@@ -271,7 +271,7 @@
 - `workflow_definitions` 保存草稿与最新发布版本号，`workflow_definition_versions` 保存不可变发布版本。创建工单固定使用最新发布版本，实例继续引用创建时版本。
 - 起始节点输入字段类型为 `text/textarea/number/date/select/multiselect/file/iteration/iteration_multi/backlog/backlog_multi`；单选与多选共用英文逗号分隔的选项配置，多选值以英文逗号拼接存入 `tickets.inputValues`，MCP 可传字符串数组；迭代字段（`iteration` 单选 / `iteration_multi` 多选）的值为迭代 ID、迭代项字段（`backlog` / `backlog_multi`）的值为迭代项 ID（多选英文逗号拼接，MCP 可传 ID 数组），创建时校验记录存在，展示与模板渲染统一转为迭代标识 / `BL` 标题；判断节点对多选、迭代多选与迭代项多选只支持 `contains`（选中项包含某选项 / 某迭代 / 某迭代项，按整项精确匹配）/`empty`/`notEmpty`，单选比较值为对应 ID。
 - 节点类型为 `start/operation/approval/acceptance/condition/feishu-message`；流转结果为 `succeeded/failed/approved/rejected`，`$end` 是流程结束虚拟节点。判断节点不创建任务，进入后按起始输入字段的结构化条件（字段 + 运算符 + 值，多条件「且」）自动分流，必须恰好配置一条默认（无条件）分支兜底，分支可直接流转到 `$end`；单次流转链对连续判断节点有循环上限保护。
-- 飞书群消息节点（`feishu-message`）不创建任务：进入后以平台官方机器人身份向配置的飞书群（`feishuChatId/feishuChatName`，来自 `GET /api/ticket-workflow-definitions/feishu-chats` 读取的官方机器人所在群）发送 Handlebars 模板（`messageTemplate`，上下文 `ticket.*` / `initiator.mention` / `testers`、`developers`、`demanders` / `backlogs` / `values.<字段key>` / `node.name`，`noEscape` 不做 HTML 转义）渲染的 Markdown 卡片，然后按唯一一条无条件流转推进（可直接流转到 `$end`）。`initiator` 取实际发起工单的机器人；`testers/developers/demanders` 按起始节点「迭代项」字段选中的迭代项（「迭代」字段则展开为各迭代下全部未取消迭代项，`tickets.backlogId` 仅该迭代项）成员角色汇总去重（测试 / 前端·后端·客户端 / 需求方，兼容历史 `members.userId` 写法）；`backlogs` 为这些迭代项（含 `requirementType/requirementTitle`）；真人机器人经绑定真人的官方应用 open_id 生成 `<at id=ou_xxx></at>`，AI 机器人与解析失败回退姓名。发送失败（飞书异常、`FEISHU_GROUP_SEND_PAUSED`、模板渲染失败）只把节点运行记为「已失败」并写入 `ticket_workflow_runs.note`，**不阻断工单**；发送成功写官方消息审计表。
+- 飞书群消息节点（`feishu-message`）不创建任务：进入后以平台官方机器人身份向配置的飞书群（`feishuChatId/feishuChatName`，来自 `GET /api/ticket-workflow-definitions/feishu-chats` 读取的官方机器人所在群）发送 Handlebars 模板（`messageTemplate`，上下文 `ticket.*` / `initiator.mention` / `testers`、`developers`、`demanders` / `backlogs` / `values.<字段key>` / `node.name`，`noEscape` 不做 HTML 转义）渲染的 Markdown 卡片，然后按唯一一条无条件流转推进（可直接流转到 `$end`）。`initiator` 取实际发起工单的机器人；`testers/developers/demanders` 按起始节点「迭代项」字段选中的迭代项（「迭代」字段则展开为各迭代下全部未取消迭代项，`tickets.backlogId` 仅该迭代项）成员角色汇总去重（测试 / 前端·后端·客户端 / 需求方，兼容历史 `members.userId` 写法）；`backlogs` 为这些迭代项（含 `requirementType/requirementTitle`）；真人机器人经绑定真人的官方应用 open_id 生成 `<at id=ou_xxx></at>`，AI 机器人与解析失败回退姓名。发送失败（飞书异常、目标群/模板未配置、模板渲染失败）只把节点运行记为「已失败」并写入 `ticket_workflow_runs.note`，**不阻断工单**；发送成功写官方消息审计表。该节点属于平台名义发送，不受 `FEISHU_GROUP_SEND_PAUSED` 止血开关约束。
 - 审批节点创建的节点任务类型为「审批」：创建后自动接受并停留执行中，真人审批人可通过/驳回（通过意见可选、驳回意见必填），也可在飞书审批卡片内一键通过；飞书审批卡片携带工单链接、关键正文与通过/驳回/查看按钮，由平台官方机器人发送。
 - 发布前校验引用存在、机器人启用且非个人 AGENT、节点可达并保证路径可结束。审批驳回直接结束记为工单失败；验收驳回不可直接结束。
 - 工单交付文档独立存 `ticket_documents`，链接与正文两种形态互斥。只有来源任务当前执行机器人可写；交付文档不自动改变任务状态。
@@ -297,7 +297,7 @@
 
 - 提测是创建 `ProjectRelease` 记录；重复提测追加记录，不改变需求状态（状态由迭代项/创建时间推导）。提测状态：待冒烟 / 进行中 / 已通过 / 未通过。提测记录含提测端（`ends`，APP / H5 / 后端至少 1 个）与关联提测工单（`ticketId/ticketCode`）。
 - 提测入口为 `POST /api/backlogs/release[.md]`（批量，迭代项维度）；旧的 `POST /api/projects/{id}/release[.md]` 与 `RELEASE_WEBHOOK_URL` 群机器人 webhook 已下线，不要再恢复。
-- 提测群消息统一以**平台官方机器人**身份发送（Markdown 卡片，`RELEASE_FEISHU_CHAT_ID` 指定群 chat_id），@ 提测人/需求方/测试人员/开发人员（官方应用 open_id 优先，回退登录 openId，解析不到降级姓名）；受 `FEISHU_GROUP_SEND_PAUSED` 约束，发送失败只告警不影响提测。
+- 提测群消息统一以**平台官方机器人**身份发送（Markdown 卡片，`RELEASE_FEISHU_CHAT_ID` 指定群 chat_id），@ 提测人/需求方/测试人员/开发人员（官方应用 open_id 优先，回退登录 openId，解析不到降级姓名）；属于平台名义发送，不受 `FEISHU_GROUP_SEND_PAUSED` 约束，发送失败只告警不影响提测。
 - 提测至少需要一名用户系统内测试人员，提测端至少 1 个；提测群消息（平台官方机器人，`RELEASE_FEISHU_CHAT_ID`）异步发送，失败不阻断提测；不再发送测试人员/成员私聊卡片。
 - 真实提测状态变化后记录判定人/时间；切回待冒烟或进行中时清空。机器人提测的状态变化写入其收件箱，由 LOOP 在空闲时通知。
 - 缺陷状态：开放 / 修复 / 关闭；优先级：高 / 中 / 低；端：前端 / 后端 / APP端 / 未知。缺陷仅平台内维护，不回写飞书。
@@ -345,7 +345,7 @@
 ### 飞书与 Appium
 
 - **飞书文档/项目同步永远单向：飞书 → 平台**。`FeishuService` 只读，任何回写飞书都是需求变更。
-- 运维止血开关 `FEISHU_GROUP_SEND_PAUSED=true`（重启生效，`feishu-bot-group-pause.ts`）：暂停所有发往飞书群的外发——任务群/迭代沟通群/项目沟通群的建群、拉人、状态卡片与文本，话题落群与回帖，话题 @ 提及派生的飞书私聊卡片与机器人自动答复（收件箱保留、恢复后继续），外部群策略回复，反馈群回执，以及指定 `chat_id` 的平台名义发送（显式调用直接拒绝并记审计失败）；其它私聊、飞书登录、文档/需求池同步与群解散不受影响。暂停期间对账跳过且不消耗建群重试次数，恢复后自动补建并补发一次最新状态；状态在设置页与 `/api/settings.md` 展示。
+- 运维止血开关 `FEISHU_GROUP_SEND_PAUSED=true`（重启生效，`feishu-bot-group-pause.ts`）：暂停所有发往飞书群的外发——任务群/迭代沟通群/项目沟通群的建群、拉人、状态卡片与文本，话题落群与回帖，话题 @ 提及派生的飞书私聊卡片与机器人自动答复（收件箱保留、恢复后继续），外部群策略回复，反馈群回执；**平台名义发送不受该开关约束**（以平台官方机器人指定 `chat_id` 的发送：工单飞书群消息节点、提测群消息、网页/MCP 的 `feishu_send_message`，统一走 `FeishuBotOfficialMessageService`）；其它私聊、飞书登录、文档/需求池同步与群解散也不受影响。暂停期间对账跳过且不消耗建群重试次数，恢复后自动补建并补发一次最新状态；状态在设置页与 `/api/settings.md` 展示。
 - 飞书 tenant token 与 OAuth 网页登录统一使用数据库配置的「平台官方机器人」应用凭据（`feishu_bot_configs` kind=official，Secret 加密落库），后端定时刷新；不再使用 LITA_USER_TOKEN、环境变量 `FEISHU_APP_ID`/`FEISHU_APP_SECRET` 或静态 token。官方机器人应用需在飞书后台开启「网页授权登录」并具备文档/多维表格/通讯录/消息权限。
 - 文档导入统一转 Markdown；判重包含 doc/sheet/table 子标识。wiki 先解析实际资源，sheet/table/view 等查询参数需透传。
 - bitable `records/search` 必须传 `automatic_fields: true`，增量同步依赖记录级修改时间。

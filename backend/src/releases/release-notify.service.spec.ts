@@ -125,11 +125,14 @@ describe('ReleaseNotifyService', () => {
     expect(send).not.toHaveBeenCalled();
   });
 
-  it('FEISHU_GROUP_SEND_PAUSED 暂停时跳过发送', async () => {
+  it('平台名义发送不受 FEISHU_GROUP_SEND_PAUSED 限制', async () => {
     process.env.FEISHU_GROUP_SEND_PAUSED = 'true';
     const sent = await service.notify(notice());
-    expect(sent).toBe(false);
-    expect(send).not.toHaveBeenCalled();
+    expect(sent).toBe(true);
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({ chatId: 'oc_release_group' }),
+      { type: 'user', id: 1, name: '胡峰' },
+    );
   });
 
   it('通过平台官方机器人发送到配置的群', async () => {
