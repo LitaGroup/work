@@ -88,6 +88,10 @@ function normalizeInputFields(
       bad(`输入字段「${key}」的类型不正确`);
     }
     const choice = type === 'select' || type === 'multiselect';
+    const iterationField = type === 'iteration' || type === 'iteration_multi';
+    const backlogField = type === 'backlog' || type === 'backlog_multi';
+    const referenceField = iterationField || backlogField;
+    const referenceLabel = backlogField ? '迭代项' : '迭代';
     const options = choice
       ? Array.from(
           new Set(
@@ -117,14 +121,18 @@ function normalizeInputFields(
             ? rawDefault.toString()
             : JSON.stringify(rawDefault);
     let normalizedDefault = defaultValue;
+    const iterationIdsOf = (text: string): string[] =>
+      text
+        .split(',')
+        .map((value) => value.trim())
+        .filter(Boolean);
+    const iterationIdValid = (value: string): boolean =>
+      /^\d+$/.test(value) && Number(value) > 0;
     if (defaultValue !== null && choice) {
       const defaultValues =
         type === 'select'
           ? [defaultValue.trim()]
-          : defaultValue
-              .split(',')
-              .map((value) => value.trim())
-              .filter(Boolean);
+          : iterationIdsOf(defaultValue);
       const invalid = defaultValues.find(
         (value) => !(options ?? []).includes(value),
       );
@@ -135,6 +143,22 @@ function normalizeInputFields(
       }
       normalizedDefault =
         type === 'select'
+          ? defaultValues[0]
+          : Array.from(new Set(defaultValues)).join(',');
+    }
+    if (defaultValue !== null && referenceField) {
+      const defaultValues =
+        type === 'iteration' || type === 'backlog'
+          ? [defaultValue.trim()]
+          : iterationIdsOf(defaultValue);
+      const invalid = defaultValues.find((value) => !iterationIdValid(value));
+      if (invalid !== undefined) {
+        bad(
+          `${referenceLabel}字段「${key}」的默认值「${invalid}」必须是${referenceLabel} ID`,
+        );
+      }
+      normalizedDefault =
+        type === 'iteration' || type === 'backlog'
           ? defaultValues[0]
           : Array.from(new Set(defaultValues)).join(',');
     }
@@ -186,6 +210,25 @@ function normalizeNode(value: unknown, index: number): WorkflowNodeDefinition {
     inputFields:
       nodeKind === 'start' ? normalizeInputFields(item.inputFields, key) : null,
     autoAccept: nodeKind === 'acceptance' ? item.autoAccept === true : false,
+    ...(nodeKind === 'feishu-message'
+      ? {
+          feishuChatId: optionalText(
+            item.feishuChatId,
+            `节点「${key}」的目标飞书群`,
+            100,
+          ),
+          feishuChatName: optionalText(
+            item.feishuChatName,
+            `节点「${key}」的飞书群名称`,
+            200,
+          ),
+          messageTemplate: optionalText(
+            item.messageTemplate,
+            `节点「${key}」的消息模板`,
+            20000,
+          ),
+        }
+      : {}),
     description: optionalText(
       item.description,
       `节点「${key}」的节点说明`,
@@ -313,9 +356,30 @@ function conditionOperatorsForType(
     case 'multiselect':
       // 多选按「选中项包含某选项」判断，不做顺序相关的等值比较
       return ['contains', 'empty', 'notEmpty'];
+    case 'iteration':
+      return ['eq', 'ne', 'empty', 'notEmpty'];
+    case 'iteration_multi':
+      // 迭代多选与多选一致：按「选中项包含某迭代」判断
+      return ['contains', 'empty', 'notEmpty'];
+    case 'backlog':
+      return ['eq', 'ne', 'empty', 'notEmpty'];
+    case 'backlog_multi':
+      return ['contains', 'empty', 'notEmpty'];
     default:
       return [];
   }
+}
+
+/** 迭代/迭代项引用字段的值必须是正整数 ID（多选为英文逗号分隔的 ID） */
+function isIterationIdValue(
+  type: WorkflowInputFieldType,
+  value: string,
+): boolean {
+  const multi = type === 'iteration_multi' || type === 'backlog_multi';
+  const ids = multi ? value.split(',').map((item) => item.trim()) : [value];
+  return (
+    ids.length > 0 && ids.every((id) => /^\d+$/.test(id) && Number(id) > 0)
+  );
 }
 
 /**
@@ -387,6 +451,8 @@ export function normalizeWorkflowDefinition(
       }
       if (source.kind === 'start') {
         if (edge.outcome) bad('起始节点的流转不能指定结果');
+      } else if (source.kind === 'feishu-message') {
+        if (edge.outcome) bad('飞书群消息节点的流转不能指定结果');
       } else if (edge.outcome) {
         const allowed = outgoingOutcomes(source);
         if (!allowed.includes(edge.outcome)) {
@@ -418,6 +484,19 @@ export function normalizeWorkflowDefinition(
         ) {
           bad(`条件字段「${field.label}」的比较值必须是可选选项之一`);
         }
+        if (
+          (field.type === 'iteration' ||
+            field.type === 'iteration_multi' ||
+            field.type === 'backlog' ||
+            field.type === 'backlog_multi') &&
+          !isIterationIdValue(field.type, value)
+        ) {
+          const referenceLabel =
+            field.type === 'backlog' || field.type === 'backlog_multi'
+              ? '迭代项'
+              : '迭代';
+          bad(`条件字段「${field.label}」的比较值必须是${referenceLabel} ID`);
+        }
       }
     }
     if (edge.to === WORKFLOW_END_NODE) {
@@ -427,10 +506,11 @@ export function normalizeWorkflowDefinition(
           (edge.outcome === 'approved' || edge.outcome === 'rejected')) ||
         (source.kind === 'operation' &&
           (edge.outcome === 'succeeded' || edge.outcome === 'failed')) ||
-        (source.kind === 'condition' && !edge.outcome);
+        (source.kind === 'condition' && !edge.outcome) ||
+        (source.kind === 'feishu-message' && !edge.outcome);
       if (!canEnd) {
         bad(
-          '只有验收通过、审批通过/驳回、操作节点的成功/失败结果或判断节点的流转可以流转到流程结束',
+          '只有验收通过、审批通过/驳回、操作节点的成功/失败结果、判断节点的流转或飞书群消息节点可以流转到流程结束',
         );
       }
     }
@@ -466,6 +546,9 @@ export function normalizeWorkflowDefinition(
     }
     if (strict && node.kind !== 'start' && outgoing.length === 0) {
       bad(`节点「${node.name}」没有配置后续流转`);
+    }
+    if (strict && node.kind === 'feishu-message' && outgoing.length !== 1) {
+      bad(`飞书群消息节点「${node.name}」必须且只能有一条后续流转`);
     }
     if (
       node.kind !== 'condition' &&
@@ -507,7 +590,8 @@ export function normalizeWorkflowDefinition(
       if (
         (node.kind === 'start' ||
           node.kind === 'acceptance' ||
-          node.kind === 'condition') &&
+          node.kind === 'condition' ||
+          node.kind === 'feishu-message') &&
         (node.taskTemplateId || node.responsibleWorkerId)
       ) {
         const kindLabel =
@@ -515,8 +599,18 @@ export function normalizeWorkflowDefinition(
             ? '起始'
             : node.kind === 'acceptance'
               ? '验收'
-              : '判断';
+              : node.kind === 'condition'
+                ? '判断'
+                : '飞书群消息';
         bad(`${kindLabel}节点不能配置任务定义或机器人`);
+      }
+      if (node.kind === 'feishu-message') {
+        if (!node.feishuChatId) {
+          bad(`飞书群消息节点「${node.name}」未选择目标飞书群`);
+        }
+        if (!node.messageTemplate?.trim()) {
+          bad(`飞书群消息节点「${node.name}」未配置消息模板`);
+        }
       }
     }
   }

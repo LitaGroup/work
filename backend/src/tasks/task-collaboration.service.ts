@@ -21,6 +21,7 @@ import { TaskDeliveryService } from './task-delivery.service';
 import { TaskDispatchService } from './task-dispatch.service';
 import { TaskNotifyService } from './task-notify.service';
 import { TasksService } from './tasks.service';
+import { TASK_PENDING_FEEDBACK_NOTIFY_PAUSED } from './task-loop.rules';
 import {
   actorName,
   assertTaskRequester,
@@ -343,12 +344,17 @@ export class TaskCollaborationService {
       referenceId: questionId,
       payload: { questions },
     });
-    await this.taskNotify.notifyTaskRequester(
-      saved,
-      'feedback',
-      `任务待反馈：${saved.code} ${saved.title}`,
-      questions.map((question) => question.question).join('；'),
-    );
+    // 「任务待反馈」飞书推送已暂停（TASK_PENDING_FEEDBACK_NOTIFY_PAUSED）：
+    // 暂停提问转待反馈的私聊推送，状态机、事件流与父机器人收件箱不受影响；
+    // 恢复推送时把开关改回 false 即可。
+    if (!TASK_PENDING_FEEDBACK_NOTIFY_PAUSED) {
+      await this.taskNotify.notifyTaskRequester(
+        saved,
+        'feedback',
+        `任务待反馈：${saved.code} ${saved.title}`,
+        questions.map((question) => question.question).join('；'),
+      );
+    }
     return { task: saved, questionId };
   }
 

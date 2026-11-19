@@ -67,6 +67,7 @@ import { TopicsPanel } from '../components/topics/TopicsPanel'
 import { DetailAgentPanel } from '../components/detail/DetailAgentPanel'
 import { CountRow } from '../components/CountRow'
 import { MarkdownViewer } from '../components/MarkdownViewer'
+import { useTabHash } from '../lib/use-tab-hash'
 
 /** 需求摘要字数上限（与后端 SUMMARY_MAX_CHARS 一致） */
 const SUMMARY_MAX_CHARS = 200
@@ -81,15 +82,6 @@ const REQUIREMENT_DETAIL_TABS: RequirementDetailTab[] = [
   'topics',
   'ops',
 ]
-
-function readTabFromHash(
-  fallback: RequirementDetailTab = 'details',
-): RequirementDetailTab {
-  const key = window.location.hash.replace(/^#/, '')
-  return REQUIREMENT_DETAIL_TABS.includes(key as RequirementDetailTab)
-    ? (key as RequirementDetailTab)
-    : fallback
-}
 
 /**
  * 需求详情：内容分区为 详情（信息 / 摘要 / 详情描述）/ 资料 / 讨论 / 操作；
@@ -109,8 +101,9 @@ export function RequirementDetailPage() {
   const [aiUnread, setAiUnread] = useState(0)
 
   // 内容分区 tab（与 URL hash 同步，支持 /requirements/2#topics 直达）
-  const [tab, setTab] = useState<RequirementDetailTab>(() =>
-    readTabFromHash(focusTopicId ? 'topics' : 'details'),
+  const [tab, changeTab] = useTabHash(
+    REQUIREMENT_DETAIL_TABS,
+    focusTopicId ? 'topics' : 'details',
   )
 
   // 话题计数（TopicsPanel 加载后回调）
@@ -129,22 +122,6 @@ export function RequirementDetailPage() {
   }, [projectId])
 
   useEffect(reload, [reload])
-
-  // 分区与 URL hash 双向同步：支持 /requirements/2#topics 直达，切换分区时更新 hash
-  useEffect(() => {
-    const sync = () =>
-      setTab(readTabFromHash(focusTopicId ? 'topics' : 'details'))
-    window.addEventListener('hashchange', sync)
-    return () => window.removeEventListener('hashchange', sync)
-  }, [focusTopicId])
-
-  const changeTab = (value: string) => {
-    const next = value as RequirementDetailTab
-    setTab(next)
-    if (window.location.hash.replace(/^#/, '') !== next) {
-      window.history.replaceState(null, '', `#${next}`)
-    }
-  }
 
   // 该需求当前唯一未取消的迭代项（有则右上角「进入迭代」，无则「移入迭代」）
   const activeBacklog = useMemo(
@@ -224,7 +201,7 @@ export function RequirementDetailPage() {
 
         <Tabs
           value={tab}
-          onValueChange={changeTab}
+          onValueChange={(value) => changeTab(value as RequirementDetailTab)}
           variant="line"
           className="flex min-h-0 flex-1 flex-col gap-0"
         >

@@ -36,6 +36,7 @@ import {
 import type { MarkdownEditorHandle } from '../components/MarkdownEditor'
 import { formatDuration, taskDurationMs } from '../lib/duration'
 import { visibleEventSource } from '../lib/event-source'
+import { useTabHash } from '../lib/use-tab-hash'
 
 type ConnectionState = 'connecting' | 'live' | 'reconnecting'
 type TaskContentTab =
@@ -62,14 +63,6 @@ const TASK_CONTENT_TABS: Array<[TaskContentTab, string]> = [
 ]
 
 const TASK_CONTENT_TAB_KEYS = TASK_CONTENT_TABS.map(([key]) => key)
-
-/** 从 URL hash 读取分区（如 /tasks/302#documents），不在页签列表内回退默认 */
-function readTaskTabFromHash(fallback: TaskContentTab): TaskContentTab {
-  const key = window.location.hash.replace(/^#/, '')
-  return TASK_CONTENT_TAB_KEYS.includes(key as TaskContentTab)
-    ? (key as TaskContentTab)
-    : fallback
-}
 
 /**
  * 任务详情：正文按「需求 / 交付 / 任务 / 信息 / 事件 / 文档 / 会话 / 复盘」组织，
@@ -115,7 +108,7 @@ export function TaskDetailView({
   handoffEditable?: boolean
   /** 普通详情页：右侧「我的助理」外置并默认收起；工作台保持常驻 */
   collapsibleCollaboration?: boolean
-  /** 分区与 URL hash 双向同步（/tasks/302#documents 直达）；工单详情与工作台保持原状 */
+  /** 分区与 URL hash 双向同步（/tasks/302#documents 直达）；工作台不开启 */
   syncTabHash?: boolean
   /** 任务或文档刷新后通知外部，用于同步工作台左侧任务列表 */
   onTaskChange?: () => void | Promise<void>
@@ -143,12 +136,11 @@ export function TaskDetailView({
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [contentTab, setContentTab] = useState<TaskContentTab>(() =>
-    syncTabHash
-      ? readTaskTabFromHash(focusTopicId ? 'topics' : 'requirement')
-      : focusTopicId
-        ? 'topics'
-        : 'requirement',
+  // 分区与 URL hash 同步（/tasks/302#documents 直达）；工作台传 enabled=false 保持原状
+  const [contentTab, setContentTab] = useTabHash(
+    TASK_CONTENT_TAB_KEYS,
+    focusTopicId ? 'topics' : 'requirement',
+    syncTabHash,
   )
   const [handoffDoc, setHandoffDoc] = useState<TaskHandoffDocument | null>(null)
   const [reviewDoc, setReviewDoc] = useState<TaskDocumentContent | null>(null)
@@ -219,27 +211,6 @@ export function TaskDetailView({
     // oxlint-disable-next-line react/set-state-in-effect
     setHandoffError(null)
   }, [taskId])
-
-  // 分区与 URL hash 双向同步：支持 /tasks/302#documents 直达，切换分区时更新 hash
-  useEffect(() => {
-    if (!syncTabHash) return
-    const sync = () =>
-      setContentTab(
-        readTaskTabFromHash(focusTopicId ? 'topics' : 'requirement'),
-      )
-    sync()
-    window.addEventListener('hashchange', sync)
-    return () => window.removeEventListener('hashchange', sync)
-  }, [syncTabHash, taskId, focusTopicId])
-
-  /** 切换分区：开启 hash 同步时更新地址栏（replaceState 不产生历史记录） */
-  const changeContentTab = (key: TaskContentTab) => {
-    setContentTab(key)
-    if (!syncTabHash) return
-    if (window.location.hash.replace(/^#/, '') !== key) {
-      window.history.replaceState(null, '', `#${key}`)
-    }
-  }
 
   /** 「会话」页签未读：停留在其它分区时累计新消息，进入会话即清零 */
   const [conversationUnread, setConversationUnread] = useState(0)
@@ -742,7 +713,7 @@ export function TaskDetailView({
                     type="button"
                     role="tab"
                     aria-selected={contentTab === key}
-                    onClick={() => changeContentTab(key)}
+                    onClick={() => setContentTab(key)}
                     className={`shrink-0 whitespace-nowrap rounded-[var(--radius-md)] px-3 py-1.5 text-sm transition-colors ${
                       contentTab === key
                         ? 'bg-background font-medium text-foreground-intense shadow-sm'

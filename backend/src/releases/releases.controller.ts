@@ -13,11 +13,7 @@ import {
 import type { AuthedRequest } from '../auth/auth.guard';
 import { ReleaseStatus } from '../common/enums';
 import { ProjectRelease } from './project-release.entity';
-import {
-  ReleaseActor,
-  ReleasesService,
-  SubmitReleaseInput,
-} from './releases.service';
+import { ReleasesService } from './releases.service';
 
 /** 提测状态判定入参：状态须为 待冒烟 / 进行中 / 已通过 / 未通过 */
 class UpdateReleaseStatusDto {
@@ -25,58 +21,13 @@ class UpdateReleaseStatusDto {
   status: ReleaseStatus;
 }
 
-/** 提测入参：仅测试人员必填（至少 1 人，须为用户系统内用户），其余可空 */
-class SubmitReleaseDto implements SubmitReleaseInput {
-  /** 提测内容（Markdown，可空） */
-  content?: string;
-  /** 访问地址（可空） */
-  urls?: string[];
-  /** 代码分支（仓库+分支 列表，可空） */
-  branches?: { repo: string; branch: string }[];
-  /** 测试人员（至少 1 人） */
-  testers: string[];
-  /** 来源任务（机器人可选；缺省自动取当前执行中的任务） */
-  taskId?: number;
-}
-
-/** 机器人令牌优先作为提测身份；网页登录用户仍记录为提测人。 */
-function releaseActor(req: AuthedRequest, taskId?: number): ReleaseActor {
-  return {
-    operator: req.worker?.name ?? req.user?.name ?? null,
-    workerId: req.worker?.id ?? null,
-    sourceTaskId: taskId ?? null,
-  };
-}
-
-/** 项目提测端点（挂在 /projects 前缀下，与 ProjectsController 的路由互不冲突） */
+/**
+ * 项目提测记录查询端点（挂在 /projects 前缀下；提测入口为
+ * POST /api/backlogs/release，旧的 POST /api/projects/:id/release 已下线）。
+ */
 @Controller('projects')
 export class ReleasesController {
   constructor(private readonly releasesService: ReleasesService) {}
-
-  /** 提测：创建提测记录 + 项目状态流转「测试中」+ 通知提测群、测试人员与迭代项成员 */
-  @Post(':id/release')
-  submit(
-    @Param('id', ParseIntPipe) id: number,
-    @Body() dto: SubmitReleaseDto,
-    @Req() req: AuthedRequest,
-  ): Promise<ProjectRelease> {
-    return this.releasesService.submit(id, dto, releaseActor(req, dto.taskId));
-  }
-
-  /** AI 用：提测并返回 Markdown 结果（text/markdown） */
-  @Post(':id/release.md')
-  @Header('Content-Type', 'text/markdown; charset=utf-8')
-  submitMarkdown(
-    @Param('id', ParseIntPipe) id: number,
-    @Body() dto: SubmitReleaseDto,
-    @Req() req: AuthedRequest,
-  ): Promise<string> {
-    return this.releasesService.submitMarkdown(
-      id,
-      dto,
-      releaseActor(req, dto.taskId),
-    );
-  }
 
   /** 提测记录列表（倒序） */
   @Get(':id/releases')

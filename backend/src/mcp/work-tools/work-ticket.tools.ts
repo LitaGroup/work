@@ -1,9 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { TicketDocumentsService } from '../../tickets/ticket-documents.service';
 import { TicketsService } from '../../tickets/tickets.service';
 import { WorkflowDefinitionsService } from '../../workflows/workflow-definitions.service';
+import { Iteration } from '../../iterations/iteration.entity';
+import { Backlog } from '../../iterations/backlog.entity';
 import type { WorkflowInputField } from '../../workflows/workflow.types';
 import {
   asAuthedRequest,
@@ -28,10 +32,18 @@ const INPUT_FIELD_TYPE_LABEL: Record<WorkflowInputField['type'], string> = {
   select: '单选',
   multiselect: '多选',
   file: '文件',
+  iteration: '迭代（单选）',
+  iteration_multi: '迭代（多选）',
+  backlog: '迭代项（单选）',
+  backlog_multi: '迭代项（多选）',
 };
 
 /** 起始节点输入字段表格 */
-function inputFieldsLines(fields: WorkflowInputField[]): string[] {
+function inputFieldsLines(
+  fields: WorkflowInputField[],
+  iterations: Iteration[] = [],
+  backlogs: Backlog[] = [],
+): string[] {
   if (!fields.length) return ['起始节点无输入字段。'];
   const lines = [
     '| 字段 key | 名称 | 类型 | 必填 | 选项 | 默认值 |',
@@ -51,6 +63,62 @@ function inputFieldsLines(fields: WorkflowInputField[]): string[] {
       '多选字段（类型为「多选」）的值可传字符串数组（如 `["A","B"]`）或英文逗号分隔字符串（如 `"A,B"`），只能取选项列表中的值。',
     );
   }
+  const iterationFields = fields.filter(
+    (field) => field.type === 'iteration' || field.type === 'iteration_multi',
+  );
+  if (iterationFields.length) {
+    lines.push(
+      '',
+      `迭代字段（${iterationFields
+        .map((field) => field.label)
+        .join(
+          '、',
+        )}）的值必须是迭代 ID；多选可传 ID 数组或英文逗号分隔的 ID 字符串。`,
+    );
+    if (iterations.length) {
+      lines.push(
+        '',
+        '可用迭代：',
+        ...iterations
+          .slice(0, 40)
+          .map(
+            (iteration) =>
+              `- #${iteration.id} ${iteration.code}${
+                iteration.startAt && iteration.endAt
+                  ? `（${iteration.startAt} ~ ${iteration.endAt}）`
+                  : ''
+              }${iteration.status ? ` ${iteration.status}` : ''}`,
+          ),
+      );
+    }
+  }
+  const backlogFields = fields.filter(
+    (field) => field.type === 'backlog' || field.type === 'backlog_multi',
+  );
+  if (backlogFields.length) {
+    lines.push(
+      '',
+      `迭代项字段（${backlogFields
+        .map((field) => field.label)
+        .join(
+          '、',
+        )}）的值必须是迭代项 ID（BL 编号对应的 id）；多选可传 ID 数组或英文逗号分隔的 ID 字符串。`,
+    );
+    if (backlogs.length) {
+      lines.push(
+        '',
+        '可用迭代项：',
+        ...backlogs
+          .slice(0, 40)
+          .map(
+            (backlog) =>
+              `- #${backlog.id} ${backlog.title}${
+                backlog.status ? ` ${backlog.status}` : ''
+              }`,
+          ),
+      );
+    }
+  }
   return lines;
 }
 
@@ -67,6 +135,10 @@ export class WorkTicketTools implements WorkToolRegistrar {
     private readonly tickets: TicketsService,
     private readonly ticketDocuments: TicketDocumentsService,
     private readonly workflows: WorkflowDefinitionsService,
+    @InjectRepository(Iteration)
+    private readonly iterations: Repository<Iteration>,
+    @InjectRepository(Backlog)
+    private readonly backlogs: Repository<Backlog>,
   ) {}
 
   register(server: McpServer, principal: McpWorkPrincipal): void {
@@ -92,6 +164,48 @@ export class WorkTicketTools implements WorkToolRegistrar {
           const details = await Promise.all(
             creatable.map((item) => this.workflows.findOne(item.id)),
           );
+          // 迭代 / 迭代项字段需要可选 ID 对照，一次性读取供所有配置复用
+          const startFieldTypes = details.flatMap(
+            (detail) =>
+              detail.published?.definition.nodes.find(
+                (node) => node.kind === 'start',
+              )?.inputFields ?? [],
+          );
+          const needsIterations = startFieldTypes.some(
+            (field) =>
+              field.type === 'iteration' || field.type === 'iteration_multi',
+          );
+          const needsBacklogs = startFieldTypes.some(
+            (field) =>
+              field.type === 'backlog' || field.type === 'backlog_multi',
+          );
+          const [iterationRows, backlogRows] = await Promise.all([
+            needsIterations
+              ? this.iterations.find({
+                  select: {
+                    id: true,
+                    code: true,
+                    status: true,
+                    startAt: true,
+                    endAt: true,
+                  },
+                  order: { id: 'DESC' },
+                  take: 40,
+                })
+              : Promise.resolve([]),
+            needsBacklogs
+              ? this.backlogs.find({
+                  select: {
+                    id: true,
+                    code: true,
+                    title: true,
+                    status: true,
+                  },
+                  order: { id: 'DESC' },
+                  take: 40,
+                })
+              : Promise.resolve([]),
+          ]);
           const lines = ['# 工单配置清单', ''];
           for (const detail of details) {
             const start = detail.published?.definition.nodes.find(
@@ -110,7 +224,11 @@ export class WorkTicketTools implements WorkToolRegistrar {
               '',
               '### 起始节点输入字段',
               '',
-              ...inputFieldsLines(start?.inputFields ?? []),
+              ...inputFieldsLines(
+                start?.inputFields ?? [],
+                iterationRows,
+                backlogRows,
+              ),
               '',
               `调用示例：\`create_ticket {"workflowDefinitionId": ${detail.id}, "title": "...", "inputValues": {"<字段 key>": "<值>"}}\``,
               '',
@@ -140,7 +258,7 @@ export class WorkTicketTools implements WorkToolRegistrar {
             .record(z.string(), z.unknown())
             .optional()
             .describe(
-              '起始节点输入字段（key → 值）；多选字段可传字符串数组或英文逗号分隔字符串',
+              '起始节点输入字段（key → 值）；多选字段可传字符串数组或英文逗号分隔字符串；迭代字段传迭代 ID，迭代项字段传迭代项 ID（多选均为数组或逗号分隔 ID）',
             ),
         },
       },

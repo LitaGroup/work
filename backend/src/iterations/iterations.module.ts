@@ -5,6 +5,7 @@ import { Document } from '../documents/document.entity';
 import { FeishuBotModule } from '../feishu-bot/feishu-bot.module';
 import { ModelConfigModule } from '../model-config/model-config.module';
 import { Project } from '../projects/project.entity';
+import { ReleasesModule } from '../releases/releases.module';
 import { Task } from '../tasks/task.entity';
 import { TasksModule } from '../tasks/tasks.module';
 import { Ticket } from '../tickets/ticket.entity';
@@ -51,6 +52,7 @@ import { IterationsService } from './iterations.service';
     TicketsModule,
     FeishuBotModule,
     ModelConfigModule,
+    ReleasesModule,
   ],
   controllers: [
     IterationsController,

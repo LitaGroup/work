@@ -16,9 +16,17 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@appica/ui-react/select'
-import { api } from '../lib/api'
+import { api, type BacklogSummary, type IterationSummary } from '../lib/api'
 import { MarkdownEditor } from '../components/MarkdownEditor'
 import { PageBreadcrumb } from '../components/PageBreadcrumb'
+import {
+  IterationMultiPicker,
+  IterationPicker,
+} from '../components/IterationPicker'
+import {
+  BacklogMultiPicker,
+  BacklogPicker,
+} from '../components/BacklogPicker'
 
 const NO_OPTION = '__none__'
 
@@ -44,6 +52,8 @@ export function TicketCreatePage() {
     Awaited<ReturnType<typeof api.getTicketWorkflowDefinition>> | null
   >(null)
   const [values, setValues] = useState<Record<string, string>>({})
+  const [iterations, setIterations] = useState<IterationSummary[]>([])
+  const [backlogs, setBacklogs] = useState<BacklogSummary[]>([])
   const [uploading, setUploading] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -56,14 +66,41 @@ export function TicketCreatePage() {
     }
     api
       .getTicketWorkflowDefinition(id)
-      .then((row) => {
+      .then(async (row) => {
         setDetail(row)
         const defaults: Record<string, string> = {}
-        for (const field of row.published?.definition.nodes.find((node) => node.kind === 'start')?.inputFields ?? []) {
-          defaults[field.key] = field.defaultValue == null ? '' : String(field.defaultValue)
+        const startFields =
+          row.published?.definition.nodes.find((node) => node.kind === 'start')
+            ?.inputFields ?? []
+        for (const field of startFields) {
+          defaults[field.key] =
+            field.defaultValue == null ? '' : String(field.defaultValue)
         }
         setValues(defaults)
         setError(null)
+        // 迭代 / 迭代项字段需要可选清单（标识与标题）才能选择
+        const needIterations = startFields.some(
+          (field) =>
+            field.type === 'iteration' || field.type === 'iteration_multi',
+        )
+        const needBacklogs = startFields.some(
+          (field) =>
+            field.type === 'backlog' || field.type === 'backlog_multi',
+        )
+        if (needIterations) {
+          try {
+            setIterations(await api.listIterations())
+          } catch {
+            // 迭代清单加载失败不阻塞表单，迭代字段会提示无选项
+          }
+        }
+        if (needBacklogs) {
+          try {
+            setBacklogs(await api.listBacklogs())
+          } catch {
+            // 迭代项清单加载失败不阻塞表单，迭代项字段会提示无选项
+          }
+        }
       })
       .catch((e: Error) => setError(e.message))
   }, [id])
@@ -163,6 +200,10 @@ export function TicketCreatePage() {
                     {field.type === 'select' && '单选'}
                     {field.type === 'multiselect' && '多选'}
                     {field.type === 'file' && '文件'}
+                    {field.type === 'iteration' && '迭代'}
+                    {field.type === 'iteration_multi' && '迭代（多选）'}
+                    {field.type === 'backlog' && '迭代项'}
+                    {field.type === 'backlog_multi' && '迭代项（多选）'}
                   </Badge>
                 </span>
                 {field.type === 'textarea' ? (
@@ -230,6 +271,34 @@ export function TicketCreatePage() {
                       ))}
                     </SelectContent>
                   </Select>
+                ) : field.type === 'iteration' ? (
+                  <IterationPicker
+                    iterations={iterations}
+                    value={values[field.key] ?? ''}
+                    onChange={(next) => update(field.key, next)}
+                    placeholder={field.placeholder ?? '选择迭代'}
+                  />
+                ) : field.type === 'iteration_multi' ? (
+                  <IterationMultiPicker
+                    iterations={iterations}
+                    value={(values[field.key] ?? '').split(',').filter(Boolean)}
+                    onChange={(next) => update(field.key, next.join(','))}
+                    placeholder={field.placeholder ?? '选择迭代'}
+                  />
+                ) : field.type === 'backlog' ? (
+                  <BacklogPicker
+                    backlogs={backlogs}
+                    value={values[field.key] ?? ''}
+                    onChange={(next) => update(field.key, next)}
+                    placeholder={field.placeholder ?? '选择迭代项'}
+                  />
+                ) : field.type === 'backlog_multi' ? (
+                  <BacklogMultiPicker
+                    backlogs={backlogs}
+                    value={(values[field.key] ?? '').split(',').filter(Boolean)}
+                    onChange={(next) => update(field.key, next.join(','))}
+                    placeholder={field.placeholder ?? '选择迭代项'}
+                  />
                 ) : field.type === 'file' ? (
                   <span className="flex items-center gap-2">
                     <input
@@ -299,6 +368,8 @@ export function TicketCreatePage() {
                     {node.kind === 'operation' && '操作'}
                     {node.kind === 'approval' && '审批'}
                     {node.kind === 'acceptance' && '验收'}
+                    {node.kind === 'condition' && '判断'}
+                    {node.kind === 'feishu-message' && '飞书群消息'}
                   </Badge>
                 </p>
                 {node.description && (

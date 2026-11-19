@@ -15,10 +15,9 @@ function buildTools(options?: {
     updateStatus: jest.Mock;
     move: jest.Mock;
     createTask: jest.Mock;
-    createReleaseTicket: jest.Mock;
+    submitReleaseMarkdown: jest.Mock;
     findOneMarkdown: jest.Mock;
   };
-  tickets: { ticketMarkdown: jest.Mock };
 } {
   const backlogs = {
     updateMembers: jest.fn().mockResolvedValue({ id: 33 }),
@@ -28,15 +27,8 @@ function buildTools(options?: {
     createTask: jest
       .fn()
       .mockResolvedValue({ id: 55, code: 'TK-0055', title: '子任务' }),
-    createReleaseTicket: jest.fn().mockResolvedValue({
-      ticketId: 88,
-      ticketCode: 'WO-0088',
-      title: '提测',
-    }),
+    submitReleaseMarkdown: jest.fn().mockResolvedValue('# 提测结果'),
     findOneMarkdown: jest.fn().mockResolvedValue('# 迭代项详情'),
-  };
-  const tickets = {
-    ticketMarkdown: jest.fn().mockResolvedValue('# 工单详情'),
   };
   const tools = new Map<string, Handler>();
   const server = {
@@ -44,7 +36,7 @@ function buildTools(options?: {
       tools.set(name, handler);
     },
   } as unknown as McpServer;
-  new WorkIterationTools(backlogs as never, tickets as never).register(server, {
+  new WorkIterationTools(backlogs as never).register(server, {
     user: options?.user ?? {
       id: 1,
       name: '张三',
@@ -52,7 +44,7 @@ function buildTools(options?: {
     },
     worker: options?.worker,
   } as never);
-  return { tools, backlogs, tickets };
+  return { tools, backlogs };
 }
 
 describe('WorkIterationTools', () => {
@@ -65,7 +57,7 @@ describe('WorkIterationTools', () => {
       'change_backlog_status',
       'move_backlog',
       'create_backlog_task',
-      'create_backlog_release_ticket',
+      'create_backlog_release',
     ]);
   });
 
@@ -191,18 +183,31 @@ describe('WorkIterationTools', () => {
     expect(result.content[0].text).toContain('# 迭代项详情');
   });
 
-  it('create_backlog_release_ticket 透传创建人并返回工单 Markdown', async () => {
-    const { tools, backlogs, tickets } = buildTools({
+  it('create_backlog_release 透传批量入参与创建人并返回 Markdown', async () => {
+    const { tools, backlogs } = buildTools({
       user: { id: 2, name: '负责人', role: UserRole.MEMBER },
       worker: { id: 1002, name: '迭代负责人机器人' },
     });
-    const result = (await tools.get('create_backlog_release_ticket')!({
-      backlogId: 33,
-      supplement: '请重点验证登录',
+    const result = (await tools.get('create_backlog_release')!({
+      items: [{ backlogId: 33, content: '请重点验证登录' }, { backlogId: 34 }],
+      ends: ['APP', 'H5'],
+      testers: ['赵六'],
+      branches: [{ repo: 'LitaGroup/lita-h5', branch: 'test' }],
+      urls: ['https://staging.example.com'],
     })) as { content: { text: string }[] };
-    expect(backlogs.createReleaseTicket).toHaveBeenCalledWith(
-      33,
-      { title: undefined, supplement: '请重点验证登录' },
+    expect(backlogs.submitReleaseMarkdown).toHaveBeenCalledWith(
+      {
+        items: [
+          { backlogId: 33, content: '请重点验证登录' },
+          { backlogId: 34, content: undefined },
+        ],
+        title: undefined,
+        ends: ['APP', 'H5'],
+        testers: ['赵六'],
+        branches: [{ repo: 'LitaGroup/lita-h5', branch: 'test' }],
+        urls: ['https://staging.example.com'],
+        taskId: undefined,
+      },
       expect.objectContaining({
         userId: 2,
         userName: '负责人',
@@ -214,7 +219,6 @@ describe('WorkIterationTools', () => {
         worker: { id: 1002, name: '迭代负责人机器人' },
       },
     );
-    expect(tickets.ticketMarkdown).toHaveBeenCalledWith(88);
-    expect(result.content[0].text).toBe('# 工单详情');
+    expect(result.content[0].text).toBe('# 提测结果');
   });
 });

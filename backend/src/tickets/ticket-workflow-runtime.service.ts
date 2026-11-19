@@ -7,9 +7,12 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Interval } from '@nestjs/schedule';
+import { ConfigService } from '@nestjs/config';
 import { In, Not, Repository } from 'typeorm';
-import type { User } from '../auth/user.entity';
+import { User } from '../auth/user.entity';
 import {
+  BacklogMemberRole,
+  BacklogStatus,
   TaskStatus,
   TaskSubStatus,
   TaskType,
@@ -38,6 +41,18 @@ import { WorkflowDefinition } from '../workflows/workflow-definition.entity';
 import { TicketWorkflowRun } from './ticket-workflow-run.entity';
 import { Ticket } from './ticket.entity';
 import { Backlog } from '../iterations/backlog.entity';
+import { Iteration } from '../iterations/iteration.entity';
+import { Project } from '../projects/project.entity';
+import { FeishuBotConfigService } from '../feishu-bot/feishu-bot-config.service';
+import { FeishuBotIdentityService } from '../feishu-bot/feishu-bot-identity.service';
+import { FeishuBotOfficialMessageService } from '../feishu-bot/feishu-bot-official-message.service';
+import {
+  renderMessageTemplate,
+  type TicketMessageTemplateBacklog,
+  type TicketMessageTemplateContext,
+  type TicketMessageTemplatePerson,
+  type TicketMessageTemplateTicket,
+} from '../workflows/message-template';
 
 export interface CreateWorkflowTicketInput {
   workflowDefinitionId: number;
@@ -82,6 +97,7 @@ const RUN_STATUS_EXECUTING = '执行中';
 const RUN_STATUS_WAIT_ACCEPT = '待人工验收';
 const RUN_STATUS_COMPLETED = '已完成';
 const RUN_STATUS_CANCELED = '已取消';
+const RUN_STATUS_FAILED = '已失败';
 
 const TICKET_STATUS_PROCESSING = '处理中';
 const TICKET_STATUS_WAIT_ACCEPT = '待验收';
@@ -184,24 +200,72 @@ function inputValueText(value: unknown): string {
   return JSON.stringify(value);
 }
 
+/** 迭代项展示文本：标题已含 BL 编号时不再重复 */
+export function backlogDisplayLabel(code: string, title: string): string {
+  const trimmed = (title ?? '').trim();
+  if (!trimmed) return code;
+  return trimmed.startsWith(code) ? trimmed : `${code} ${trimmed}`;
+}
+
+/** 是否为迭代字段（值为迭代 ID，多选为英文逗号分隔的 ID） */
+export function isIterationFieldType(type: WorkflowInputFieldType): boolean {
+  return type === 'iteration' || type === 'iteration_multi';
+}
+
+/** 是否为迭代项字段（值为迭代项 ID，多选为英文逗号分隔的 ID） */
+export function isBacklogFieldType(type: WorkflowInputFieldType): boolean {
+  return type === 'backlog' || type === 'backlog_multi';
+}
+
+/**
+ * 单字段展示文本：多选用顿号连接；迭代/迭代项字段把 ID 转成标识。
+ * 找不到记录时回退展示原始 ID，避免数据缺失导致内容为空。
+ */
+export function inputFieldDisplayText(
+  field: WorkflowInputField,
+  rawValue: unknown,
+  iterationCodeById?: Map<number, string>,
+  backlogLabelById?: Map<number, string>,
+): string {
+  const raw = inputValueText(rawValue).trim();
+  if (!raw) return '';
+  const referenceField =
+    isIterationFieldType(field.type) || isBacklogFieldType(field.type);
+  const parts =
+    referenceField || field.type === 'multiselect' ? raw.split(',') : [raw];
+  const normalized = parts.map((item) => item.trim()).filter(Boolean);
+  if (isIterationFieldType(field.type)) {
+    return normalized
+      .map((id) => iterationCodeById?.get(Number(id)) ?? `#${id}`)
+      .join('、');
+  }
+  if (isBacklogFieldType(field.type)) {
+    return normalized
+      .map((id) => backlogLabelById?.get(Number(id)) ?? `#${id}`)
+      .join('、');
+  }
+  return field.type === 'multiselect'
+    ? normalized.join('、')
+    : normalized.join(', ');
+}
+
 export function renderInputValues(
   fields: WorkflowInputField[] | null,
   values: Record<string, unknown>,
+  iterationCodeById?: Map<number, string>,
+  backlogLabelById?: Map<number, string>,
 ): string {
   if (!fields?.length) return '（无结构化输入）';
   return [
     '| 字段 | 内容 |',
     '| --- | --- |',
     ...fields.map((field) => {
-      const rawValue = inputValueText(values[field.key]).trim();
-      const value =
-        field.type === 'multiselect' && rawValue
-          ? rawValue
-              .split(',')
-              .map((item) => item.trim())
-              .filter(Boolean)
-              .join('、')
-          : rawValue;
+      const value = inputFieldDisplayText(
+        field,
+        values[field.key],
+        iterationCodeById,
+        backlogLabelById,
+      );
       return `| ${field.label} | ${
         value ? value.replace(/\|/g, '\\|').replace(/\s*\n\s*/g, '<br>') : '-'
       } |`;
@@ -238,11 +302,21 @@ export class TicketWorkflowRuntimeService {
     private readonly tasks: Repository<Task>,
     @InjectRepository(Backlog)
     private readonly backlogs: Repository<Backlog>,
+    @InjectRepository(Iteration)
+    private readonly iterations: Repository<Iteration>,
+    @InjectRepository(Project)
+    private readonly projects: Repository<Project>,
+    @InjectRepository(User)
+    private readonly users: Repository<User>,
     @InjectRepository(Worker)
     private readonly workers: Repository<Worker>,
     private readonly tasksService: TasksService,
     private readonly dispatchService: TaskDispatchService,
     private readonly taskNotify: TaskNotifyService,
+    private readonly officialMessages: FeishuBotOfficialMessageService,
+    private readonly botConfigs: FeishuBotConfigService,
+    private readonly botIdentities: FeishuBotIdentityService,
+    private readonly config: ConfigService,
     private readonly llm: LlmService,
   ) {}
 
@@ -331,7 +405,7 @@ export class TicketWorkflowRuntimeService {
     const workflow = version.definition;
     const start = workflow.nodes.find((node) => node.kind === 'start');
     const initiator = await this.resolveInitiator(actor);
-    const inputValues = this.normalizeInputValues(
+    const inputValues = await this.normalizeInputValues(
       start?.inputFields ?? [],
       input.inputValues ?? {},
     );
@@ -939,12 +1013,16 @@ export class TicketWorkflowRuntimeService {
     });
     if (node.kind === 'start') {
       await this.recordSimpleRun(ticket.id, node, RUN_STATUS_COMPLETED);
-      await this.advance(ticket.id, workflow, node.key, null);
+      await this.advance(ticket.id, workflow, node.key, null, depth);
       return;
     }
     if (node.kind === 'condition') {
       await this.recordSimpleRun(ticket.id, node, RUN_STATUS_COMPLETED);
       await this.advanceConditionNode(ticket, workflow, node, depth);
+      return;
+    }
+    if (node.kind === 'feishu-message') {
+      await this.sendFeishuMessage(ticket, workflow, node, depth);
       return;
     }
     if (node.kind === 'acceptance') {
@@ -1027,6 +1105,358 @@ export class TicketWorkflowRuntimeService {
     await this.enterNode(ticket, workflow, matched.to, depth + 1);
   }
 
+  /**
+   * 飞书群消息节点：以平台官方机器人身份向配置群发送 Markdown 卡片。
+   * 发送失败（飞书异常、暂停开关、模板错误）只记录运行说明并继续流转，不阻断工单。
+   */
+  private async sendFeishuMessage(
+    ticket: Ticket,
+    workflow: WorkflowDefinitionJson,
+    node: WorkflowNodeDefinition,
+    depth: number,
+  ): Promise<void> {
+    if (depth >= CONDITION_CHAIN_LIMIT) {
+      await this.failTicket(
+        ticket.id,
+        `判断/飞书群消息节点连续自动流转超过 ${CONDITION_CHAIN_LIMIT} 次，请检查流转是否存在循环`,
+      );
+      return;
+    }
+    const fields =
+      workflow.nodes.find((item) => item.kind === 'start')?.inputFields ?? [];
+    let failure: string | null = null;
+    if (!node.feishuChatId) {
+      failure = '未配置目标飞书群';
+    } else if (!node.messageTemplate?.trim()) {
+      failure = '未配置消息模板';
+    } else {
+      try {
+        const context = await this.buildMessageContext(ticket, fields);
+        const content = renderMessageTemplate(node.messageTemplate, {
+          ...context,
+          node: { name: node.name },
+        });
+        if (!content) throw new Error('模板渲染结果为空');
+        await this.officialMessages.send(
+          {
+            chatId: node.feishuChatId,
+            content,
+            title: `${ticket.code} ${node.name}`,
+          },
+          {
+            type: 'worker',
+            id: ticket.initiatorWorkerId ?? 0,
+            name:
+              ticket.initiatorWorkerName ??
+              ticket.createdByName ??
+              '工单工作流',
+          },
+        );
+      } catch (error) {
+        failure = (error as Error).message;
+      }
+    }
+    if (failure) {
+      this.logger.warn(
+        `工单 ${ticket.code} 飞书群消息节点「${node.name}」发送失败（不阻断流程）：${failure}`,
+      );
+    } else {
+      this.logger.log(
+        `工单 ${ticket.code} 飞书群消息节点「${node.name}」已发送至群 ${node.feishuChatId}`,
+      );
+    }
+    await this.recordSimpleRun(
+      ticket.id,
+      node,
+      failure ? RUN_STATUS_FAILED : RUN_STATUS_COMPLETED,
+      undefined,
+      failure,
+    );
+    await this.advance(ticket.id, workflow, node.key, null, depth + 1);
+  }
+
+  /** 消息模板中的工单上下文（链接取 APP_URL） */
+  private messageTicketContext(ticket: Ticket): TicketMessageTemplateTicket {
+    const base = (
+      this.config.get<string>('APP_URL') ?? 'http://localhost:5273'
+    ).replace(/\/+$/, '');
+    return {
+      id: ticket.id,
+      code: ticket.code,
+      title: ticket.title,
+      description: ticket.description ?? null,
+      category: ticket.category,
+      initiator:
+        ticket.createdByName ?? ticket.initiatorWorkerName ?? '工单工作流',
+      createdAt: new Date(ticket.createdAt).toLocaleString('zh-CN', {
+        hour12: false,
+        timeZone: 'Asia/Shanghai',
+      }),
+      url: `${base}/tickets/${ticket.id}`,
+    };
+  }
+
+  /**
+   * 组装消息模板上下文：
+   * - 提测人等身份取「实际发起工单的机器人」，真人机器人解析其绑定真人的飞书 open_id；
+   * - 测试/开发/需求方取自工单关联迭代（起始节点的迭代字段或 ticket.backlogId）下全部未取消迭代项的成员行；
+   * - 关联迭代项同时供模板循环生成提测内容。
+   */
+  private async buildMessageContext(
+    ticket: Ticket,
+    fields: WorkflowInputField[],
+  ): Promise<Omit<TicketMessageTemplateContext, 'node'>> {
+    const iterationCodeById = await this.iterationCodeMapFor(
+      fields,
+      ticket.inputValues ?? {},
+    );
+    const backlogLabelById = await this.backlogLabelMapFor(
+      fields,
+      ticket.inputValues ?? {},
+    );
+    const related = await this.relatedBacklogsFor(ticket, fields);
+    const membersWithRole = (...roles: BacklogMemberRole[]) =>
+      related.flatMap((backlog) =>
+        (backlog.members ?? []).filter((member) => roles.includes(member.role)),
+      );
+    const testerRows = membersWithRole(BacklogMemberRole.QA);
+    const developerRows = membersWithRole(
+      BacklogMemberRole.FRONTEND,
+      BacklogMemberRole.BACKEND,
+      BacklogMemberRole.CLIENT,
+    );
+    const demanderRows = membersWithRole(BacklogMemberRole.DEMAND);
+
+    // 一次性取回涉及的机器人（发起机器人与成员），真人机器人再按绑定真人解析 @
+    const memberRows = [
+      ...testerRows,
+      ...developerRows,
+      ...demanderRows,
+    ] as Array<{
+      role: BacklogMemberRole;
+      workerId?: number;
+      userId?: number;
+      name: string;
+    }>;
+    const workerIds = new Set<number>();
+    if (ticket.initiatorWorkerId) workerIds.add(ticket.initiatorWorkerId);
+    for (const row of memberRows) {
+      if (row.workerId) workerIds.add(row.workerId);
+    }
+    const workers = workerIds.size
+      ? await this.workers.find({
+          where: { id: In([...workerIds]) },
+          select: { id: true, name: true, humanUserId: true },
+        })
+      : [];
+    const workerById = new Map(workers.map((row) => [row.id, row]));
+    const botConfig = await this.botConfigs
+      .loadEnabledOfficial()
+      .catch(() => null);
+
+    // 解析真人用户 open_id：官方应用映射优先，回退登录 open_id（同一应用时一致）
+    const openIdOf = async (userId: number): Promise<string | null> => {
+      if (!botConfig) return null;
+      const mapped = await this.botIdentities
+        .openIdFor(botConfig.id, userId)
+        .catch(() => null);
+      if (mapped) return mapped;
+      const user = await this.users.findOne({
+        where: { id: userId },
+        select: { id: true, feishuOpenId: true },
+      });
+      return user?.feishuOpenId ?? null;
+    };
+    const mentionForUserId = async (
+      userId: number,
+      name: string,
+    ): Promise<TicketMessageTemplatePerson> => {
+      const openId = await openIdOf(userId);
+      return { name, mention: openId ? `<at id=${openId}></at>` : name };
+    };
+    /** 成员行兼容历史 userId 写法：真人机器人取绑定真人，AI 机器人回退名称 */
+    const personOf = async (
+      row: { workerId?: number; userId?: number; name: string },
+      fallbackName?: string,
+    ): Promise<TicketMessageTemplatePerson> => {
+      const worker = row.workerId ? workerById.get(row.workerId) : undefined;
+      const name =
+        worker?.name?.trim() || row.name?.trim() || fallbackName || '';
+      if (worker?.humanUserId)
+        return mentionForUserId(worker.humanUserId, name);
+      if (!worker && row.userId) return mentionForUserId(row.userId, name);
+      return { name, mention: name };
+    };
+    const peopleOf = async (
+      rows: Array<{ workerId?: number; userId?: number; name: string }>,
+    ): Promise<TicketMessageTemplatePerson[]> => {
+      const seen = new Set<string>();
+      const result: TicketMessageTemplatePerson[] = [];
+      for (const row of rows) {
+        const key = String(
+          row.workerId || (row.userId ? `u${row.userId}` : row.name),
+        );
+        if (seen.has(key)) continue;
+        seen.add(key);
+        result.push(await personOf(row));
+      }
+      return result;
+    };
+
+    const projectIds = [...new Set(related.map((row) => row.projectId))];
+    const projectRows = projectIds.length
+      ? await this.projects.find({
+          where: { id: In(projectIds) },
+          select: { id: true, name: true, type: true },
+        })
+      : [];
+    const projectById = new Map(projectRows.map((row) => [row.id, row]));
+    const backlogs: TicketMessageTemplateBacklog[] = related.map((row) => {
+      const project = projectById.get(row.projectId);
+      return {
+        id: row.id,
+        code: row.code,
+        title: row.title,
+        requirementTitle: project?.name ?? row.title,
+        requirementType: project?.type ?? '需求',
+        status: row.status,
+      };
+    });
+
+    return {
+      ticket: this.messageTicketContext(ticket),
+      initiator: await personOf({
+        workerId: ticket.initiatorWorkerId ?? undefined,
+        name:
+          ticket.initiatorWorkerName ??
+          ticket.createdByName ??
+          '工单发起机器人',
+      }),
+      testers: await peopleOf(testerRows),
+      developers: await peopleOf(developerRows),
+      demanders: await peopleOf(demanderRows),
+      backlogs,
+      values: Object.fromEntries(
+        fields.map((field) => [
+          field.key,
+          inputFieldDisplayText(
+            field,
+            ticket.inputValues?.[field.key],
+            iterationCodeById,
+            backlogLabelById,
+          ),
+        ]),
+      ),
+    };
+  }
+
+  /**
+   * 工单关联的迭代项：
+   * - 起始节点「迭代项」字段选中的迭代项；
+   * - 起始节点「迭代」字段选中的迭代下的全部未取消迭代项；
+   * - ticket.backlogId（迭代项直接发起提测的场景，仅该迭代项）。
+   */
+  private async relatedBacklogsFor(
+    ticket: Ticket,
+    fields: WorkflowInputField[],
+  ): Promise<Backlog[]> {
+    const iterationIds = new Set<number>();
+    const backlogIds = new Set<number>();
+    for (const field of fields) {
+      const raw = ticket.inputValues?.[field.key];
+      const parts = Array.isArray(raw) ? raw : [raw];
+      const target = isBacklogFieldType(field.type)
+        ? backlogIds
+        : isIterationFieldType(field.type)
+          ? iterationIds
+          : null;
+      if (!target) continue;
+      for (const part of parts) {
+        const text =
+          typeof part === 'string' || typeof part === 'number'
+            ? String(part)
+            : '';
+        for (const item of text.split(',')) {
+          const id = Number(item.trim());
+          if (Number.isInteger(id) && id > 0) target.add(id);
+        }
+      }
+    }
+    if (ticket.backlogId) backlogIds.add(ticket.backlogId);
+    const [byIteration, byId] = await Promise.all([
+      iterationIds.size
+        ? this.backlogs.find({
+            where: { iterationId: In([...iterationIds]) },
+            order: { id: 'ASC' },
+          })
+        : Promise.resolve([] as Backlog[]),
+      backlogIds.size
+        ? this.backlogs.find({
+            where: { id: In([...backlogIds]) },
+            order: { id: 'ASC' },
+          })
+        : Promise.resolve([] as Backlog[]),
+    ]);
+    const byBacklogId = new Map<number, Backlog>();
+    for (const row of [...byIteration, ...byId]) {
+      if (row.status === BacklogStatus.CANCELED) continue;
+      byBacklogId.set(row.id, row);
+    }
+    return [...byBacklogId.values()].sort((a, b) => a.id - b.id);
+  }
+
+  /** 输入值中引用的迭代项 ID → 「BL-0001 标题」（展示与模板渲染用） */
+  private async backlogLabelMapFor(
+    fields: WorkflowInputField[] | null,
+    values: Record<string, unknown>,
+  ): Promise<Map<number, string>> {
+    const ids = new Set<number>();
+    for (const field of fields ?? []) {
+      if (!isBacklogFieldType(field.type)) continue;
+      const raw = values[field.key];
+      const parts = Array.isArray(raw) ? raw : [raw];
+      for (const part of parts) {
+        const text =
+          typeof part === 'string' || typeof part === 'number'
+            ? String(part)
+            : '';
+        for (const item of text.split(',')) {
+          const id = Number(item.trim());
+          if (Number.isInteger(id) && id > 0) ids.add(id);
+        }
+      }
+    }
+    if (!ids.size) return new Map();
+    const rows = await this.backlogs.find({
+      where: { id: In([...ids]) },
+      select: { id: true, code: true, title: true },
+    });
+    return new Map(
+      rows.map((row) => [row.id, backlogDisplayLabel(row.code, row.title)]),
+    );
+  }
+
+  /** 输入值中引用的迭代 ID → 迭代标识（展示与模板渲染用） */
+  private async iterationCodeMapFor(
+    fields: WorkflowInputField[] | null,
+    values: Record<string, unknown>,
+  ): Promise<Map<number, string>> {
+    const ids = new Set<number>();
+    for (const field of fields ?? []) {
+      if (!isIterationFieldType(field.type)) continue;
+      for (const part of inputValueText(values[field.key]).split(',')) {
+        const id = Number(part.trim());
+        if (Number.isInteger(id) && id > 0) ids.add(id);
+      }
+    }
+    if (!ids.size) return new Map();
+    const rows = await this.iterations.find({
+      where: { id: In([...ids]) },
+      select: { id: true, code: true },
+    });
+    return new Map(rows.map((row) => [row.id, row.code]));
+  }
+
   private async createNodeTask(
     ticket: Ticket,
     workflow: WorkflowDefinitionJson,
@@ -1086,6 +1516,16 @@ export class TicketWorkflowRuntimeService {
       node.kind === 'approval'
         ? '完成节点审批：通过后结束任务；如需驳回，请将任务判定失败并说明驳回原因。'
         : '完成节点操作后申请验收；节点结果会自动推进工单工作流。';
+    const startFields =
+      workflow.nodes.find((item) => item.kind === 'start')?.inputFields ?? [];
+    const iterationCodeById = await this.iterationCodeMapFor(
+      startFields,
+      ticket.inputValues ?? {},
+    );
+    const backlogLabelById = await this.backlogLabelMapFor(
+      startFields,
+      ticket.inputValues ?? {},
+    );
     const description = [
       `# 工单节点：${node.name}`,
       '',
@@ -1103,8 +1543,10 @@ export class TicketWorkflowRuntimeService {
       '## 工单输入',
       '',
       renderInputValues(
-        workflow.nodes.find((item) => item.kind === 'start')?.inputFields ?? [],
+        startFields,
         ticket.inputValues ?? {},
+        iterationCodeById,
+        backlogLabelById,
       ),
       '',
       ticket.description?.trim() ? `## 工单描述\n\n${ticket.description}` : '',
@@ -1239,16 +1681,21 @@ export class TicketWorkflowRuntimeService {
     const workflow = await this.workflowOf(ticket);
     const startFields =
       workflow.nodes.find((item) => item.kind === 'start')?.inputFields ?? [];
+    const iterationCodeById = await this.iterationCodeMapFor(
+      startFields,
+      ticket.inputValues ?? {},
+    );
+    const backlogLabelById = await this.backlogLabelMapFor(
+      startFields,
+      ticket.inputValues ?? {},
+    );
     const summaryLines = startFields.map((field) => {
-      const rawValue = inputValueText(ticket.inputValues?.[field.key]).trim();
-      const value =
-        field.type === 'multiselect' && rawValue
-          ? rawValue
-              .split(',')
-              .map((item) => item.trim())
-              .filter(Boolean)
-              .join('、')
-          : rawValue;
+      const value = inputFieldDisplayText(
+        field,
+        ticket.inputValues?.[field.key],
+        iterationCodeById,
+        backlogLabelById,
+      );
       return `- ${field.label}：${
         value ? value.replace(/\s*\n\s*/g, ' ') : '-'
       }`;
@@ -1304,6 +1751,7 @@ export class TicketWorkflowRuntimeService {
     workflow: WorkflowDefinitionJson,
     fromKey: string,
     outcome: string | null,
+    depth = 0,
   ): Promise<void> {
     const candidates = workflow.edges.filter(
       (edge) => edge.from === fromKey && edge.outcome === outcome,
@@ -1327,16 +1775,69 @@ export class TicketWorkflowRuntimeService {
       return;
     }
     const ticket = await this.mustFind(ticketId);
-    await this.enterNode(ticket, workflow, edge.to);
+    await this.enterNode(ticket, workflow, edge.to, depth + 1);
   }
 
-  private normalizeInputValues(
+  private async normalizeInputValues(
     fields: WorkflowInputField[],
     input: Record<string, unknown>,
-  ): Record<string, unknown> {
+  ): Promise<Record<string, unknown>> {
     const values: Record<string, unknown> = {};
     for (const field of fields) {
       const raw = input[field.key];
+      if (isIterationFieldType(field.type) || isBacklogFieldType(field.type)) {
+        // 迭代 / 迭代项字段存引用 ID：单选取一个，多选兼容数组与英文逗号分隔字符串
+        const backlogField = isBacklogFieldType(field.type);
+        const multi =
+          field.type === 'iteration_multi' || field.type === 'backlog_multi';
+        const referenceLabel = backlogField ? '迭代项' : '迭代';
+        const submitted =
+          multi && Array.isArray(raw)
+            ? raw.map((item) => inputValueText(item))
+            : inputValueText(raw).split(',');
+        const selected = Array.from(
+          new Set(submitted.map((item) => item.trim()).filter(Boolean)),
+        );
+        if (!selected.length) {
+          if (field.required && !field.defaultValue) {
+            throw new BadRequestException(`「${field.label}」不能为空`);
+          }
+          values[field.key] = field.defaultValue ?? '';
+          continue;
+        }
+        if (!multi && selected.length > 1) {
+          throw new BadRequestException(
+            `「${field.label}」只能选择一个${referenceLabel}`,
+          );
+        }
+        const invalid = selected.find(
+          (item) => !/^\d+$/.test(item) || Number(item) <= 0,
+        );
+        if (invalid !== undefined) {
+          throw new BadRequestException(
+            `「${field.label}」包含无效的${referenceLabel} ID「${invalid}」`,
+          );
+        }
+        const ids = selected.map((item) => Number(item));
+        const found = backlogField
+          ? await this.backlogs.find({
+              where: { id: In(ids) },
+              select: { id: true },
+            })
+          : await this.iterations.find({
+              where: { id: In(ids) },
+              select: { id: true },
+            });
+        const foundIds = new Set(found.map((row) => row.id));
+        const missing = ids.find((id) => !foundIds.has(id));
+        if (missing !== undefined) {
+          throw new BadRequestException(
+            `「${field.label}」引用的${referenceLabel} #${missing} 不存在`,
+          );
+        }
+        values[field.key] = ids.join(',');
+        continue;
+      }
       if (field.type === 'multiselect') {
         // 兼容数组（MCP 调用）与英文逗号分隔字符串，统一存逗号拼接串
         const submitted = Array.isArray(raw)
@@ -1391,6 +1892,7 @@ export class TicketWorkflowRuntimeService {
     node: WorkflowNodeDefinition,
     status: string,
     outcome?: string,
+    note?: string | null,
   ): Promise<void> {
     const attempt =
       (await this.runs.count({
@@ -1404,12 +1906,11 @@ export class TicketWorkflowRuntimeService {
       attempt,
       status,
       ...(outcome ? { outcome } : {}),
+      ...(note ? { note: note.slice(0, 500) } : {}),
       startedAt: new Date(),
       finishedAt:
-        status === RUN_STATUS_COMPLETED || status === RUN_STATUS_WAIT_ACCEPT
-          ? status === RUN_STATUS_COMPLETED
-            ? new Date()
-            : null
+        status === RUN_STATUS_COMPLETED || status === RUN_STATUS_FAILED
+          ? new Date()
           : null,
     });
   }

@@ -1,10 +1,11 @@
-/** 工单工作流节点类型：起始 / 操作 / 审批 / 验收 / 判断 */
+/** 工单工作流节点类型：起始 / 操作 / 审批 / 验收 / 判断 / 飞书群消息 */
 export const WORKFLOW_NODE_KINDS = [
   'start',
   'operation',
   'approval',
   'acceptance',
   'condition',
+  'feishu-message',
 ] as const;
 
 export type WorkflowNodeKind = (typeof WORKFLOW_NODE_KINDS)[number];
@@ -31,6 +32,10 @@ export const WORKFLOW_INPUT_FIELD_TYPES = [
   'select',
   'multiselect',
   'file',
+  'iteration',
+  'iteration_multi',
+  'backlog',
+  'backlog_multi',
 ] as const;
 
 export type WorkflowInputFieldType =
@@ -79,7 +84,10 @@ export interface WorkflowInputField {
   options?: string[];
   /** 占位提示 */
   placeholder?: string | null;
-  /** 默认值（file 不支持；multiselect 为英文逗号分隔的选项） */
+  /**
+   * 默认值（file 不支持；multiselect 为英文逗号分隔的选项；
+   * iteration / iteration_multi 为迭代 ID，backlog / backlog_multi 为迭代项 ID）
+   */
   defaultValue?: string | number | null;
 }
 
@@ -88,7 +96,7 @@ export interface WorkflowNodeDefinition {
   key: string;
   /** 节点名称 */
   name: string;
-  /** 起始 / 操作 / 审批 / 验收 / 判断 */
+  /** 起始 / 操作 / 审批 / 验收 / 判断 / 飞书群消息 */
   kind: WorkflowNodeKind;
   /** 节点使用的任务定义（task_templates.id）；审批/操作节点发布时必填 */
   taskTemplateId: number | null;
@@ -98,6 +106,15 @@ export interface WorkflowNodeDefinition {
   inputFields: WorkflowInputField[] | null;
   /** 验收节点自动验收；前序成功到达验收时直接验收通过完成工单 */
   autoAccept: boolean;
+  /**
+   * 飞书群消息节点：目标群 chat_id（平台官方机器人所在群）。
+   * 进入节点后以官方机器人身份发送 Markdown 卡片，发送失败不阻断流程。
+   */
+  feishuChatId?: string | null;
+  /** 飞书群消息节点：目标群名称快照（配置时记录，便于展示） */
+  feishuChatName?: string | null;
+  /** 飞书群消息节点：Handlebars 消息模板；上下文见 message-template.ts */
+  messageTemplate?: string | null;
   /** 节点说明，作为节点任务上下文 */
   description: string | null;
 }

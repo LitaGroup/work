@@ -72,6 +72,7 @@ import {
   type BacklogDocumentSummary,
   type BacklogEvent,
   type BacklogMemberRole,
+  type BacklogReleaseResult,
   type BacklogTaskSummary,
   type Defect,
   type IterationSummary,
@@ -83,6 +84,7 @@ import {
 import { MarkdownViewer } from '../components/MarkdownViewer'
 import { PageBreadcrumb } from '../components/PageBreadcrumb'
 import { BacklogStatusDialog } from '../components/BacklogStatusDialog'
+import { BacklogReleaseDialog } from '../components/BacklogReleaseDialog'
 import { CreateDocumentDialog, ImportDocumentDialog } from '../components/DocumentDialogs'
 import {
   BacklogStatusBadge,
@@ -99,6 +101,7 @@ import { DetailAgentPanel } from '../components/detail/DetailAgentPanel'
 import { TopicsPanel } from '../components/topics/TopicsPanel'
 import { useAuth } from '../context/AuthContext'
 import { matchesPinyinSearch } from '../lib/pinyin-search'
+import { useTabHash } from '../lib/use-tab-hash'
 
 const SUCCESS_STAY_MS = 2_000
 const FAILURE_STAY_MS = 5_000
@@ -208,15 +211,6 @@ const BACKLOG_DETAIL_TABS: BacklogDetailTab[] = [
   'members',
 ]
 
-function readTabFromHash(
-  fallback: BacklogDetailTab = 'info',
-): BacklogDetailTab {
-  const key = window.location.hash.replace(/^#/, '')
-  return BACKLOG_DETAIL_TABS.includes(key as BacklogDetailTab)
-    ? (key as BacklogDetailTab)
-    : fallback
-}
-
 /**
  * 迭代项详情：基本信息（需求方/备注/预期上线时间）、文档（转入时自需求迁入）、
  * 任务树与关联工单、缺陷（按迭代项关联，可页内新建）、事件流与成员；
@@ -244,8 +238,9 @@ export function BacklogDetailPage() {
   const [aiUnread, setAiUnread] = useState(0)
 
   // 内容分区 tab（与 URL hash 同步，支持 /backlogs/2#topics 直达）
-  const [tab, setTab] = useState<BacklogDetailTab>(() =>
-    readTabFromHash(focusTopicId ? 'topics' : 'info'),
+  const [tab, changeTab] = useTabHash(
+    BACKLOG_DETAIL_TABS,
+    focusTopicId ? 'topics' : 'info',
   )
 
   // 话题计数（TopicsPanel 加载后回调）
@@ -300,9 +295,6 @@ export function BacklogDetailPage() {
 
   // 提测
   const [releaseOpen, setReleaseOpen] = useState(false)
-  const [releaseTitle, setReleaseTitle] = useState('')
-  const [releaseSupplement, setReleaseSupplement] = useState('')
-  const [releasing, setReleasing] = useState(false)
 
   // 成员维护（管理员）：成员 Tab 内直接添加/移除
   const [users, setUsers] = useState<PlatformUser[] | null>(null)
@@ -385,23 +377,6 @@ export function BacklogDetailPage() {
   }, [id, loadSidepanels])
 
   useEffect(load, [load])
-
-  // 分区与 URL hash 双向同步：支持 /backlogs/2#topics 直达，切换分区时更新 hash
-  useEffect(() => {
-    const sync = () =>
-      setTab(readTabFromHash(focusTopicId ? 'topics' : 'info'))
-    sync()
-    window.addEventListener('hashchange', sync)
-    return () => window.removeEventListener('hashchange', sync)
-  }, [id, focusTopicId])
-
-  const changeTab = (value: string) => {
-    const next = value as BacklogDetailTab
-    setTab(next)
-    if (window.location.hash.replace(/^#/, '') !== next) {
-      window.history.replaceState(null, '', `#${next}`)
-    }
-  }
 
   // 任务树：交付任务 + 全部子任务，交给 TaskTreePanel 组装父子关系
   const taskStages = useMemo(
@@ -821,35 +796,19 @@ export function BacklogDetailPage() {
       .finally(() => setSavingOwner(false))
   }
 
-  const openRelease = () => {
-    setReleaseTitle(`提测-${backlog.code} ${backlog.title}`.slice(0, 200))
-    setReleaseSupplement('')
-    setReleaseOpen(true)
-  }
+  const openRelease = () => setReleaseOpen(true)
 
-  const submitRelease = () => {
-    if (releasing) return
-    setReleasing(true)
-    api
-      .createBacklogReleaseTicket(id, {
-        title: releaseTitle.trim() || undefined,
-        supplement: releaseSupplement.trim() || undefined,
-      })
-      .then((ticket) => {
-        setReleaseOpen(false)
-        showFeedback(
-          { kind: 'success', message: `已创建提测工单 ${ticket.ticketCode}` },
-          SUCCESS_STAY_MS,
-        )
-        loadSidepanels(id)
-      })
-      .catch((e: Error) =>
-        showFeedback(
-          { kind: 'failure', message: e.message || '提测失败' },
-          FAILURE_STAY_MS,
-        ),
-      )
-      .finally(() => setReleasing(false))
+  const handleReleaseDone = (result: BacklogReleaseResult) => {
+    showFeedback(
+      {
+        kind: 'success',
+        message: `已提测 ${result.items.length} 个迭代项：${result.items
+          .map((item) => item.ticketCode)
+          .join('、')}`,
+      },
+      SUCCESS_STAY_MS,
+    )
+    loadSidepanels(id)
   }
 
   return (
@@ -973,7 +932,7 @@ export function BacklogDetailPage() {
                   disabled={!releaseWorkflowReady}
                   title={
                     releaseWorkflowReady
-                      ? '创建提测工单'
+                      ? '发起提测（可跨迭代多选）'
                       : '「提测工单」工作流未发布，暂不能提测'
                   }
                 >
@@ -1075,7 +1034,7 @@ export function BacklogDetailPage() {
 
         <Tabs
           value={tab}
-          onValueChange={changeTab}
+          onValueChange={(value) => changeTab(value as BacklogDetailTab)}
           variant="line"
           className="flex min-h-0 flex-1 flex-col gap-0"
         >
@@ -1780,46 +1739,13 @@ export function BacklogDetailPage() {
         </DialogContent>
       </Dialog>
 
-      {/* 提测弹窗：按迭代项自动填入，人工可补充 */}
-      <Dialog open={releaseOpen} onOpenChange={setReleaseOpen}>
-        <DialogContent className="max-w-lg">
-          <DialogHeader>
-            <DialogTitle>发起提测</DialogTitle>
-          </DialogHeader>
-          <DialogBody>
-            <div className="flex flex-col gap-4">
-              <p className="text-xs text-foreground-muted">
-                将按「提测工单」工作流创建工单；迭代项上下文已自动填入工单描述（迭代、需求、负责人、预期上线、交付任务），可在此补充说明。
-              </p>
-              <label className="flex flex-col gap-1 text-sm">
-                工单标题
-                <Input
-                  value={releaseTitle}
-                  onChange={(e) => setReleaseTitle(e.target.value)}
-                  placeholder="提测-BL-0001 …"
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-sm">
-                补充说明（Markdown，可空）
-                <Textarea
-                  value={releaseSupplement}
-                  onChange={(e) => setReleaseSupplement(e.target.value)}
-                  placeholder="本轮提测范围、注意事项、回归重点…"
-                  rows={5}
-                />
-              </label>
-            </div>
-          </DialogBody>
-          <DialogFooter>
-            <DialogClose>
-              <Button variant="outline" size="sm">取消</Button>
-            </DialogClose>
-            <Button size="sm" onClick={submitRelease} disabled={releasing}>
-              {releasing ? '创建中…' : '创建提测工单'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* 提测弹窗：可跨迭代多选，每个迭代项各生成工单+提测记录，提测群汇总一条消息 */}
+      <BacklogReleaseDialog
+        backlog={backlog}
+        open={releaseOpen}
+        onOpenChange={setReleaseOpen}
+        onDone={handleReleaseDone}
+      />
 
       {/* 新建任务：已有交付任务建子任务；无交付任务时按负责人创建交付任务 */}
       <Dialog open={taskOpen} onOpenChange={setTaskOpen}>

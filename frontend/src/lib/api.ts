@@ -665,6 +665,28 @@ export interface ReleaseBranch {
   branch: string
 }
 
+/** 提测端（多选，至少 1 个） */
+export const RELEASE_ENDS = ['APP', 'H5', '后端'] as const
+
+export type ReleaseEnd = (typeof RELEASE_ENDS)[number]
+
+/** 批量提测单条结果：每个迭代项一张工单 + 一条提测记录（互相绑定） */
+export interface BacklogReleaseItemResult {
+  backlogId: number
+  code: string
+  title: string
+  projectId: number
+  ticketId: number
+  ticketCode: string
+  releaseId: number
+}
+
+/** 批量提测结果：多迭代项汇总为一条提测群消息 */
+export interface BacklogReleaseResult {
+  title: string
+  items: BacklogReleaseItemResult[]
+}
+
 /** 项目提测记录：点「提测」生成；需求状态由迭代项推导，提测不改变状态；允许重复提测追加 */
 export interface ProjectRelease {
   id: number
@@ -677,6 +699,12 @@ export interface ProjectRelease {
   branches: ReleaseBranch[] | null
   /** 测试人员姓名（至少 1 个，均为用户系统内用户） */
   testers: string[]
+  /** 提测端（APP / H5 / 后端，至少 1 个） */
+  ends: string[] | null
+  /** 关联提测工单（tickets.id，可空） */
+  ticketId: number | null
+  /** 关联提测工单编号快照（WO-xxxx，可空） */
+  ticketCode: string | null
   /** 提测人姓名（机器人提测时为机器人名称） */
   operator: string | null
   /** 发起提测的机器人（人工提测为空） */
@@ -810,6 +838,10 @@ export interface BacklogSummary {
   ownerName: string | null
   /** 需求方（实时取自原始需求 projects.owner，不落库） */
   owner: string | null
+  /** 原始需求类型（projects.type，如 活动/功能） */
+  requirementType?: string | null
+  /** 成员（含系统自动列入的负责人/需求方） */
+  members?: BacklogMember[] | null
   /** 预期上线时间（到小时，北京时间展示；可空） */
   expectedOnlineAt: string | null
   updatedAt: string
@@ -2046,12 +2078,27 @@ export type TicketStatus =
 export interface TicketWorkflowInputField {
   key: string
   label: string
-  type: 'text' | 'textarea' | 'number' | 'date' | 'select' | 'multiselect' | 'file'
+  type:
+    | 'text'
+    | 'textarea'
+    | 'number'
+    | 'date'
+    | 'select'
+    | 'multiselect'
+    | 'file'
+    /** 迭代（单选）：值为迭代 ID */
+    | 'iteration'
+    /** 迭代（多选）：值为英文逗号分隔的迭代 ID */
+    | 'iteration_multi'
+    /** 迭代项（单选）：值为迭代项 ID */
+    | 'backlog'
+    /** 迭代项（多选）：值为英文逗号分隔的迭代项 ID */
+    | 'backlog_multi'
   required: boolean
   /** 单选 / 多选的可选项 */
   options?: string[]
   placeholder?: string | null
-  /** 多选默认值为英文逗号分隔的选项 */
+  /** 多选默认值为英文逗号分隔的选项；迭代字段默认值为迭代 ID */
   defaultValue?: string | number | null
 }
 
@@ -2060,7 +2107,13 @@ export interface TicketWorkflowRun {
   ticketId: number
   nodeKey: string
   nodeName: string
-  nodeKind: 'start' | 'operation' | 'approval' | 'acceptance' | 'condition'
+  nodeKind:
+    | 'start'
+    | 'operation'
+    | 'approval'
+    | 'acceptance'
+    | 'condition'
+    | 'feishu-message'
   attempt: number
   taskTemplateId: number | null
   taskTemplateName: string | null
@@ -2069,6 +2122,8 @@ export interface TicketWorkflowRun {
   taskId: number | null
   status: string
   outcome: string | null
+  /** 运行说明（飞书群消息发送失败原因等；可空） */
+  note: string | null
   startedAt: string | null
   finishedAt: string | null
   createdAt: string
@@ -2119,13 +2174,14 @@ export interface Ticket {
   updatedAt: string
 }
 
-/** 工单工作流节点类型：起始 / 操作 / 审批 / 验收 / 判断 */
+/** 工单工作流节点类型：起始 / 操作 / 审批 / 验收 / 判断 / 飞书群消息 */
 export const WORKFLOW_NODE_KINDS = [
   'start',
   'operation',
   'approval',
   'acceptance',
   'condition',
+  'feishu-message',
 ] as const
 export type WorkflowNodeKind = (typeof WORKFLOW_NODE_KINDS)[number]
 
@@ -2174,6 +2230,12 @@ export interface WorkflowNodeDefinition {
   inputFields: TicketWorkflowInputField[] | null
   /** 仅验收节点：前序成功到达时直接验收通过 */
   autoAccept: boolean
+  /** 仅飞书群消息节点：目标群 chat_id（平台官方机器人所在群） */
+  feishuChatId?: string | null
+  /** 仅飞书群消息节点：目标群名称快照 */
+  feishuChatName?: string | null
+  /** 仅飞书群消息节点：Handlebars 消息模板 */
+  messageTemplate?: string | null
   description: string | null
 }
 
@@ -2787,18 +2849,24 @@ export const api = {
         body: JSON.stringify(input),
       },
     ),
-  /** 发起提测（创建提测工单，自动填入迭代项上下文） */
-  createBacklogReleaseTicket: (
-    id: number,
-    input: { title?: string; supplement?: string },
-  ) =>
-    request<{ ticketId: number; ticketCode: string; title: string }>(
-      `/backlogs/${id}/release-ticket`,
-      {
-        method: 'POST',
-        body: JSON.stringify(input),
-      },
-    ),
+  /**
+   * 批量提测：每个迭代项创建提测工单 + 提测记录（互相绑定），
+   * 多迭代项汇总为一条提测群消息（平台官方机器人）。
+   */
+  submitBacklogRelease: (input: {
+    items: Array<{ backlogId: number; content?: string }>
+    title?: string
+    ends: ReleaseEnd[]
+    testers: string[]
+    branches?: ReleaseBranch[]
+    urls?: string[]
+    /** 来源任务（机器人调用时可显式指定；网页提测一般不传） */
+    taskId?: number
+  }) =>
+    request<BacklogReleaseResult>('/backlogs/release', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
   /** 移动迭代项到另一个迭代 */
   moveBacklog: (id: number, iterationId: number) =>
     request<Backlog>(`/backlogs/${id}/move`, {
@@ -3680,22 +3748,6 @@ export const api = {
     request<ProjectDeliveryTaskView>(`/projects/${projectId}/delivery-task`, {
       method: 'POST',
     }),
-  /** 项目提测：创建提测记录 + 通知提测群与项目人员（testers 至少 1 人且须为用户系统内用户；需求状态不随提测变化） */
-  submitRelease: (
-    projectId: number,
-    input: {
-      content?: string
-      urls?: string[]
-      branches?: ReleaseBranch[]
-      testers: string[]
-      /** 来源任务（机器人调用时可显式指定；网页提测一般不传） */
-      taskId?: number
-    },
-  ) =>
-    request<ProjectRelease>(`/projects/${projectId}/release`, {
-      method: 'POST',
-      body: JSON.stringify(input),
-    }),
   /** 提测记录列表（倒序） */
   listReleases: (projectId: number) =>
     request<ProjectRelease[]>(`/projects/${projectId}/releases`),
@@ -4151,6 +4203,11 @@ export const api = {
     }),
   deleteTicketWorkflowDefinition: (id: number) =>
     request<void>(`/ticket-workflow-definitions/${id}`, { method: 'DELETE' }),
+  /** 平台官方机器人所在飞书群清单（「飞书群消息」节点选择目标群） */
+  listTicketWorkflowFeishuChats: () =>
+    request<Array<{ chatId: string; name: string | null }>>(
+      '/ticket-workflow-definitions/feishu-chats',
+    ),
   getTicketWorkflowDefinition: (id: number) =>
     request<TicketWorkflowDefinitionDetail>(`/ticket-workflow-definitions/${id}`),
   saveTicketWorkflowDraft: (

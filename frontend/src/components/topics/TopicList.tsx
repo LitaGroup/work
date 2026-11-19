@@ -146,6 +146,22 @@ function TopicListItem({
       .finally(() => setLoading(false))
   }
 
+  // 深链进入时话题由列表默认展开（不经过 onOpenChange），需补一次帖子加载
+  const autoLoadedRef = useRef(false)
+  const loadPostsRef = useRef<() => void>(() => {})
+  useEffect(() => {
+    loadPostsRef.current = loadPosts
+  })
+  useEffect(() => {
+    if (!open) {
+      autoLoadedRef.current = false
+      return
+    }
+    if (autoLoadedRef.current) return
+    autoLoadedRef.current = true
+    loadPostsRef.current()
+  }, [open])
+
   const removePost = async (postId: number) => {
     try {
       await api.deleteTopicPost(topic.id, postId)

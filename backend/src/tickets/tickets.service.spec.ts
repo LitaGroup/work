@@ -135,6 +135,7 @@ describe('TicketsService', () => {
       workers as never,
       {} as never,
       backlogs as never,
+      { find: jest.fn().mockResolvedValue([]) } as never,
       tasksService as never,
       dispatchService as never,
       {} as never,

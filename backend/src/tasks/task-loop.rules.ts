@@ -3,6 +3,15 @@ import { TaskStatus, TaskSubStatus } from '../common/enums';
 /** 待反馈/待验收提醒间隔：30 分钟 */
 export const TASK_REMIND_INTERVAL_MS = 30 * 60 * 1000;
 
+/**
+ * 「任务待反馈」飞书推送暂停开关（运维止血，恢复推送时改为 false）。
+ *
+ * 暂停「提问转待反馈」「机器人提问提醒」与待反馈周期提醒的飞书私聊卡片；
+ * 任务状态机、事件流、提问卡片、收件箱与 7 天超时自动收尾不受影响，
+ * 待验收提醒同样不受影响。
+ */
+export const TASK_PENDING_FEEDBACK_NOTIFY_PAUSED = true;
+
 /** 待接受卡住提醒：每任务最多提醒次数（实际发出才计数） */
 export const OFFER_STALL_REMIND_MAX_TIMES = 3;
 

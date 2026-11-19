@@ -84,6 +84,7 @@ function makeService(row: Backlog) {
     tasks as never,
     chat as never,
     {} as never,
+    {} as never,
   );
   return { service, save, tasks, chat, events, workers };
 }
@@ -593,6 +594,7 @@ function makeOwnerFixture(overrides?: {
     tasks as never,
     chat as never,
     {} as never,
+    {} as never,
   );
   return { service, save, tasks, chat, events, backlogs };
 }
@@ -854,6 +856,7 @@ describe('BacklogsService 成员更新（MCP / 网页）', () => {
       {} as never,
       {} as never,
       chatRepo as never,
+      {} as never,
       {} as never,
     );
     return { service, save, events, usersRepo, workersRepo, chatRepo };

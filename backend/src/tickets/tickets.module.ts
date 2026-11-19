@@ -16,6 +16,10 @@ import { Ticket } from './ticket.entity';
 import { TicketWorkflowRun } from './ticket-workflow-run.entity';
 import { TicketWorkflowRuntimeService } from './ticket-workflow-runtime.service';
 import { Backlog } from '../iterations/backlog.entity';
+import { Iteration } from '../iterations/iteration.entity';
+import { Project } from '../projects/project.entity';
+import { User } from '../auth/user.entity';
+import { FeishuBotModule } from '../feishu-bot/feishu-bot.module';
 import { Topic } from '../topics/topic.entity';
 import { TicketsController, TicketTaskController } from './tickets.controller';
 import { TicketsService } from './tickets.service';
@@ -31,12 +35,17 @@ import { TicketsService } from './tickets.service';
       TaskMessage,
       TaskTemplate,
       Backlog,
+      Iteration,
+      Project,
+      User,
       Worker,
       WorkflowDefinition,
       WorkflowDefinitionVersion,
       Topic,
     ]),
     forwardRef(() => TasksModule),
+    // 飞书群消息节点：平台官方机器人发送群消息
+    forwardRef(() => FeishuBotModule),
     WorkersModule,
     ModelConfigModule,
   ],

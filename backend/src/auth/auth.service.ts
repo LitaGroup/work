@@ -197,7 +197,8 @@ export class AuthService {
       existing.lastLoginAt = new Date();
       this.applyFeishuTokens(existing, tokens);
       const user = await this.usersRepo.save(existing);
-      await this.sendWelcome(user);
+      // 登录欢迎消息暂不发送（如需恢复取消注释即可）
+      // await this.sendWelcome(user);
       await this.ensureHumanWorker(user);
       await this.ensurePersonalAgent(user);
       return user;
@@ -223,7 +224,8 @@ export class AuthService {
       `新用户登录落库: ${user.name}（open_id=${info.openId}，角色=${user.role}）`,
     );
     const saved = await this.usersRepo.save(user);
-    await this.sendWelcome(saved);
+    // 登录欢迎消息暂不发送（如需恢复取消注释即可）
+    // await this.sendWelcome(saved);
     await this.ensureHumanWorker(saved);
     await this.ensurePersonalAgent(saved);
     return saved;

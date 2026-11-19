@@ -278,31 +278,38 @@ describe('AuthService（飞书登录 + 会话）', () => {
   });
 
   describe('登录欢迎消息', () => {
-    it('登录成功后经应用机器人发送英文欢迎卡片（MCP 三服务接入）', async () => {
-      const { service, feishu } = createService();
-      await service.upsertFeishuUser(FEISHU_INFO);
-      expect(feishu.sendUserCard).toHaveBeenCalledTimes(1);
-      const [openId, card] = feishu.sendUserCard.mock.calls[0] as [
-        string,
-        Record<string, unknown>,
-      ];
-      expect(openId).toBe('ou_123');
-      const json = JSON.stringify(card);
-      expect(json).toContain('Hello, this is Lita Work!!!');
-      expect(json).toContain('AI-centric project management platform');
-      expect(json).toContain('http://localhost:5173/api/mcp/work');
-      expect(json).toContain('http://localhost:5173/api/mcp/bots');
-      expect(json).toContain('http://proxy.cinta.team/mcp');
-      expect(json).toContain('LITA_WORK_TOKEN');
-      expect(json).toContain('http://localhost:5173/MCP.md');
-      expect(json).toContain('MCP Setup Guide');
-    });
+    // 登录欢迎消息暂不发送（auth.service.ts 已注释 sendWelcome 调用，如需恢复同步取消注释）
+    // it('登录成功后经应用机器人发送英文欢迎卡片（MCP 三服务接入）', async () => {
+    //   const { service, feishu } = createService();
+    //   await service.upsertFeishuUser(FEISHU_INFO);
+    //   expect(feishu.sendUserCard).toHaveBeenCalledTimes(1);
+    //   const [openId, card] = feishu.sendUserCard.mock.calls[0] as [
+    //     string,
+    //     Record<string, unknown>,
+    //   ];
+    //   expect(openId).toBe('ou_123');
+    //   const json = JSON.stringify(card);
+    //   expect(json).toContain('Hello, this is Lita Work!!!');
+    //   expect(json).toContain('AI-centric project management platform');
+    //   expect(json).toContain('http://localhost:5173/api/mcp/work');
+    //   expect(json).toContain('http://localhost:5173/api/mcp/bots');
+    //   expect(json).toContain('http://proxy.cinta.team/mcp');
+    //   expect(json).toContain('LITA_WORK_TOKEN');
+    //   expect(json).toContain('http://localhost:5173/MCP.md');
+    //   expect(json).toContain('MCP Setup Guide');
+    // });
 
-    it('重复登录同样发送', async () => {
+    // it('重复登录同样发送', async () => {
+    //   const { service, feishu } = createService();
+    //   await service.upsertFeishuUser(FEISHU_INFO);
+    //   await service.upsertFeishuUser(FEISHU_INFO);
+    //   expect(feishu.sendUserCard).toHaveBeenCalledTimes(2);
+    // });
+
+    it('登录成功后不再发送欢迎卡片', async () => {
       const { service, feishu } = createService();
       await service.upsertFeishuUser(FEISHU_INFO);
-      await service.upsertFeishuUser(FEISHU_INFO);
-      expect(feishu.sendUserCard).toHaveBeenCalledTimes(2);
+      expect(feishu.sendUserCard).not.toHaveBeenCalled();
     });
 
     it('发送失败不阻断登录落库', async () => {

@@ -10,6 +10,10 @@ import { DataSource, In, Repository } from 'typeorm';
 import { randomBytes } from 'crypto';
 import { TaskTemplate } from '../tasks/task-template.entity';
 import { Worker } from '../workers/worker.entity';
+import { Iteration } from '../iterations/iteration.entity';
+import { Backlog } from '../iterations/backlog.entity';
+import { FeishuBotConfigService } from '../feishu-bot/feishu-bot-config.service';
+import { FeishuBotClientService } from '../feishu-bot/feishu-bot-client.service';
 import { WorkflowDefinitionVersion } from './workflow-definition-version.entity';
 import { WorkflowDefinition } from './workflow-definition.entity';
 import {
@@ -18,6 +22,7 @@ import {
   type SystemTicketWorkflow,
 } from './system-workflows';
 import { normalizeWorkflowDefinition } from './workflow-validation';
+import { validateMessageTemplate } from './message-template';
 import type {
   TicketWorkflowDefinitionDetail,
   TicketWorkflowDefinitionSummary,
@@ -145,10 +150,22 @@ export class WorkflowDefinitionsService implements OnModuleInit {
     private readonly taskTemplates: Repository<TaskTemplate>,
     @InjectRepository(Worker)
     private readonly workers: Repository<Worker>,
+    @InjectRepository(Iteration)
+    private readonly iterations: Repository<Iteration>,
+    @InjectRepository(Backlog)
+    private readonly backlogs: Repository<Backlog>,
+    private readonly botConfigs: FeishuBotConfigService,
+    private readonly botClient: FeishuBotClientService,
     private readonly dataSource: DataSource,
   ) {}
 
   private readonly logger = new Logger(WorkflowDefinitionsService.name);
+
+  /** 平台官方机器人所在群清单缓存（配置页选择用；60 秒内复用，避免频繁打飞书） */
+  private feishuChatCache: {
+    expiresAt: number;
+    chats: Array<{ chatId: string; name: string | null }>;
+  } | null = null;
 
   async onModuleInit(): Promise<void> {
     for (const workflow of SYSTEM_TICKET_WORKFLOWS) {
@@ -261,6 +278,31 @@ export class WorkflowDefinitionsService implements OnModuleInit {
       draft: definition.draftDefinition,
       published: published ? this.publishedView(published) : null,
     };
+  }
+
+  /** 平台官方机器人所在群清单（配置页「飞书群消息」节点选择目标群） */
+  async listFeishuChats(): Promise<
+    Array<{ chatId: string; name: string | null }>
+  > {
+    const now = Date.now();
+    if (this.feishuChatCache && this.feishuChatCache.expiresAt > now) {
+      return this.feishuChatCache.chats;
+    }
+    const config = await this.botConfigs.loadEnabledOfficial();
+    if (!config) {
+      throw new BadRequestException(
+        '平台官方机器人未配置或未启用，无法读取飞书群清单',
+      );
+    }
+    const chats = await this.botClient.listChats(
+      config.id,
+      this.botConfigs.secretsOf(config),
+    );
+    chats.sort((a, b) =>
+      (a.name ?? a.chatId).localeCompare(b.name ?? b.chatId, 'zh-CN'),
+    );
+    this.feishuChatCache = { expiresAt: now + 60_000, chats };
+    return chats;
   }
 
   async create(
@@ -428,7 +470,7 @@ export class WorkflowDefinitionsService implements OnModuleInit {
     };
   }
 
-  /** 校验流程引用的任务定义与机器人存在；发布时额外要求机器人启用 */
+  /** 校验流程引用的任务定义、机器人、迭代与消息模板；发布时额外要求机器人启用 */
   private async assertReferences(
     definition: WorkflowDefinitionJson,
     strict: boolean,
@@ -447,7 +489,51 @@ export class WorkflowDefinitionsService implements OnModuleInit {
           .filter((id): id is number => Boolean(id)),
       ),
     ];
-    const [templates, workers] = await Promise.all([
+    const startFields =
+      definition.nodes.find((node) => node.kind === 'start')?.inputFields ?? [];
+    const iterationFieldKeys = new Set(
+      startFields
+        .filter(
+          (field) =>
+            field.type === 'iteration' || field.type === 'iteration_multi',
+        )
+        .map((field) => field.key),
+    );
+    const backlogFieldKeys = new Set(
+      startFields
+        .filter(
+          (field) => field.type === 'backlog' || field.type === 'backlog_multi',
+        )
+        .map((field) => field.key),
+    );
+    const iterationIds = new Set<number>();
+    const backlogIds = new Set<number>();
+    for (const field of startFields) {
+      if (field.defaultValue == null) continue;
+      const target = iterationFieldKeys.has(field.key)
+        ? iterationIds
+        : backlogFieldKeys.has(field.key)
+          ? backlogIds
+          : null;
+      if (!target) continue;
+      for (const id of String(field.defaultValue).split(',')) {
+        const parsed = Number(id.trim());
+        if (Number.isInteger(parsed) && parsed > 0) target.add(parsed);
+      }
+    }
+    for (const edge of definition.edges) {
+      for (const rule of edge.conditions ?? []) {
+        const target = iterationFieldKeys.has(rule.field)
+          ? iterationIds
+          : backlogFieldKeys.has(rule.field)
+            ? backlogIds
+            : null;
+        if (!target) continue;
+        const parsed = Number((rule.value ?? '').trim());
+        if (Number.isInteger(parsed) && parsed > 0) target.add(parsed);
+      }
+    }
+    const [templates, workers, iterations, backlogs] = await Promise.all([
       templateIds.length
         ? this.taskTemplates.find({
             where: { id: In(templateIds) },
@@ -466,12 +552,32 @@ export class WorkflowDefinitionsService implements OnModuleInit {
             },
           })
         : Promise.resolve([]),
+      iterationIds.size
+        ? this.iterations.find({
+            where: { id: In([...iterationIds]) },
+            select: { id: true },
+          })
+        : Promise.resolve([]),
+      backlogIds.size
+        ? this.backlogs.find({
+            where: { id: In([...backlogIds]) },
+            select: { id: true },
+          })
+        : Promise.resolve([]),
     ]);
     const templateById = new Map(
       templates.map((template) => [template.id, template]),
     );
     const workerById = new Map(workers.map((worker) => [worker.id, worker]));
+    const iterationById = new Map(iterations.map((row) => [row.id, row]));
+    const backlogById = new Map(backlogs.map((row) => [row.id, row]));
+    const missingReferenceFieldLabel = (key: string): string =>
+      startFields.find((field) => field.key === key)?.label ?? key;
     for (const node of definition.nodes) {
+      if (node.kind === 'feishu-message' && node.messageTemplate) {
+        // 模板语法错误在保存/发布阶段直接暴露，避免运行时才发送失败
+        validateMessageTemplate(node.messageTemplate);
+      }
       if (node.taskTemplateId) {
         const template = templateById.get(node.taskTemplateId);
         if (!template) {
@@ -508,5 +614,44 @@ export class WorkflowDefinitionsService implements OnModuleInit {
         );
       }
     }
+    // 迭代 / 迭代项字段（默认值与判断条件）引用必须指向真实存在的数据
+    const assertFieldReferences = (
+      fieldKeys: Set<string>,
+      referenceById: Map<number, { id: number }>,
+      label: string,
+    ): void => {
+      for (const field of startFields) {
+        if (!fieldKeys.has(field.key) || field.defaultValue == null) continue;
+        for (const id of String(field.defaultValue).split(',')) {
+          const parsed = Number(id.trim());
+          if (
+            Number.isInteger(parsed) &&
+            parsed > 0 &&
+            !referenceById.has(parsed)
+          ) {
+            throw new BadRequestException(
+              `${label}字段「${field.label}」的默认值引用的${label} #${parsed} 不存在`,
+            );
+          }
+        }
+      }
+      for (const edge of definition.edges) {
+        for (const rule of edge.conditions ?? []) {
+          if (!fieldKeys.has(rule.field)) continue;
+          const parsed = Number((rule.value ?? '').trim());
+          if (
+            Number.isInteger(parsed) &&
+            parsed > 0 &&
+            !referenceById.has(parsed)
+          ) {
+            throw new BadRequestException(
+              `判断条件字段「${missingReferenceFieldLabel(rule.field)}」引用的${label} #${parsed} 不存在`,
+            );
+          }
+        }
+      }
+    };
+    assertFieldReferences(iterationFieldKeys, iterationById, '迭代');
+    assertFieldReferences(backlogFieldKeys, backlogById, '迭代项');
   }
 }

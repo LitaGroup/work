@@ -18,11 +18,33 @@ import {
 } from '@appica/ui-react/select'
 import { Switch } from '@appica/ui-react/switch'
 import { Textarea } from '@appica/ui-react/textarea'
+import {
+  Combobox,
+  ComboboxTrigger,
+  ComboboxValue,
+  ComboboxInput,
+  ComboboxContent,
+  ComboboxEmpty,
+  ComboboxList,
+  ComboboxItem,
+  createComboboxItems,
+} from '@appica/ui-react/combobox'
 import { MermaidDiagram } from '../components/MermaidDiagram'
 import { PageBreadcrumb } from '../components/PageBreadcrumb'
 import {
+  IterationMultiPicker,
+  IterationPicker,
+} from '../components/IterationPicker'
+import {
+  BacklogMultiPicker,
+  BacklogPicker,
+} from '../components/BacklogPicker'
+import { matchesPinyinSearch } from '../lib/pinyin-search'
+import {
   api,
   WORKFLOW_END_NODE,
+  type BacklogSummary,
+  type IterationSummary,
   type TaskTemplate,
   type TicketWorkflowDefinitionDetail,
   type TicketWorkflowInputField,
@@ -43,6 +65,7 @@ const NODE_KIND_LABEL: Record<WorkflowNodeKind, string> = {
   approval: '审批节点',
   acceptance: '验收节点',
   condition: '判断节点',
+  'feishu-message': '飞书群消息节点',
 }
 
 const OUTCOME_LABEL: Record<WorkflowOutcome, string> = {
@@ -77,9 +100,32 @@ function conditionOperatorsForType(
   if (type === 'text' || type === 'textarea') {
     return ['eq', 'ne', 'contains', 'empty', 'notEmpty']
   }
-  if (type === 'select') return ['eq', 'ne', 'empty', 'notEmpty']
-  if (type === 'multiselect') return ['contains', 'empty', 'notEmpty']
+  if (type === 'select' || type === 'iteration' || type === 'backlog') {
+    return ['eq', 'ne', 'empty', 'notEmpty']
+  }
+  if (
+    type === 'multiselect' ||
+    type === 'iteration_multi' ||
+    type === 'backlog_multi'
+  ) {
+    return ['contains', 'empty', 'notEmpty']
+  }
   return []
+}
+
+/** 迭代字段：值存迭代 ID */
+function isIterationField(type: TicketWorkflowInputField['type'] | undefined): boolean {
+  return type === 'iteration' || type === 'iteration_multi'
+}
+
+/** 迭代项字段：值存迭代项 ID */
+function isBacklogField(type: TicketWorkflowInputField['type'] | undefined): boolean {
+  return type === 'backlog' || type === 'backlog_multi'
+}
+
+/** 迭代 / 迭代项引用字段：单选、多选值形态不同 */
+function isReferenceField(type: TicketWorkflowInputField['type'] | undefined): boolean {
+  return isIterationField(type) || isBacklogField(type)
 }
 
 /** 单选 / 多选共用选项配置 */
@@ -160,7 +206,24 @@ const FIELD_TYPE_LABEL: Record<TicketWorkflowInputField['type'], string> = {
   select: '单选',
   multiselect: '多选',
   file: '文件',
+  iteration: '迭代（单选）',
+  iteration_multi: '迭代（多选）',
+  backlog: '迭代项（单选）',
+  backlog_multi: '迭代项（多选）',
 }
+
+/** 消息模板可用变量（与后端 message-template.ts 保持一致） */
+const MESSAGE_TEMPLATE_VARIABLES = [
+  { expression: 'ticket.code', label: '工单编号' },
+  { expression: 'ticket.title', label: '工单标题' },
+  { expression: 'ticket.description', label: '工单描述' },
+  { expression: 'ticket.category', label: '工单分类' },
+  { expression: 'ticket.initiator', label: '发起人姓名（纯文本）' },
+  { expression: 'initiator.mention', label: '实际发起机器人（真人机器人自动 @）' },
+  { expression: 'ticket.createdAt', label: '创建时间' },
+  { expression: 'ticket.url', label: '工单链接' },
+  { expression: 'node.name', label: '当前节点名称' },
+]
 
 function formatTime(value: string | null): string {
   if (!value) return '—'
@@ -215,6 +278,7 @@ function buildFlowchart(
     if (node.kind === 'condition') return `${node.key}[/"${label}"/]`
     if (node.kind === 'approval') return `${node.key}{"${label}"}`
     if (node.kind === 'acceptance') return `${node.key}{{"${label}"}}`
+    if (node.kind === 'feishu-message') return `${node.key}[["${label}"]]`
     return `${node.key}["${label}"]`
   }
   const lines = ['flowchart TD']
@@ -244,6 +308,12 @@ export function TicketDefinitionEditPage() {
     useState<TicketWorkflowDefinitionDetail | null>(null)
   const [templates, setTemplates] = useState<TaskTemplate[]>([])
   const [workers, setWorkers] = useState<Worker[]>([])
+  const [iterations, setIterations] = useState<IterationSummary[]>([])
+  const [backlogs, setBacklogs] = useState<BacklogSummary[]>([])
+  const [feishuChats, setFeishuChats] = useState<
+    Array<{ chatId: string; name: string | null }>
+  >([])
+  const [feishuChatError, setFeishuChatError] = useState<string | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
 
   const [name, setName] = useState('')
@@ -272,8 +342,14 @@ export function TicketDefinitionEditPage() {
       api.getTicketWorkflowDefinition(Number(definitionId)),
       api.listTaskTemplates(),
       api.listWorkers(),
+      api.listIterations(),
+      api.listBacklogs(),
+      api.listTicketWorkflowFeishuChats().catch((e: Error) => {
+        if (alive) setFeishuChatError(e.message)
+        return []
+      }),
     ])
-      .then(([definition, taskTemplates, publicWorkers]) => {
+      .then(([definition, taskTemplates, publicWorkers, iterationRows, backlogRows, chats]) => {
         if (!alive) return
         setLoadError(null)
         applyDetail(definition)
@@ -287,6 +363,9 @@ export function TicketDefinitionEditPage() {
             a.name.localeCompare(b.name, 'zh-CN'),
           ),
         )
+        setIterations(iterationRows)
+        setBacklogs(backlogRows)
+        setFeishuChats(chats)
       })
       .catch((e: Error) => {
         if (alive) setLoadError(e.message)
@@ -327,6 +406,15 @@ export function TicketDefinitionEditPage() {
     }),
     [nodes],
   )
+  /** 飞书群选择（「飞书群消息」节点） */
+  const feishuChatItems = useMemo(
+    () =>
+      createComboboxItems(feishuChats, {
+        getValue: (chat) => chat.chatId,
+        getLabel: (chat) => chat.name ?? chat.chatId,
+      }),
+    [feishuChats],
+  )
   const startNode = nodes.find((node) => node.kind === 'start')
   const conditionFields = (startNode?.inputFields ?? []).filter(
     (field) => conditionOperatorsForType(field.type).length > 0,
@@ -353,6 +441,9 @@ export function TicketDefinitionEditPage() {
       responsibleWorkerId: null,
       inputFields: null,
       autoAccept: false,
+      feishuChatId: null,
+      feishuChatName: null,
+      messageTemplate: null,
       description: null,
     }
     const insertAt = acceptanceNode
@@ -640,7 +731,7 @@ export function TicketDefinitionEditPage() {
             )}
           </div>
           <p className="mt-1 text-sm text-foreground-muted">
-            审批节点由负责机器人处理；操作节点按任务定义自动分配；判断节点按起始输入条件自动分发；验收只能由工单发起机器人操作
+            审批节点由负责机器人处理；操作节点按任务定义自动分配；判断节点按起始输入条件自动分发；飞书群消息节点以官方机器人通知后自动流转；验收只能由工单发起机器人操作
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -751,7 +842,7 @@ export function TicketDefinitionEditPage() {
               <div>
                 <CardTitle>流程节点</CardTitle>
                 <CardDescription>
-                  起始节点固定存在；至少保留一个验收节点，可添加审批、操作、判断或更多验收节点
+                  起始节点固定存在；至少保留一个验收节点，可添加审批、操作、判断、飞书群消息或更多验收节点
                 </CardDescription>
               </div>
               <Button variant="outline" size="sm" onClick={addNode}>
@@ -829,6 +920,18 @@ export function TicketDefinitionEditPage() {
                                 inputFields:
                                   kind === 'start' ? node.inputFields : null,
                                 autoAccept: kind === 'acceptance' ? node.autoAccept : false,
+                                feishuChatId:
+                                  kind === 'feishu-message'
+                                    ? (node.feishuChatId ?? null)
+                                    : null,
+                                feishuChatName:
+                                  kind === 'feishu-message'
+                                    ? (node.feishuChatName ?? null)
+                                    : null,
+                                messageTemplate:
+                                  kind === 'feishu-message'
+                                    ? (node.messageTemplate ?? null)
+                                    : null,
                               })
                               const nextOptions = outcomeOptions(kind)
                               setEdges((current) =>
@@ -858,6 +961,7 @@ export function TicketDefinitionEditPage() {
                               approval: NODE_KIND_LABEL.approval,
                               acceptance: NODE_KIND_LABEL.acceptance,
                               condition: NODE_KIND_LABEL.condition,
+                              'feishu-message': NODE_KIND_LABEL['feishu-message'],
                             }}
                           >
                             <SelectTrigger>
@@ -875,6 +979,9 @@ export function TicketDefinitionEditPage() {
                               </SelectItem>
                               <SelectItem value="condition">
                                 {NODE_KIND_LABEL.condition}
+                              </SelectItem>
+                              <SelectItem value="feishu-message">
+                                {NODE_KIND_LABEL['feishu-message']}
                               </SelectItem>
                             </SelectContent>
                           </Select>
@@ -955,6 +1062,120 @@ export function TicketDefinitionEditPage() {
                         </div>
                       )}
                     </div>
+
+                    {node.kind === 'feishu-message' && (
+                      <div className="mt-4 rounded-[var(--radius-md)] bg-background-muted p-3">
+                        <div className="grid gap-3 md:grid-cols-2">
+                          <label className="flex flex-col gap-1 text-sm">
+                            目标飞书群
+                            <Combobox
+                              items={feishuChatItems}
+                              value={node.feishuChatId || null}
+                              onValueChange={(value) => {
+                                const chatId = value == null ? '' : String(value)
+                                const chat = feishuChats.find(
+                                  (item) => item.chatId === chatId,
+                                )
+                                updateNode(index, {
+                                  feishuChatId: chatId || null,
+                                  feishuChatName: chat?.name ?? null,
+                                })
+                              }}
+                              filter={(chat: {
+                                chatId: string
+                                name: string | null
+                              }, query: string) =>
+                                matchesPinyinSearch(query, [
+                                  chat.name ?? '',
+                                  chat.chatId,
+                                ])
+                              }
+                              icon={false}
+                            >
+                              <ComboboxTrigger aria-label="目标飞书群">
+                                <ComboboxValue placeholder="选择群（平台官方机器人已加入）" />
+                              </ComboboxTrigger>
+                              <ComboboxContent>
+                                <div className="px-2 pb-2 group-data-empty/combobox-content:pt-2">
+                                  <ComboboxInput
+                                    placeholder="搜索群名称"
+                                    aria-label="搜索飞书群"
+                                  />
+                                </div>
+                                <ComboboxEmpty>
+                                  {feishuChatError ?? '没有匹配的群'}
+                                </ComboboxEmpty>
+                                <ComboboxList className="max-h-64 overflow-y-auto">
+                                  {(chat: {
+                                    chatId: string
+                                    name: string | null
+                                  }) => (
+                                    <ComboboxItem
+                                      key={chat.chatId}
+                                      value={chat.chatId}
+                                    >
+                                      <span className="truncate">
+                                        {chat.name ?? chat.chatId}
+                                      </span>
+                                    </ComboboxItem>
+                                  )}
+                                </ComboboxList>
+                              </ComboboxContent>
+                            </Combobox>
+                            {feishuChatError && (
+                              <span className="text-xs text-error-foreground">
+                                {feishuChatError}
+                              </span>
+                            )}
+                            {node.feishuChatName &&
+                              node.feishuChatId &&
+                              !feishuChats.some(
+                                (chat) => chat.chatId === node.feishuChatId,
+                              ) && (
+                                <span className="text-xs text-foreground-muted">
+                                  已选群：{node.feishuChatName}（当前不在清单中，发送可能失败）
+                                </span>
+                              )}
+                          </label>
+                          <div className="flex items-end text-xs text-foreground-muted">
+                            进入节点后以平台官方机器人身份发送；发送失败只记录运行说明，不阻断流程
+                          </div>
+                        </div>
+                        <label className="mt-3 flex flex-col gap-1 text-sm">
+                          消息模板（Handlebars，Markdown）
+                          <Textarea
+                            value={node.messageTemplate ?? ''}
+                            onChange={(event) =>
+                              updateNode(index, {
+                                messageTemplate: event.target.value,
+                              })
+                            }
+                            rows={6}
+                            placeholder={
+                              '【{{ ticket.code }}】{{ ticket.title }}\n\n发起人：{{ ticket.initiator }}\n\n{{ ticket.url }}'
+                            }
+                          />
+                        </label>
+                        <p className="mt-2 text-xs text-foreground-muted">
+                          可用变量：
+                          {MESSAGE_TEMPLATE_VARIABLES.map(
+                            (item) => `{{ ${item.expression} }}`,
+                          ).join('、')}
+                          、
+                          {`{{ values.<字段标识> }}`}
+                          （起始节点输入字段）
+                        </p>
+                        <p className="mt-1 text-xs text-foreground-muted">
+                          成员与迭代循环：
+                          {`{{#each testers}}{{mention}} {{/each}}`}（测试人员）、
+                          {`{{#each developers}}{{mention}} {{/each}}`}（开发人员）、
+                          {`{{#each demanders}}{{mention}} {{/each}}`}（需求方）、
+                          {`{{#each backlogs}}{{requirementType}} {{requirementTitle}}{{/each}}`}
+                          （关联迭代项，另有 title / code / status）；成员来自起始节点选择的迭代项
+                          （选择「迭代」时按该迭代下全部迭代项），真人机器人自动转飞书 @，AI 机器人显示名称
+                        </p>
+                      </div>
+                    )}
 
                     {node.kind === 'condition' && (
                       <div className="mt-4 rounded-[var(--radius-md)] bg-background-muted px-3 py-2 text-sm text-foreground-muted">
@@ -1074,7 +1295,13 @@ export function TicketDefinitionEditPage() {
                                   />
                                 </label>
                                 <label className="flex flex-col gap-1 text-xs md:col-span-2">
-                                  {isChoiceField(field.type) ? '选项（逗号分隔）' : '默认值'}
+                                  {isChoiceField(field.type)
+                                    ? '选项（逗号分隔）'
+                                    : isReferenceField(field.type)
+                                      ? isBacklogField(field.type)
+                                        ? '默认迭代项（可空）'
+                                        : '默认迭代（可空）'
+                                      : '默认值'}
                                   {isChoiceField(field.type) ? (
                                     <OptionsInput
                                       value={field.options ?? []}
@@ -1084,6 +1311,78 @@ export function TicketDefinitionEditPage() {
                                           options,
                                         })
                                       }
+                                    />
+                                  ) : field.type === 'iteration' ? (
+                                    <IterationPicker
+                                      iterations={iterations}
+                                      size="sm"
+                                      value={
+                                        field.defaultValue == null
+                                          ? ''
+                                          : String(field.defaultValue)
+                                      }
+                                      onChange={(next) =>
+                                        updateInputField(index, fieldIndex, {
+                                          defaultValue: next || null,
+                                        })
+                                      }
+                                      placeholder="选择默认迭代（可空）"
+                                    />
+                                  ) : field.type === 'iteration_multi' ? (
+                                    <IterationMultiPicker
+                                      iterations={iterations}
+                                      size="sm"
+                                      value={
+                                        field.defaultValue == null
+                                          ? []
+                                          : String(field.defaultValue)
+                                              .split(',')
+                                              .filter(Boolean)
+                                      }
+                                      onChange={(next) =>
+                                        updateInputField(index, fieldIndex, {
+                                          defaultValue: next.length
+                                            ? next.join(',')
+                                            : null,
+                                        })
+                                      }
+                                      placeholder="选择默认迭代（可空）"
+                                    />
+                                  ) : field.type === 'backlog' ? (
+                                    <BacklogPicker
+                                      backlogs={backlogs}
+                                      size="sm"
+                                      value={
+                                        field.defaultValue == null
+                                          ? ''
+                                          : String(field.defaultValue)
+                                      }
+                                      onChange={(next) =>
+                                        updateInputField(index, fieldIndex, {
+                                          defaultValue: next || null,
+                                        })
+                                      }
+                                      placeholder="选择默认迭代项（可空）"
+                                    />
+                                  ) : field.type === 'backlog_multi' ? (
+                                    <BacklogMultiPicker
+                                      backlogs={backlogs}
+                                      size="sm"
+                                      value={
+                                        field.defaultValue == null
+                                          ? []
+                                          : String(field.defaultValue)
+                                              .split(',')
+                                              .filter(Boolean)
+                                      }
+                                      onChange={(next) =>
+                                        updateInputField(index, fieldIndex, {
+                                          defaultValue: next.length
+                                            ? next.join(',')
+                                            : null,
+                                        })
+                                      }
+                                      placeholder="选择默认迭代项（可空）"
                                     />
                                   ) : (
                                     <Input
@@ -1147,7 +1446,7 @@ export function TicketDefinitionEditPage() {
               <div>
                 <CardTitle>流转规则</CardTitle>
                 <CardDescription>
-                  起始节点只能无条件流出；审批/操作/验收按结果流转；判断节点按条件分流，并保留一条默认分支
+                  起始节点与飞书群消息节点只能无条件流出；审批/操作/验收按结果流转；判断节点按条件分流，并保留一条默认分支
                 </CardDescription>
               </div>
               <Button variant="outline" size="sm" onClick={addEdge}>
@@ -1352,7 +1651,33 @@ export function TicketDefinitionEditPage() {
                                   </SelectContent>
                                 </Select>
                                 {conditionNeedsValue(rule.operator) ? (
-                                  field && isChoiceField(field.type) ? (
+                                  field && isIterationField(field.type) ? (
+                                    <IterationPicker
+                                      iterations={iterations}
+                                      size="sm"
+                                      value={rule.value ?? ''}
+                                      onChange={(next) =>
+                                        updateConditionRule(index, ruleIndex, {
+                                          value: next || null,
+                                        })
+                                      }
+                                      placeholder="选择迭代"
+                                      clearable={false}
+                                    />
+                                  ) : field && isBacklogField(field.type) ? (
+                                    <BacklogPicker
+                                      backlogs={backlogs}
+                                      size="sm"
+                                      value={rule.value ?? ''}
+                                      onChange={(next) =>
+                                        updateConditionRule(index, ruleIndex, {
+                                          value: next || null,
+                                        })
+                                      }
+                                      placeholder="选择迭代项"
+                                      clearable={false}
+                                    />
+                                  ) : field && isChoiceField(field.type) ? (
                                     <Select
                                       value={rule.value ?? ''}
                                       onValueChange={(value) =>
@@ -1415,7 +1740,7 @@ export function TicketDefinitionEditPage() {
                           })
                         )}
                       </div>
-                    ) : source?.kind === 'start' ? (
+                    ) : source?.kind === 'start' || source?.kind === 'feishu-message' ? (
                       <label className="flex flex-col gap-1 text-xs">
                         结果
                         <div className="flex h-9 items-center rounded-[var(--radius-md)] border border-border-strong bg-background-muted px-3">

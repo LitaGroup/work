@@ -20,6 +20,7 @@ import {
   nextResumeRetryDelay,
   OFFER_STALL_REMIND_MAX_TIMES,
   TASK_INBOX_STALE_MS,
+  TASK_PENDING_FEEDBACK_NOTIFY_PAUSED,
   TASK_REMIND_TIMEOUT_DAYS,
 } from './task-loop.rules';
 import { TasksService } from './tasks.service';
@@ -1044,12 +1045,17 @@ export class TaskLoopService implements OnApplicationBootstrap {
         kind === 'feedback'
           ? `请答复任务提问或补充资料。待反馈事项：${feedbackText || '见任务详情'}`
           : '机器人已完成执行，请需求方验收产出。';
-      const result = await this.taskNotify.notifyTaskRequester(
-        task,
-        kind,
-        title,
-        description,
-      );
+      // 「任务待反馈」飞书推送已暂停（TASK_PENDING_FEEDBACK_NOTIFY_PAUSED）：
+      // 仅 kind=feedback 跳过发送，待验收提醒不受影响；提醒计时与 7 天超时自动收尾保留。
+      const result =
+        kind === 'feedback' && TASK_PENDING_FEEDBACK_NOTIFY_PAUSED
+          ? { sent: false }
+          : await this.taskNotify.notifyTaskRequester(
+              task,
+              kind,
+              title,
+              description,
+            );
       await this.tasks.update(
         { id: task.id, status: TaskStatus.WAITING, subStatus: task.subStatus },
         { remindCount: count, firstRemindedAt, lastRemindedAt: now },
@@ -1057,7 +1063,13 @@ export class TaskLoopService implements OnApplicationBootstrap {
       await this.tasksService.addEvent(
         task.id,
         '系统',
-        `第 ${count} 次提醒${result.sent ? `已发送${result.ownerName ? `给「${result.ownerName}」` : ''}` : '未发送（机器人需求方由收件箱驱动或未找到接收人）'}；首次提醒满 ${TASK_REMIND_TIMEOUT_DAYS} 天未处理将自动${kind === 'feedback' ? '标记为失败（已结束-取消）' : '按成功完成（已结束-完成）'}`,
+        `第 ${count} 次提醒${
+          result.sent
+            ? `已发送${result.ownerName ? `给「${result.ownerName}」` : ''}`
+            : kind === 'feedback' && TASK_PENDING_FEEDBACK_NOTIFY_PAUSED
+              ? '未发送（「任务待反馈」飞书推送已暂停）'
+              : '未发送（机器人需求方由收件箱驱动或未找到接收人）'
+        }；首次提醒满 ${TASK_REMIND_TIMEOUT_DAYS} 天未处理将自动${kind === 'feedback' ? '标记为失败（已结束-取消）' : '按成功完成（已结束-完成）'}`,
         null,
         { remindCount: count, firstRemindedAt: firstRemindedAt.toISOString() },
       );

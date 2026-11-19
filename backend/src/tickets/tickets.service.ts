@@ -28,13 +28,18 @@ import { TaskDocumentService } from '../tasks/task-document.service';
 import { TaskMessage } from '../tasks/task-message.entity';
 import { Worker } from '../workers/worker.entity';
 import { Backlog } from '../iterations/backlog.entity';
+import { Iteration } from '../iterations/iteration.entity';
 import type { BacklogTicketSummary } from '../iterations/iteration.types';
 import { findTicketCategory } from './ticket-categories';
+import type { WorkflowInputField } from '../workflows/workflow.types';
 import { TicketConfig } from './ticket-config.entity';
 import { TicketDocumentsService } from './ticket-documents.service';
 import { Ticket } from './ticket.entity';
 import { TicketWorkflowRun } from './ticket-workflow-run.entity';
 import {
+  backlogDisplayLabel,
+  isBacklogFieldType,
+  isIterationFieldType,
   renderInputValues,
   type TicketCreateActor,
   TicketWorkflowRuntimeService,
@@ -75,6 +80,7 @@ const NODE_KIND_LABEL: Record<string, string> = {
   approval: '审批',
   acceptance: '验收',
   condition: '判断',
+  'feishu-message': '飞书群消息',
 };
 
 const OUTCOME_LABEL: Record<string, string> = {
@@ -130,6 +136,8 @@ export class TicketsService {
     private readonly topicRows: Repository<Topic>,
     @InjectRepository(Backlog)
     private readonly backlogs: Repository<Backlog>,
+    @InjectRepository(Iteration)
+    private readonly iterations: Repository<Iteration>,
     private readonly tasksService: TasksService,
     private readonly dispatchService: TaskDispatchService,
     private readonly taskDocuments: TaskDocumentService,
@@ -841,10 +849,23 @@ export class TicketsService {
 
     const startFields =
       workflow.nodes.find((node) => node.kind === 'start')?.inputFields ?? [];
+    const iterationCodeById = await this.iterationCodeMapFor(
+      startFields,
+      workflow.inputValues ?? {},
+    );
+    const backlogLabelById = await this.backlogLabelMapFor(
+      startFields,
+      workflow.inputValues ?? {},
+    );
     lines.push(
       '## 工单输入（起始节点）',
       '',
-      renderInputValues(startFields, workflow.inputValues),
+      renderInputValues(
+        startFields,
+        workflow.inputValues,
+        iterationCodeById,
+        backlogLabelById,
+      ),
       '',
       '## 流程进度',
       '',
@@ -1085,6 +1106,66 @@ export class TicketsService {
     const ticket = await this.tickets.findOne({ where: { id } });
     if (!ticket) throw new NotFoundException(`Ticket ${id} not found`);
     return ticket;
+  }
+
+  /** 工单输入中的迭代 ID → 迭代标识（`.md` 视图展示用） */
+  private async iterationCodeMapFor(
+    fields: WorkflowInputField[] | null,
+    values: Record<string, unknown>,
+  ): Promise<Map<number, string>> {
+    const ids = new Set<number>();
+    for (const field of fields ?? []) {
+      if (!isIterationFieldType(field.type)) continue;
+      const raw = values[field.key];
+      const parts = Array.isArray(raw) ? raw : [raw];
+      for (const part of parts) {
+        const text =
+          typeof part === 'number' || typeof part === 'string'
+            ? String(part)
+            : '';
+        for (const item of text.split(',')) {
+          const id = Number(item.trim());
+          if (Number.isInteger(id) && id > 0) ids.add(id);
+        }
+      }
+    }
+    if (!ids.size) return new Map();
+    const rows = await this.iterations.find({
+      where: { id: In([...ids]) },
+      select: { id: true, code: true },
+    });
+    return new Map(rows.map((row) => [row.id, row.code]));
+  }
+
+  /** 工单输入中的迭代项 ID → 「BL-0001 标题」（`.md` 视图展示用） */
+  private async backlogLabelMapFor(
+    fields: WorkflowInputField[] | null,
+    values: Record<string, unknown>,
+  ): Promise<Map<number, string>> {
+    const ids = new Set<number>();
+    for (const field of fields ?? []) {
+      if (!isBacklogFieldType(field.type)) continue;
+      const raw = values[field.key];
+      const parts = Array.isArray(raw) ? raw : [raw];
+      for (const part of parts) {
+        const text =
+          typeof part === 'number' || typeof part === 'string'
+            ? String(part)
+            : '';
+        for (const item of text.split(',')) {
+          const id = Number(item.trim());
+          if (Number.isInteger(id) && id > 0) ids.add(id);
+        }
+      }
+    }
+    if (!ids.size) return new Map();
+    const rows = await this.backlogs.find({
+      where: { id: In([...ids]) },
+      select: { id: true, code: true, title: true },
+    });
+    return new Map(
+      rows.map((row) => [row.id, backlogDisplayLabel(row.code, row.title)]),
+    );
   }
 
   private async mustFindTask(taskId: number): Promise<Task> {

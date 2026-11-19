@@ -5,6 +5,7 @@ import { WorkflowDefinitionVersion } from './workflow-definition-version.entity'
 import { WorkflowDefinition } from './workflow-definition.entity';
 import { WorkflowDefinitionsService } from './workflow-definitions.service';
 import { RELEASE_TICKET_WORKFLOW } from './system-workflows';
+import type { WorkflowDefinitionJson } from './workflow.types';
 
 /** 工单配置服务：启动时幂等预置内置系统工作流并发布 v1 */
 describe('WorkflowDefinitionsService', () => {
@@ -21,6 +22,19 @@ describe('WorkflowDefinitionsService', () => {
   };
   const workers = {
     find: jest.fn(),
+  };
+  const iterations = {
+    find: jest.fn(),
+  };
+  const backlogs = {
+    find: jest.fn(),
+  };
+  const botConfigs = {
+    loadEnabledOfficial: jest.fn(),
+    secretsOf: jest.fn(),
+  };
+  const botClient = {
+    listChats: jest.fn(),
   };
   const manager = {
     findOne: jest.fn(),
@@ -70,6 +84,8 @@ describe('WorkflowDefinitionsService', () => {
     manager.findOne.mockResolvedValue(null);
     manager.insert.mockResolvedValue(undefined);
     manager.update.mockResolvedValue(undefined);
+    iterations.find.mockResolvedValue([]);
+    backlogs.find.mockResolvedValue([]);
     dataSource.transaction.mockImplementation(
       (callback: (m: typeof manager) => Promise<unknown>) => callback(manager),
     );
@@ -78,6 +94,10 @@ describe('WorkflowDefinitionsService', () => {
       versions as unknown as Repository<WorkflowDefinitionVersion>,
       taskTemplates as unknown as Repository<TaskTemplate>,
       workers as unknown as Repository<Worker>,
+      iterations as never,
+      backlogs as never,
+      botConfigs as never,
+      botClient as never,
       dataSource as unknown as DataSource,
     );
   });
@@ -176,5 +196,164 @@ describe('WorkflowDefinitionsService', () => {
     expect(insertBuilder.values).not.toHaveBeenCalled();
     expect(manager.insert).not.toHaveBeenCalled();
     expect(manager.update).not.toHaveBeenCalled();
+  });
+});
+
+describe('WorkflowDefinitionsService 迭代字段与飞书群消息', () => {
+  const definitions = { findOne: jest.fn(), find: jest.fn() };
+  const versions = { findOne: jest.fn() };
+  const taskTemplates = { find: jest.fn().mockResolvedValue([]) };
+  const workers = { find: jest.fn().mockResolvedValue([]) };
+  const iterations = { find: jest.fn() };
+  const backlogs = { find: jest.fn() };
+  const botConfigs = {
+    loadEnabledOfficial: jest.fn(),
+    secretsOf: jest.fn().mockReturnValue({}),
+  };
+  const botClient = { listChats: jest.fn() };
+  const dataSource = { transaction: jest.fn() };
+  let service: WorkflowDefinitionsService;
+
+  const definition = (): WorkflowDefinition =>
+    ({
+      id: 7,
+      code: 'wf-test',
+      category: '测试',
+      name: '测试流程',
+      description: null,
+      builtIn: false,
+      enabled: true,
+      draftDefinition: null,
+      latestPublishedVersion: 0,
+      latestPublishedAt: null,
+      draftUpdatedAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    }) as WorkflowDefinition;
+
+  const startNode = {
+    key: 'start',
+    name: '发起',
+    kind: 'start' as const,
+    taskTemplateId: null,
+    responsibleWorkerId: null,
+    inputFields: [
+      {
+        key: 'iteration',
+        label: '迭代',
+        type: 'iteration' as const,
+        required: false,
+        defaultValue: '12',
+      },
+    ],
+    autoAccept: false,
+    description: null,
+  };
+  const notifyNode = {
+    key: 'notify',
+    name: '通知群',
+    kind: 'feishu-message' as const,
+    taskTemplateId: null,
+    responsibleWorkerId: null,
+    inputFields: null,
+    autoAccept: false,
+    feishuChatId: 'oc_test',
+    feishuChatName: '测试群',
+    messageTemplate: '【{{ ticket.code }}】迭代 {{ values.iteration }}',
+    description: null,
+  };
+  const acceptanceNode = {
+    key: 'acceptance',
+    name: '验收',
+    kind: 'acceptance' as const,
+    taskTemplateId: null,
+    responsibleWorkerId: null,
+    inputFields: null,
+    autoAccept: false,
+    description: null,
+  };
+  const definitionJson = (): WorkflowDefinitionJson => ({
+    startNode: 'start',
+    nodes: [startNode, notifyNode, acceptanceNode],
+    edges: [
+      { from: 'start', to: 'notify', outcome: null, label: null },
+      { from: 'notify', to: 'acceptance', outcome: null, label: null },
+      { from: 'acceptance', to: '$end', outcome: 'approved', label: null },
+    ],
+  });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    definitions.findOne.mockResolvedValue(definition());
+    iterations.find.mockResolvedValue([{ id: 12 }]);
+    backlogs.find.mockResolvedValue([{ id: 21 }]);
+    service = new WorkflowDefinitionsService(
+      definitions as never,
+      versions as never,
+      taskTemplates as never,
+      workers as never,
+      iterations as never,
+      backlogs as never,
+      botConfigs as never,
+      botClient as never,
+      dataSource as never,
+    );
+  });
+
+  it('迭代字段默认值引用不存在的迭代时拒绝发布', async () => {
+    iterations.find.mockResolvedValue([]);
+    await expect(
+      service.publish(
+        7,
+        {
+          definition: definitionJson(),
+        },
+        { id: 1, name: '管理员' },
+      ),
+    ).rejects.toThrow('引用的迭代 #12 不存在');
+  });
+
+  it('迭代项字段默认值引用不存在的迭代项时拒绝发布', async () => {
+    const invalid = definitionJson();
+    const start = invalid.nodes.find((node) => node.kind === 'start');
+    if (!start) throw new Error('起始节点缺失');
+    start.inputFields = [
+      {
+        key: 'backlogs',
+        label: '发布迭代',
+        type: 'backlog_multi',
+        required: false,
+        defaultValue: '999',
+      },
+    ];
+    backlogs.find.mockResolvedValue([]);
+    await expect(
+      service.publish(7, { definition: invalid }, { id: 1, name: '管理员' }),
+    ).rejects.toThrow('迭代项字段「发布迭代」的默认值引用的迭代项 #999 不存在');
+  });
+
+  it('消息模板语法错误时拒绝发布', async () => {
+    const invalid = definitionJson();
+    const notify = invalid.nodes.find((node) => node.kind === 'feishu-message');
+    if (!notify) throw new Error('飞书群消息节点缺失');
+    notify.messageTemplate = '{{#if ticket.code}}未闭合';
+    await expect(
+      service.publish(7, { definition: invalid }, { id: 1, name: '管理员' }),
+    ).rejects.toThrow('消息模板语法错误');
+  });
+
+  it('读取平台官方机器人所在群并排序缓存', async () => {
+    botConfigs.loadEnabledOfficial.mockResolvedValue({ id: 3 });
+    botClient.listChats.mockResolvedValue([
+      { chatId: 'oc_b', name: 'B 群' },
+      { chatId: 'oc_a', name: 'A 群' },
+    ]);
+
+    const first = await service.listFeishuChats();
+    const second = await service.listFeishuChats();
+
+    expect(first.map((chat) => chat.chatId)).toEqual(['oc_a', 'oc_b']);
+    expect(second).toEqual(first);
+    expect(botClient.listChats).toHaveBeenCalledTimes(1);
   });
 });

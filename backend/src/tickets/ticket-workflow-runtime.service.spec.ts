@@ -15,7 +15,10 @@ import {
   type WorkflowInputField,
   type WorkflowNodeDefinition,
 } from '../workflows/workflow.types';
-import { TicketWorkflowRuntimeService } from './ticket-workflow-runtime.service';
+import {
+  TicketWorkflowRuntimeService,
+  renderInputValues,
+} from './ticket-workflow-runtime.service';
 import { TicketWorkflowRun } from './ticket-workflow-run.entity';
 import { Ticket } from './ticket.entity';
 
@@ -41,7 +44,7 @@ describe('TicketWorkflowRuntimeService', () => {
   let versions: { findOne: jest.Mock };
   let templates: { findOne: jest.Mock };
   let tasks: { findOne: jest.Mock; update: jest.Mock };
-  let workers: { findOne: jest.Mock };
+  let workers: { findOne: jest.Mock; find: jest.Mock };
   let tasksService: { addEvent: jest.Mock; create: jest.Mock };
   let dispatchService: {
     claimExecution: jest.Mock;
@@ -53,7 +56,14 @@ describe('TicketWorkflowRuntimeService', () => {
     syncApprovalCardResult: jest.Mock;
   };
   let llm: { generateTitle: jest.Mock };
-  let backlogs: { findOne: jest.Mock };
+  let backlogs: { findOne: jest.Mock; find: jest.Mock };
+  let iterations: { find: jest.Mock };
+  let projects: { find: jest.Mock };
+  let users: { findOne: jest.Mock };
+  let officialMessages: { send: jest.Mock };
+  let botConfigs: { loadEnabledOfficial: jest.Mock };
+  let botIdentities: { openIdFor: jest.Mock };
+  let config: { get: jest.Mock };
   let service: TicketWorkflowRuntimeService;
 
   beforeEach(() => {
@@ -83,7 +93,10 @@ describe('TicketWorkflowRuntimeService', () => {
       findOne: jest.fn(),
       update: jest.fn().mockResolvedValue({ affected: 1 }),
     };
-    workers = { findOne: jest.fn() };
+    workers = {
+      findOne: jest.fn(),
+      find: jest.fn().mockResolvedValue([]),
+    };
     tasksService = {
       addEvent: jest.fn().mockResolvedValue(undefined),
       create: jest.fn(),
@@ -98,7 +111,19 @@ describe('TicketWorkflowRuntimeService', () => {
       syncApprovalCardResult: jest.fn().mockResolvedValue(undefined),
     };
     llm = { generateTitle: jest.fn().mockResolvedValue(null) };
-    backlogs = { findOne: jest.fn().mockResolvedValue({ id: 1 }) };
+    backlogs = {
+      findOne: jest.fn().mockResolvedValue({ id: 1 }),
+      find: jest.fn().mockResolvedValue([]),
+    };
+    iterations = { find: jest.fn().mockResolvedValue([]) };
+    projects = { find: jest.fn().mockResolvedValue([]) };
+    users = { findOne: jest.fn().mockResolvedValue(null) };
+    officialMessages = {
+      send: jest.fn().mockResolvedValue({ messageIds: [] }),
+    };
+    botConfigs = { loadEnabledOfficial: jest.fn().mockResolvedValue(null) };
+    botIdentities = { openIdFor: jest.fn().mockResolvedValue(null) };
+    config = { get: jest.fn().mockReturnValue('https://project.example') };
     service = new TicketWorkflowRuntimeService(
       tickets as never,
       runs as never,
@@ -107,10 +132,17 @@ describe('TicketWorkflowRuntimeService', () => {
       templates as never,
       tasks as never,
       backlogs as never,
+      iterations as never,
+      projects as never,
+      users as never,
       workers as never,
       tasksService as never,
       dispatchService as never,
       taskNotify as never,
+      officialMessages as never,
+      botConfigs as never,
+      botIdentities as never,
+      config as never,
       llm as never,
     );
   });
@@ -939,7 +971,7 @@ describe('TicketWorkflowRuntimeService', () => {
       normalizeInputValues: (
         fields: WorkflowInputField[],
         input: Record<string, unknown>,
-      ) => Record<string, unknown>;
+      ) => Promise<Record<string, unknown>>;
     };
 
     const normalize = (
@@ -961,34 +993,88 @@ describe('TicketWorkflowRuntimeService', () => {
       ...patch,
     });
 
-    it('接受字符串数组并去重后保存为逗号拼接串', () => {
-      expect(
+    it('接受字符串数组并去重后保存为逗号拼接串', async () => {
+      await expect(
         normalize([tagsField(['A', 'B'])], { tags: ['A', 'B', 'A'] }),
-      ).toEqual({ tags: 'A,B' });
+      ).resolves.toEqual({ tags: 'A,B' });
     });
 
-    it('接受英文逗号分隔字符串并忽略空项', () => {
-      expect(normalize([tagsField(['A', 'B'])], { tags: ' A, ,B ' })).toEqual({
-        tags: 'A,B',
-      });
+    it('接受英文逗号分隔字符串并忽略空项', async () => {
+      await expect(
+        normalize([tagsField(['A', 'B'])], { tags: ' A, ,B ' }),
+      ).resolves.toEqual({ tags: 'A,B' });
     });
 
-    it('拒绝不在选项内取值', () => {
-      expect(() => normalize([tagsField(['A'])], { tags: ['A', 'C'] })).toThrow(
-        '包含无效选项「C」',
+    it('拒绝不在选项内取值', async () => {
+      await expect(
+        normalize([tagsField(['A'])], { tags: ['A', 'C'] }),
+      ).rejects.toThrow('包含无效选项「C」');
+    });
+
+    it('必填多选不能为空', async () => {
+      await expect(
+        normalize([tagsField(['A'], { required: true })], { tags: [] }),
+      ).rejects.toThrow('不能为空');
+    });
+
+    it('空值回落到默认值', async () => {
+      await expect(
+        normalize([tagsField(['A', 'B'], { defaultValue: 'A' })], {}),
+      ).resolves.toEqual({ tags: 'A' });
+    });
+
+    it('迭代字段校验迭代存在并保存 ID', async () => {
+      iterations.find.mockResolvedValue([{ id: 12 }, { id: 14 }]);
+      const field: WorkflowInputField = {
+        key: 'iteration',
+        label: '迭代',
+        type: 'iteration_multi',
+        required: false,
+        placeholder: null,
+        defaultValue: null,
+      };
+      await expect(
+        normalize([field], { iteration: [12, 14, 12] }),
+      ).resolves.toEqual({ iteration: '12,14' });
+
+      iterations.find.mockResolvedValue([{ id: 12 }]);
+      await expect(normalize([field], { iteration: '12,99' })).rejects.toThrow(
+        '引用的迭代 #99 不存在',
       );
     });
 
-    it('必填多选不能为空', () => {
-      expect(() =>
-        normalize([tagsField(['A'], { required: true })], { tags: [] }),
-      ).toThrow('不能为空');
+    it('迭代项字段校验迭代项存在并保存 ID', async () => {
+      backlogs.find.mockResolvedValue([{ id: 5 }]);
+      const field: WorkflowInputField = {
+        key: 'backlogs',
+        label: '发布迭代',
+        type: 'backlog_multi',
+        required: false,
+        placeholder: null,
+        defaultValue: null,
+      };
+      await expect(normalize([field], { backlogs: [5, 5] })).resolves.toEqual({
+        backlogs: '5',
+      });
+
+      await expect(normalize([field], { backlogs: [5, 6] })).rejects.toThrow(
+        '引用的迭代项 #6 不存在',
+      );
     });
 
-    it('空值回落到默认值', () => {
-      expect(
-        normalize([tagsField(['A', 'B'], { defaultValue: 'A' })], {}),
-      ).toEqual({ tags: 'A' });
+    it('迭代单选只允许选择一个迭代', async () => {
+      iterations.find.mockResolvedValue([{ id: 12 }, { id: 14 }]);
+      const field: WorkflowInputField = {
+        key: 'iteration',
+        label: '迭代',
+        type: 'iteration',
+        required: false,
+        placeholder: null,
+        defaultValue: null,
+      };
+      await expect(normalize([field], { iteration: '12,14' })).rejects.toThrow(
+        '只能选择一个迭代',
+      );
     });
   });
 
@@ -1180,6 +1266,435 @@ describe('TicketWorkflowRuntimeService', () => {
         service.create({ workflowDefinitionId: 5, inputValues: {} }, {}),
       ).rejects.toThrow('创建工单需要用户或机器人身份');
       expect(tickets.create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('迭代字段与飞书群消息节点', () => {
+    const workflow: WorkflowDefinitionJson = {
+      startNode: 'start',
+      nodes: [
+        {
+          key: 'start',
+          name: '发起',
+          kind: 'start',
+          taskTemplateId: null,
+          responsibleWorkerId: null,
+          inputFields: [
+            {
+              key: 'iteration',
+              label: '迭代',
+              type: 'iteration',
+              required: true,
+              defaultValue: null,
+            },
+          ],
+          autoAccept: false,
+          description: null,
+        },
+        {
+          key: 'notify',
+          name: '通知群',
+          kind: 'feishu-message',
+          taskTemplateId: null,
+          responsibleWorkerId: null,
+          inputFields: null,
+          autoAccept: false,
+          feishuChatId: 'oc_test',
+          feishuChatName: '测试群',
+          messageTemplate:
+            '【{{ ticket.code }}】{{ ticket.title }} 迭代 {{ values.iteration }}',
+          description: null,
+        },
+        {
+          key: 'acceptance',
+          name: '验收',
+          kind: 'acceptance',
+          taskTemplateId: null,
+          responsibleWorkerId: null,
+          inputFields: null,
+          autoAccept: false,
+          description: null,
+        },
+      ],
+      edges: [
+        { from: 'start', to: 'notify', outcome: null, label: null },
+        { from: 'notify', to: 'acceptance', outcome: null, label: null },
+        { from: 'acceptance', to: '$end', outcome: 'approved', label: null },
+      ],
+    };
+    const ticket = {
+      id: 5,
+      code: 'WO-0005',
+      title: '发版申请',
+      category: '发布',
+      createdByName: '张三',
+      initiatorWorkerId: 1001,
+      initiatorWorkerName: '张三-真人',
+      createdAt: new Date('2026-11-19T02:00:00Z'),
+      inputValues: { iteration: '12' },
+    } as Ticket;
+
+    it('迭代字段渲染为迭代标识', () => {
+      const rendered = renderInputValues(
+        [
+          {
+            key: 'iteration',
+            label: '迭代',
+            type: 'iteration_multi',
+            required: false,
+            defaultValue: null,
+          },
+        ],
+        { iteration: '12,13' },
+        new Map([
+          [12, '2026W47'],
+          [13, '2026W48'],
+        ]),
+      );
+      expect(rendered).toContain('2026W47、2026W48');
+      expect(rendered).not.toContain('12,13');
+    });
+
+    it('飞书群消息节点以官方机器人发送并继续流转', async () => {
+      iterations.find.mockResolvedValue([{ id: 12, code: '2026W47' }]);
+      let sent: {
+        chatId?: string;
+        title?: string;
+        content: string;
+      } | null = null;
+      officialMessages.send.mockImplementation(
+        (input: { chatId?: string; title?: string; content: string }) => {
+          sent = input;
+          return Promise.resolve({ messageIds: ['om_1'] });
+        },
+      );
+      const advance = jest
+        .spyOn(
+          service as unknown as {
+            advance: (
+              ticketId: number,
+              workflow: WorkflowDefinitionJson,
+              fromKey: string,
+              outcome: string | null,
+              depth?: number,
+            ) => Promise<void>;
+          },
+          'advance',
+        )
+        .mockResolvedValue(undefined);
+
+      await (
+        service as unknown as {
+          enterNode: (
+            ticket: Ticket,
+            workflow: WorkflowDefinitionJson,
+            nodeKey: string | null,
+            depth?: number,
+          ) => Promise<void>;
+        }
+      ).enterNode(ticket, workflow, 'notify');
+
+      expect(sent).toMatchObject({
+        chatId: 'oc_test',
+        title: 'WO-0005 通知群',
+      });
+      expect(sent?.content).toContain('2026W47');
+      expect(officialMessages.send).toHaveBeenCalledWith(
+        expect.objectContaining({ chatId: 'oc_test' }),
+        expect.objectContaining({ id: 1001, name: '张三-真人' }),
+      );
+      expect(runs.insert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          nodeKind: 'feishu-message',
+          status: '已完成',
+        }),
+      );
+      expect(advance).toHaveBeenCalledWith(5, workflow, 'notify', null, 1);
+    });
+
+    it('飞书群消息发送失败只记录说明并继续流转', async () => {
+      iterations.find.mockResolvedValue([{ id: 12, code: '2026W47' }]);
+      officialMessages.send.mockRejectedValue(new Error('飞书接口调用失败'));
+      const advance = jest
+        .spyOn(
+          service as unknown as {
+            advance: (
+              ticketId: number,
+              workflow: WorkflowDefinitionJson,
+              fromKey: string,
+              outcome: string | null,
+              depth?: number,
+            ) => Promise<void>;
+          },
+          'advance',
+        )
+        .mockResolvedValue(undefined);
+
+      await (
+        service as unknown as {
+          enterNode: (
+            ticket: Ticket,
+            workflow: WorkflowDefinitionJson,
+            nodeKey: string | null,
+            depth?: number,
+          ) => Promise<void>;
+        }
+      ).enterNode(ticket, workflow, 'notify');
+
+      expect(runs.insert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          nodeKind: 'feishu-message',
+          status: '已失败',
+          note: '飞书接口调用失败',
+        }),
+      );
+      expect(advance).toHaveBeenCalledWith(5, workflow, 'notify', null, 1);
+    });
+
+    it('按迭代项成员汇总测试/开发/需求方并解析飞书 @ 与提测人', async () => {
+      const memberTemplate = [
+        '提测人：{{ initiator.mention }}',
+        '需求方：{{#each demanders}}{{mention}} {{else}}—{{/each}}',
+        '测试人员：{{#each testers}}{{mention}} {{else}}—{{/each}}',
+        '开发人员：{{#each developers}}{{mention}} {{else}}—{{/each}}',
+        '提测内容：',
+        "{{#each backlogs}}- <font color='red'>{{requirementType}}</font> {{requirementTitle}}",
+        '{{/each}}',
+      ].join('\n');
+      const notifyNode = workflow.nodes.find(
+        (item) => item.kind === 'feishu-message',
+      );
+      if (!notifyNode) throw new Error('飞书群消息节点缺失');
+      notifyNode.messageTemplate = memberTemplate;
+      iterations.find.mockResolvedValue([{ id: 12, code: '2026W47' }]);
+      backlogs.find.mockResolvedValue([
+        {
+          id: 1,
+          code: 'BL-0001',
+          iterationId: 12,
+          projectId: 100,
+          title: 'BL-0001 需求A',
+          status: '执行',
+          members: [
+            { role: '测试', workerId: 2001, name: '测试机器人' },
+            { role: '后端', workerId: 2002, name: '开发-真人' },
+            { role: '需求方', workerId: 2003, name: '需求方-真人' },
+          ],
+        },
+        {
+          id: 2,
+          code: 'BL-0002',
+          iterationId: 12,
+          projectId: 101,
+          title: 'BL-0002 需求B',
+          status: '测试',
+          members: [{ role: '测试', workerId: 2001, name: '测试机器人' }],
+        },
+        {
+          id: 3,
+          code: 'BL-0003',
+          iterationId: 12,
+          projectId: 101,
+          title: 'BL-0003 需求C',
+          status: '等待',
+          // 历史数据兼容：成员行可能只有 userId（真人）而没有 workerId
+          members: [{ role: '测试', userId: 30, name: '历史测试' }],
+        },
+      ]);
+      projects.find.mockResolvedValue([
+        { id: 100, name: '需求A', type: '功能' },
+        { id: 101, name: '需求B', type: '技术' },
+      ]);
+      workers.find.mockResolvedValue([
+        { id: 1001, name: '发起机器人-真人', humanUserId: 7 },
+        { id: 2001, name: '测试机器人', humanUserId: null },
+        { id: 2002, name: '开发-真人', humanUserId: 8 },
+        { id: 2003, name: '需求方-真人', humanUserId: 9 },
+      ]);
+      botConfigs.loadEnabledOfficial.mockResolvedValue({ id: 3 });
+      botIdentities.openIdFor.mockImplementation(
+        (_configId: number, userId: number) =>
+          Promise.resolve(
+            userId === 7
+              ? 'ou_initiator'
+              : userId === 8
+                ? 'ou_dev'
+                : userId === 9
+                  ? 'ou_demander'
+                  : userId === 30
+                    ? 'ou_legacy'
+                    : null,
+          ),
+      );
+      let sent: { content?: string } | null = null;
+      officialMessages.send.mockImplementation(
+        (input: { chatId?: string; title?: string; content: string }) => {
+          sent = input;
+          return Promise.resolve({ messageIds: ['om_1'] });
+        },
+      );
+      jest
+        .spyOn(
+          service as unknown as {
+            advance: (
+              ticketId: number,
+              workflow: WorkflowDefinitionJson,
+              fromKey: string,
+              outcome: string | null,
+              depth?: number,
+            ) => Promise<void>;
+          },
+          'advance',
+        )
+        .mockResolvedValue(undefined);
+
+      await (
+        service as unknown as {
+          enterNode: (
+            ticket: Ticket,
+            workflow: WorkflowDefinitionJson,
+            nodeKey: string | null,
+            depth?: number,
+          ) => Promise<void>;
+        }
+      ).enterNode(ticket, workflow, 'notify');
+
+      const captured: Array<{ content?: string }> = sent ? [sent] : [];
+      const content = captured[0]?.content ?? '';
+      expect(content).toContain('提测人：<at id=ou_initiator></at>');
+      expect(content).toContain('测试人员：测试机器人 <at id=ou_legacy></at>');
+      expect(content).toContain('开发人员：<at id=ou_dev></at>');
+      expect(content).toContain('需求方：<at id=ou_demander></at>');
+      expect(content).toContain(
+        "- <font color='red'>功能</font> 需求A\n- <font color='red'>技术</font> 需求B\n- <font color='red'>技术</font> 需求B",
+      );
+    });
+
+    it('迭代项字段直接决定模板循环与成员来源', async () => {
+      const backlogTemplate = [
+        '迭代项：{{ values.backlogs }}',
+        '{{#each backlogs}}- {{code}} {{requirementTitle}}{{/each}}',
+        '测试人员：{{#each testers}}{{mention}} {{else}}—{{/each}}',
+      ].join('\n');
+      const workflowWithBacklogs: WorkflowDefinitionJson = {
+        startNode: 'start',
+        nodes: workflow.nodes.map((node) =>
+          node.kind === 'start'
+            ? {
+                ...node,
+                inputFields: [
+                  {
+                    key: 'backlogs',
+                    label: '发布迭代',
+                    type: 'backlog_multi',
+                    required: true,
+                    defaultValue: null,
+                  },
+                ],
+              }
+            : node.kind === 'feishu-message'
+              ? { ...node, messageTemplate: backlogTemplate }
+              : node,
+        ),
+        edges: workflow.edges,
+      };
+      backlogs.find.mockResolvedValue([
+        {
+          id: 5,
+          code: 'BL-0005',
+          iterationId: 12,
+          projectId: 100,
+          title: 'BL-0005 礼包改版',
+          status: '执行',
+          members: [{ role: '测试', workerId: 2001, name: '测试机器人' }],
+        },
+        {
+          id: 6,
+          code: 'BL-0006',
+          iterationId: 12,
+          projectId: 101,
+          title: 'BL-0006 排行榜',
+          status: '等待',
+          members: [],
+        },
+      ]);
+      projects.find.mockResolvedValue([
+        { id: 100, name: '礼包改版', type: '功能' },
+        { id: 101, name: '排行榜', type: '技术' },
+      ]);
+      workers.find.mockResolvedValue([
+        { id: 1001, name: '发起机器人-真人', humanUserId: 7 },
+        { id: 2001, name: '测试机器人', humanUserId: null },
+      ]);
+      let sent: { content?: string } | null = null;
+      officialMessages.send.mockImplementation((input: { content: string }) => {
+        sent = input;
+        return Promise.resolve({ messageIds: ['om_1'] });
+      });
+      jest
+        .spyOn(
+          service as unknown as {
+            advance: (
+              ticketId: number,
+              workflow: WorkflowDefinitionJson,
+              fromKey: string,
+              outcome: string | null,
+              depth?: number,
+            ) => Promise<void>;
+          },
+          'advance',
+        )
+        .mockResolvedValue(undefined);
+
+      await (
+        service as unknown as {
+          enterNode: (
+            ticket: Ticket,
+            workflow: WorkflowDefinitionJson,
+            nodeKey: string | null,
+            depth?: number,
+          ) => Promise<void>;
+        }
+      ).enterNode(
+        { ...ticket, inputValues: { backlogs: '5,6' } },
+        workflowWithBacklogs,
+        'notify',
+      );
+
+      const captured: Array<{ content?: string }> = sent ? [sent] : [];
+      const content = captured[0]?.content ?? '';
+      expect(content).toContain('迭代项：BL-0005 礼包改版、BL-0006 排行榜');
+      expect(content).toContain('- BL-0005 礼包改版');
+      expect(content).toContain('- BL-0006 排行榜');
+      expect(content).toContain('测试人员：测试机器人');
+    });
+
+    it('迭代字段引用不存在的迭代时拒绝创建工单', async () => {
+      definitions.findOne.mockResolvedValue({
+        id: 5,
+        name: '发布申请',
+        category: '发布',
+        enabled: true,
+        latestPublishedVersion: 1,
+      });
+      versions.findOne.mockResolvedValue({
+        id: 9,
+        version: 1,
+        definition: workflow,
+      });
+      workers.findOne.mockResolvedValue({
+        id: 1001,
+        name: '张三-真人',
+        enabled: true,
+      });
+      iterations.find.mockResolvedValue([]);
+
+      await expect(
+        service.create(
+          { workflowDefinitionId: 5, inputValues: { iteration: '12' } },
+          { user: { id: 2, name: '张三' } as User },
+        ),
+      ).rejects.toThrow('引用的迭代 #12 不存在');
     });
   });
 });

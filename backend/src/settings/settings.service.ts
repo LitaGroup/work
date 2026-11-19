@@ -173,7 +173,7 @@ export class SettingsService {
       `- 前端地址：${s.appUrl}`,
       `- 接口地址：${s.apiUrl}`,
       `- Lita API：${s.litaApiHost}`,
-      `- 飞书群消息：${s.feishuGroupSendPaused ? '已暂停（FEISHU_GROUP_SEND_PAUSED，重启生效）' : '正常'}`,
+      `- 飞书群消息：${s.feishuGroupSendPaused ? '已暂停（FEISHU_GROUP_SEND_PAUSED，含话题 @ 提及，重启生效）' : '正常'}`,
       `- 飞书官方机器人（tenant token 与登录统一凭据）：${
         s.feishuOfficialBot.configured
           ? `\`${s.feishuOfficialBot.appId ?? '-'}\`（${

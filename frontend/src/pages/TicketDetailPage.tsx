@@ -24,6 +24,8 @@ import {
   type TicketWorkflowRun,
   type TicketWorkflowView,
   type WorkbenchTask,
+  type IterationSummary,
+  type BacklogSummary,
 } from '../lib/api'
 import { MarkdownViewer } from '../components/MarkdownViewer'
 import { PageBreadcrumb } from '../components/PageBreadcrumb'
@@ -39,6 +41,7 @@ import { TaskMarkdownDocumentView } from '../components/task-detail/TaskMarkdown
 import { TaskTreePanel } from '../components/task-detail/TaskTreePanel'
 import { TaskDetailView } from './TaskPackageDetailPage'
 import { visibleEventSource } from '../lib/event-source'
+import { useTabHash } from '../lib/use-tab-hash'
 import { useAuth } from '../context/AuthContext'
 import type { ApprovalActionKind } from '../components/task-detail/ApprovalActions'
 
@@ -63,6 +66,9 @@ const TICKET_CONTENT_TABS: Array<[TicketContentTab, string]> = [
   ['topics', '话题'],
 ]
 
+/** 页签与 URL hash 一一对应（如 /tickets/12#topics） */
+const TICKET_CONTENT_TAB_KEYS = TICKET_CONTENT_TABS.map(([key]) => key)
+
 const OUTCOME_LABEL: Record<string, string> = {
   succeeded: '执行成功',
   failed: '执行失败',
@@ -78,6 +84,43 @@ function latestTaskId(workflow: TicketWorkflowView | null | undefined) {
     if (!latest || run.id > latest.id) latest = run
   }
   return latest?.taskId ?? null
+}
+
+/** 迭代项人员：需求方 → 负责人 → 成员（按姓名去重，需求方可能多人） */
+function backlogPeople(backlog: BacklogSummary): string[] {
+  const names: string[] = []
+  const push = (value: string | null | undefined) => {
+    for (const name of (value ?? '').split(/[、,，;；]+/)) {
+      const trimmed = name.trim()
+      if (trimmed && !names.includes(trimmed)) names.push(trimmed)
+    }
+  }
+  push(backlog.owner)
+  push(backlog.ownerName)
+  for (const member of backlog.members ?? []) push(member.name)
+  return names
+}
+
+/** 工单输入里的迭代项行：「类型」标题（链接到迭代项）+ 需求方 / 负责人 / 成员 */
+function BacklogInputLine({ backlog }: { backlog: BacklogSummary }) {
+  return (
+    <li className="flex flex-wrap items-center gap-x-2 gap-y-1">
+      <Badge
+        variant="outline"
+        size="sm"
+        render={<Link to={`/backlogs/${backlog.id}`} />}
+      >
+        {`「${backlog.requirementType ?? '需求'}」${
+          backlog.title || backlog.code
+        }`}
+      </Badge>
+      {backlogPeople(backlog).map((name) => (
+        <span key={name} className="font-mono text-xs text-foreground-muted">
+          @{name}
+        </span>
+      ))}
+    </li>
+  )
 }
 
 /** 工单详情：新模型展示工作流进度与节点任务；历史工单继续复用任务详情 */
@@ -100,10 +143,14 @@ export function TicketDetailPage() {
         ? 'reject'
         : null
   const [ticket, setTicket] = useState<Ticket | null>(null)
+  const [iterations, setIterations] = useState<IterationSummary[]>([])
+  const [backlogs, setBacklogs] = useState<BacklogSummary[]>([])
   const [error, setError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [acting, setActing] = useState<'accept' | 'reject' | null>(null)
-  const [contentTab, setContentTab] = useState<TicketContentTab>(
+  // 内容分区 tab 与 URL hash 同步（支持 /tickets/12#topics 直达）
+  const [contentTab, setContentTab] = useTabHash(
+    TICKET_CONTENT_TAB_KEYS,
     focusTopicId ? 'topics' : 'current',
   )
   const [collaborationOpen, setCollaborationOpen] = useState(false)
@@ -136,6 +183,52 @@ export function TicketDetailPage() {
     const timer = window.setInterval(() => void load(), 10_000)
     return () => window.clearInterval(timer)
   }, [load])
+
+  /** 起始节点含迭代 / 迭代项字段时加载清单，用于把 ID 展示为标识 */
+  const hasIterationField = useMemo(() => {
+    const fields =
+      ticket?.workflow?.nodes.find((node) => node.kind === 'start')
+        ?.inputFields ?? []
+    return fields.some(
+      (field) => field.type === 'iteration' || field.type === 'iteration_multi',
+    )
+  }, [ticket])
+  const hasBacklogField = useMemo(() => {
+    const fields =
+      ticket?.workflow?.nodes.find((node) => node.kind === 'start')
+        ?.inputFields ?? []
+    return fields.some(
+      (field) => field.type === 'backlog' || field.type === 'backlog_multi',
+    )
+  }, [ticket])
+
+  useEffect(() => {
+    if (!hasIterationField && !hasBacklogField) return
+    let alive = true
+    if (hasIterationField) {
+      api
+        .listIterations()
+        .then((rows) => {
+          if (alive) setIterations(rows)
+        })
+        .catch(() => {
+          // 加载失败时回退展示原始 ID
+        })
+    }
+    if (hasBacklogField) {
+      api
+        .listBacklogs()
+        .then((rows) => {
+          if (alive) setBacklogs(rows)
+        })
+        .catch(() => {
+          // 加载失败时回退展示原始 ID
+        })
+    }
+    return () => {
+      alive = false
+    }
+  }, [hasIterationField, hasBacklogField])
 
   /** 审批弹窗按链接参数打开后清理查询参数，避免刷新或切换节点时重复弹出 */
   const clearApprovalParam = useCallback(() => {
@@ -412,6 +505,12 @@ export function TicketDetailPage() {
     const startFields =
       workflow.nodes.find((node) => node.kind === 'start')?.inputFields ?? []
     const fieldByKey = new Map(startFields.map((field) => [field.key, field]))
+    const iterationCodeById = new Map(
+      iterations.map((iteration) => [String(iteration.id), iteration.code]),
+    )
+    const backlogById = new Map(
+      backlogs.map((backlog) => [String(backlog.id), backlog]),
+    )
     const nodeTaskCode = currentNodeChat?.task.code
     /** 仅操作/审批节点创建节点任务；起始/验收节点只保留「我的AI」 */
     const currentNode = workflow.nodes.find(
@@ -624,6 +723,17 @@ export function TicketDetailPage() {
                             <span className="ml-1 text-xs text-foreground-muted">
                               第 {run.attempt} 次
                             </span>
+                            {run.note && (
+                              <p
+                                className={`mt-1 text-xs ${
+                                  run.status === '已失败'
+                                    ? 'text-error-foreground'
+                                    : 'text-foreground-muted'
+                                }`}
+                              >
+                                {run.note}
+                              </p>
+                            )}
                           </TableCell>
                           <TableCell>
                             {run.agentName ??
@@ -704,13 +814,30 @@ export function TicketDetailPage() {
                         )}
                         {inputEntries.map(([key, value]) => {
                           const field = fieldByKey.get(key)
-                          const text =
+                          const iterationField =
+                            field?.type === 'iteration' ||
+                            field?.type === 'iteration_multi'
+                          const backlogField =
+                            field?.type === 'backlog' ||
+                            field?.type === 'backlog_multi'
+                          const optionsField =
+                            field?.type === 'select' ||
                             field?.type === 'multiselect'
-                              ? (Array.isArray(value)
-                                  ? value.map((item) => String(item))
-                                  : String(value ?? '').split(','))
-                                  .filter(Boolean)
-                                  .join('、')
+                          const values = (
+                            Array.isArray(value)
+                              ? value.map((item) => String(item))
+                              : String(value ?? '').split(',')
+                          ).filter(Boolean)
+                          const text = iterationField
+                            ? values
+                                .map(
+                                  (iterationId) =>
+                                    iterationCodeById.get(iterationId) ??
+                                    `#${iterationId}`,
+                                )
+                                .join('、')
+                            : optionsField
+                              ? values.join('、')
                               : typeof value === 'object' && value !== null
                                 ? JSON.stringify(value)
                                 : String(value ?? '')
@@ -722,7 +849,49 @@ export function TicketDetailPage() {
                               <p className="text-xs text-foreground-muted">
                                 {field?.label ?? key}
                               </p>
-                              {field?.type === 'textarea' ? (
+                              {backlogField ? (
+                                values.length === 0 ? (
+                                  <p className="mt-1 text-foreground-muted">—</p>
+                                ) : (
+                                  <ul className="mt-1 flex flex-col gap-1.5">
+                                    {values.map((backlogId) => {
+                                      const backlog =
+                                        backlogById.get(backlogId)
+                                      return backlog ? (
+                                        <BacklogInputLine
+                                          key={backlogId}
+                                          backlog={backlog}
+                                        />
+                                      ) : (
+                                        <li key={backlogId}>
+                                          <Badge variant="outline" size="sm">
+                                            #{backlogId}
+                                          </Badge>
+                                        </li>
+                                      )
+                                    })}
+                                  </ul>
+                                )
+                              ) : optionsField || iterationField ? (
+                                values.length === 0 ? (
+                                  <p className="mt-1 text-foreground-muted">—</p>
+                                ) : (
+                                  <div className="mt-1 flex flex-wrap gap-1.5">
+                                    {values.map((item) => (
+                                      <Badge
+                                        key={item}
+                                        variant="outline"
+                                        size="sm"
+                                      >
+                                        {iterationField
+                                          ? iterationCodeById.get(item) ??
+                                            `#${item}`
+                                          : item}
+                                      </Badge>
+                                    ))}
+                                  </div>
+                                )
+                              ) : field?.type === 'textarea' ? (
                                 text ? (
                                   <MarkdownViewer text={text} className="mt-1" />
                                 ) : (
@@ -830,6 +999,8 @@ export function TicketDetailPage() {
       ]}
       title={`${ticket.code} ${ticket.title}`}
       collapsibleCollaboration
+      syncTabHash
+      focusTopicId={focusTopicId}
       extraBadges={
         <>
           <Badge variant="soft" size="sm">

@@ -21,6 +21,7 @@ import {
 } from '../common/enums';
 import { BacklogsService } from './backlogs.service';
 import { IterationsService } from './iterations.service';
+import type { SubmitReleaseBatchInput } from '../releases/releases.service';
 import {
   BacklogMemberInput,
   CreateBacklogItemInput,
@@ -112,11 +113,36 @@ class CreateBacklogTaskDto implements CreateBacklogTaskInput {
   agentId?: number | null;
 }
 
-class CreateBacklogReleaseTicketDto {
-  /** 工单标题（缺省自动生成「提测-{code} {标题}」） */
+/** 批量提测入参：迭代项 + 整单共用的测试人员/提测端/分支/地址 */
+class SubmitBacklogReleaseDto implements SubmitReleaseBatchInput {
+  /** 迭代项与各自的提测内容（至少 1 个） */
+  items: Array<{ backlogId: number; content?: string }>;
+  /** 提测标题（多迭代项缺省「{首个迭代项标题} 等x个迭代」） */
   title?: string;
-  /** 补充说明（Markdown，可空；拼入工单描述） */
-  supplement?: string;
+  /** 提测端（APP / H5 / 后端，至少 1 个） */
+  ends: string[];
+  /** 测试人员（至少 1 人） */
+  testers: string[];
+  /** 代码分支（整单共用，可空） */
+  branches?: { repo: string; branch: string }[];
+  /** 访问地址（整单共用，可空） */
+  urls?: string[];
+  /** 来源任务（机器人可选） */
+  taskId?: number;
+}
+
+/** 提测身份：网页真人优先；`.md` 端点允许机器人令牌（AI 机器人名称记为提测人） */
+function releaseActor(req: AuthedRequest): IterationActor {
+  if (req.user) return iterationActor(req);
+  if (req.worker) {
+    return {
+      userId: null,
+      userName: req.worker.name,
+      isAdmin: false,
+      workerId: req.worker.id,
+    };
+  }
+  throw new ForbiddenException('提测需要真人登录或机器人令牌');
 }
 
 @Controller('iterations')
@@ -314,17 +340,31 @@ export class BacklogsController {
     return this.backlogsService.createTask(id, dto ?? {}, iterationActor(req));
   }
 
-  /** 发起提测（创建提测工单，自动填入迭代项上下文）；成员或管理员 */
-  @Post(':id/release-ticket')
-  createReleaseTicket(
-    @Param('id', ParseIntPipe) id: number,
-    @Body() dto: CreateBacklogReleaseTicketDto,
+  /**
+   * 批量提测：每个迭代项创建提测工单 + 提测记录（互相绑定），
+   * 多个迭代项汇总为一条提测群消息（平台官方机器人）；成员或管理员。
+   */
+  @Post('release')
+  submitRelease(
+    @Body() dto: SubmitBacklogReleaseDto,
     @Req() req: AuthedRequest,
-  ) {
-    return this.backlogsService.createReleaseTicket(
-      id,
+  ): ReturnType<BacklogsService['submitRelease']> {
+    return this.backlogsService.submitRelease(dto ?? {}, releaseActor(req), {
+      user: req.user,
+      worker: req.worker,
+    });
+  }
+
+  /** AI 用：批量提测并返回 Markdown 结果（text/markdown） */
+  @Post('release.md')
+  @Header('Content-Type', 'text/markdown; charset=utf-8')
+  submitReleaseMarkdown(
+    @Body() dto: SubmitBacklogReleaseDto,
+    @Req() req: AuthedRequest,
+  ): Promise<string> {
+    return this.backlogsService.submitReleaseMarkdown(
       dto ?? {},
-      iterationActor(req),
+      releaseActor(req),
       { user: req.user, worker: req.worker },
     );
   }

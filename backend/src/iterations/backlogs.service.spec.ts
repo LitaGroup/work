@@ -25,6 +25,7 @@ function buildService() {
     {} as never,
     {} as never,
     {} as never,
+    {} as never,
   );
   return { service, backlogs, iterations, projects };
 }
@@ -39,6 +40,7 @@ const backlogRow = {
   ownerWorkerId: 1001,
   ownerName: '张三',
   expectedOnlineAt: null,
+  members: null,
   updatedAt: new Date('2026-11-16T10:00:00Z'),
 };
 
@@ -62,6 +64,7 @@ describe('BacklogsService.list', () => {
       {
         ...backlogRow,
         owner: null,
+        requirementType: '需求',
         iteration: { id: 3, code: '2026W47', type: IterationType.T7 },
       },
     ]);
@@ -73,13 +76,18 @@ describe('BacklogsService.list', () => {
     iterations.find.mockResolvedValue([
       { id: 3, code: '2026W47', type: IterationType.T7 },
     ]);
-    projects.find.mockResolvedValue([{ id: 7, owner: '张三、李四' }]);
+    projects.find.mockResolvedValue([
+      { id: 7, owner: '张三、李四', type: '活动' },
+    ]);
 
     const rows = await service.list({ projectId: 7 });
 
     expect(rows[0].owner).toBe('张三、李四');
+    expect(rows[0].requirementType).toBe('活动');
     expect(projects.find).toHaveBeenCalledWith(
-      expect.objectContaining({ select: { id: true, owner: true } }),
+      expect.objectContaining({
+        select: { id: true, owner: true, type: true },
+      }),
     );
   });
 
@@ -111,15 +119,22 @@ describe('BacklogsService.list', () => {
 function buildTaskService() {
   const backlogs = {
     findOne: jest.fn(),
+    find: jest.fn().mockResolvedValue([]),
     save: jest.fn((row: unknown) => Promise.resolve(row)),
   };
   const iterations = {
     findOne: jest
       .fn()
       .mockResolvedValue({ id: 3, code: '2026W47', type: IterationType.T7 }),
+    find: jest
+      .fn()
+      .mockResolvedValue([{ id: 3, code: '2026W47', type: IterationType.T7 }]),
   };
   const projects = {
     findOne: jest.fn().mockResolvedValue({ id: 7, name: '礼包改版' }),
+    find: jest
+      .fn()
+      .mockResolvedValue([{ id: 7, name: '礼包改版', owner: '王五' }]),
   };
   const workers = {
     findOne: jest.fn((args?: { where?: { humanUserId?: number } }) =>
@@ -144,6 +159,21 @@ function buildTaskService() {
       .fn()
       .mockResolvedValue({ state: 'active', chatId: 'oc_1', lastError: null }),
   };
+  const releases = {
+    prepareBatch: jest.fn().mockResolvedValue({
+      ends: ['APP'],
+      testers: ['赵六'],
+      branches: [],
+      urls: [],
+      operator: '李四',
+      workerId: null,
+      sourceTaskId: null,
+    }),
+    createRecord: jest.fn().mockResolvedValue({ id: 21 }),
+    notifyBatch: jest.fn().mockResolvedValue(true),
+  };
+  const tickets = { create: jest.fn() };
+  const workflowDefs = { findOne: jest.fn() };
   const service = new BacklogsService(
     backlogs as never,
     iterations as never,
@@ -156,12 +186,13 @@ function buildTaskService() {
     taskRows as never,
     {} as never,
     {} as never,
+    workflowDefs as never,
     {} as never,
-    {} as never,
-    {} as never,
+    tickets as never,
     tasks as never,
     chat as never,
     {} as never,
+    releases as never,
   );
   return {
     service,
@@ -170,8 +201,12 @@ function buildTaskService() {
     tasks,
     taskRows,
     iterations,
+    projects,
     backlogEvents,
     chat,
+    releases,
+    tickets,
+    workflowDefs,
   };
 }
 
@@ -315,6 +350,237 @@ describe('BacklogsService.createTask', () => {
       '仅管理员可创建迭代项交付任务',
     );
     expect(tasks.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('BacklogsService.submitRelease', () => {
+  it('单个迭代项：建工单 + 提测记录（绑定），汇总一条提测群消息', async () => {
+    const {
+      service,
+      backlogs,
+      workflowDefs,
+      tickets,
+      releases,
+      backlogEvents,
+    } = buildTaskService();
+    backlogs.find.mockResolvedValue([
+      {
+        ...backlogRow,
+        members: [
+          { role: '前端', workerId: 21, name: '李四' },
+          { role: '产品', workerId: 22, name: '产品A' },
+        ],
+      },
+    ]);
+    workflowDefs.findOne.mockResolvedValue({
+      id: 9,
+      enabled: true,
+      latestPublishedVersion: 1,
+    });
+    tickets.create.mockResolvedValue({
+      id: 11,
+      code: 'WO-0011',
+      title: '提测-BL-12 礼包改版',
+      createdAt: new Date('2026-11-17T10:56:35Z'),
+    });
+    releases.createRecord.mockResolvedValue({ id: 21 });
+
+    const result = await service.submitRelease(
+      {
+        items: [{ backlogId: 12, content: '回归登录' }],
+        ends: ['APP', 'H5'],
+        testers: ['赵六'],
+        branches: [{ repo: 'LitaGroup/lita-h5', branch: 'test' }],
+        urls: ['https://staging.example.com'],
+      },
+      memberActor,
+      { user: { id: 21, name: '李四' } as never, worker: null },
+    );
+
+    expect(result).toEqual({
+      title: '提测-BL-12 礼包改版',
+      items: [
+        {
+          backlogId: 12,
+          code: 'BL-12',
+          title: '礼包改版',
+          projectId: 7,
+          ticketId: 11,
+          ticketCode: 'WO-0011',
+          releaseId: 21,
+        },
+      ],
+    });
+    expect(tickets.create).toHaveBeenCalledWith(
+      expect.objectContaining({ backlogId: 12, workflowDefinitionId: 9 }),
+      expect.anything(),
+    );
+    expect(releases.createRecord).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: 7,
+        content: '回归登录',
+        ends: ['APP'],
+        testers: ['赵六'],
+        ticketId: 11,
+        ticketCode: 'WO-0011',
+      }),
+    );
+    const [[ticketInput]] = tickets.create.mock.calls as [
+      [
+        {
+          inputValues: {
+            description: string;
+            content: string;
+            testEnds: string[];
+            branch: string;
+            url: string;
+            backlogs: number[];
+          };
+        },
+      ],
+    ];
+    expect(ticketInput.inputValues.description).toContain(
+      '原始需求：礼包改版（#7）',
+    );
+    expect(ticketInput.inputValues.description).toContain('提测端：APP');
+    expect(ticketInput.inputValues.description).toContain('回归登录');
+    // 提测群消息模板直接引用的字段随工单带入
+    expect(ticketInput.inputValues.content).toBe('回归登录');
+    expect(ticketInput.inputValues.testEnds).toEqual(['APP']);
+    expect(ticketInput.inputValues.branch).toBe('');
+    expect(ticketInput.inputValues.url).toBe('');
+    expect(ticketInput.inputValues.backlogs).toEqual([12]);
+    expect(backlogEvents.save).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'release-ticket' }),
+    );
+
+    await new Promise((r) => setTimeout(r, 0)); // 放行 fire-and-forget 通知
+    expect(releases.notifyBatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: '提测-BL-12 礼包改版',
+        ends: ['APP'],
+        operator: '李四',
+        testers: ['赵六'],
+        demanders: ['王五'],
+        developers: ['李四'],
+        items: [{ code: 'BL-12', title: '礼包改版', content: '回归登录' }],
+      }),
+    );
+  });
+
+  it('多个迭代项：标题自动「等x个迭代」，每个迭代项各建工单与提测记录', async () => {
+    const {
+      service,
+      backlogs,
+      projects,
+      iterations,
+      tickets,
+      releases,
+      workflowDefs,
+    } = buildTaskService();
+    workflowDefs.findOne.mockResolvedValue({
+      id: 9,
+      enabled: true,
+      latestPublishedVersion: 1,
+    });
+    backlogs.find.mockResolvedValue([
+      { ...backlogRow, members: [] },
+      {
+        ...backlogRow,
+        id: 13,
+        code: 'BL-13',
+        projectId: 8,
+        iterationId: 4,
+        title: '签到优化',
+        members: [],
+      },
+    ]);
+    projects.find.mockResolvedValue([
+      { id: 7, name: '礼包改版', owner: '王五' },
+      { id: 8, name: '签到优化', owner: '赵六' },
+    ]);
+    iterations.find.mockResolvedValue([
+      { id: 3, code: '2026W47', type: IterationType.T7 },
+      { id: 4, code: '2026W48', type: IterationType.T7 },
+    ]);
+    tickets.create
+      .mockResolvedValueOnce({ id: 11, code: 'WO-0011', title: 't1' })
+      .mockResolvedValueOnce({ id: 12, code: 'WO-0012', title: 't2' });
+    releases.createRecord
+      .mockResolvedValueOnce({ id: 21 })
+      .mockResolvedValueOnce({ id: 22 });
+
+    const result = await service.submitRelease(
+      {
+        items: [
+          { backlogId: 12, content: '回归登录' },
+          { backlogId: 13, content: '回归签到' },
+        ],
+        ends: ['APP'],
+        testers: ['钱七'],
+      },
+      adminActor,
+      { user: { id: 1, name: '管理员' } as never, worker: null },
+    );
+
+    expect(result.title).toBe('礼包改版 等2个迭代');
+    expect(result.items.map((item) => item.ticketCode)).toEqual([
+      'WO-0011',
+      'WO-0012',
+    ]);
+    expect(tickets.create).toHaveBeenCalledTimes(2);
+    expect(releases.createRecord).toHaveBeenCalledTimes(2);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(releases.notifyBatch).toHaveBeenCalledTimes(1);
+    expect(releases.notifyBatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: '礼包改版 等2个迭代',
+        demanders: ['王五', '赵六'],
+        items: [
+          { code: 'BL-12', title: '礼包改版', content: '回归登录' },
+          { code: 'BL-13', title: '签到优化', content: '回归签到' },
+        ],
+      }),
+    );
+  });
+
+  it('非成员非管理员不可发起提测', async () => {
+    const { service, backlogs, tickets } = buildTaskService();
+    backlogs.find.mockResolvedValue([{ ...backlogRow, members: [] }]);
+
+    await expect(
+      service.submitRelease(
+        { items: [{ backlogId: 12 }], ends: ['APP'], testers: ['赵六'] },
+        memberActor,
+        { user: { id: 21, name: '李四' } as never, worker: null },
+      ),
+    ).rejects.toThrow('仅所选迭代项成员或管理员可发起提测');
+    expect(tickets.create).not.toHaveBeenCalled();
+  });
+
+  it('未选择迭代项 → 400', async () => {
+    const { service } = buildTaskService();
+    await expect(
+      service.submitRelease(
+        { items: [], ends: ['APP'], testers: ['赵六'] },
+        adminActor,
+        { user: { id: 1, name: '管理员' } as never, worker: null },
+      ),
+    ).rejects.toThrow('至少选择一个迭代项');
+  });
+
+  it('已取消的迭代项不可提测', async () => {
+    const { service, backlogs } = buildTaskService();
+    backlogs.find.mockResolvedValue([
+      { ...backlogRow, status: BacklogStatus.CANCELED },
+    ]);
+    await expect(
+      service.submitRelease(
+        { items: [{ backlogId: 12 }], ends: ['APP'], testers: ['赵六'] },
+        adminActor,
+        { user: { id: 1, name: '管理员' } as never, worker: null },
+      ),
+    ).rejects.toThrow('已取消的迭代项不可提测');
   });
 });
 

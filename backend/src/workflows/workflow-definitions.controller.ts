@@ -47,6 +47,15 @@ export class WorkflowDefinitionsController {
     return this.definitions.findAll();
   }
 
+  /**
+   * 平台官方机器人所在飞书群清单（「飞书群消息」节点选择目标群）。
+   * 必须声明在 `:id` 路由之前，避免被参数路由捕获。
+   */
+  @Get('feishu-chats')
+  listFeishuChats() {
+    return this.definitions.listFeishuChats();
+  }
+
   @Post()
   create(@Body() dto: CreateWorkflowDefinitionDto, @Req() req: AuthedRequest) {
     return this.definitions.create(dto, resolveActor(req));

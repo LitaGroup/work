@@ -9,7 +9,6 @@ import {
 import type { BacklogMemberRole } from '../../common/enums';
 import { BacklogsService } from '../../iterations/backlogs.service';
 import type { IterationActor } from '../../iterations/iteration.types';
-import { TicketsService } from '../../tickets/tickets.service';
 import { executeTool, markdownResult } from './work-tools.util';
 import type { McpWorkPrincipal, WorkToolRegistrar } from './work-tools.types';
 
@@ -32,10 +31,7 @@ const BacklogStatusArg = z
 export class WorkIterationTools implements WorkToolRegistrar {
   private readonly logger = new Logger(WorkIterationTools.name);
 
-  constructor(
-    private readonly backlogs: BacklogsService,
-    private readonly tickets: TicketsService,
-  ) {}
+  constructor(private readonly backlogs: BacklogsService) {}
 
   register(server: McpServer, principal: McpWorkPrincipal): void {
     server.registerTool(
@@ -251,38 +247,74 @@ export class WorkIterationTools implements WorkToolRegistrar {
     );
 
     server.registerTool(
-      'create_backlog_release_ticket',
+      'create_backlog_release',
       {
-        title: '发起迭代项提测',
+        title: '发起迭代项批量提测',
         description:
-          '按系统「提测工单」工作流创建提测工单，自动填入迭代项上下文，可补充说明；仅成员或管理员。返回工单详情 Markdown。',
+          '批量提测：每个迭代项按系统「提测工单」工作流创建工单并生成提测记录（互相绑定），多个迭代项汇总为一条提测群消息（平台官方机器人）。提测端至少 1 个（APP / H5 / 后端），测试人员至少 1 人且须为用户系统内用户；仅所选迭代项成员或管理员。',
         inputSchema: {
-          backlogId: z.number().int().positive().describe('迭代项 ID'),
+          items: z
+            .array(
+              z.object({
+                backlogId: z.number().int().positive().describe('迭代项 ID'),
+                content: z
+                  .string()
+                  .optional()
+                  .describe('该迭代项的提测内容（Markdown）'),
+              }),
+            )
+            .min(1)
+            .describe('提测的迭代项（可跨迭代，至少 1 个）'),
           title: z
             .string()
             .optional()
-            .describe('工单标题（缺省自动生成「提测-{code} {标题}」）'),
-          supplement: z
-            .string()
+            .describe(
+              '提测标题（多个迭代项缺省「{首个迭代项标题} 等x个迭代」）',
+            ),
+          ends: z
+            .array(z.enum(['APP', 'H5', '后端']))
+            .min(1)
+            .describe('提测端（至少 1 个）'),
+          testers: z
+            .array(z.string())
+            .min(1)
+            .describe('测试人员姓名（须为用户系统内用户）'),
+          branches: z
+            .array(z.object({ repo: z.string(), branch: z.string() }))
             .optional()
-            .describe('补充说明（Markdown，拼入工单描述）'),
+            .describe('代码分支（整单共用，可空）'),
+          urls: z
+            .array(z.string())
+            .optional()
+            .describe('访问地址（整单共用，可空）'),
+          taskId: z
+            .number()
+            .int()
+            .positive()
+            .optional()
+            .describe('来源任务（机器人可选，缺省取当前执行中的任务）'),
         },
       },
       async (args) =>
         executeTool(
           this.logger,
-          'create_backlog_release_ticket',
+          'create_backlog_release',
           principal,
           async () => {
-            const ticket = await this.backlogs.createReleaseTicket(
-              args.backlogId,
-              { title: args.title, supplement: args.supplement },
+            const markdown = await this.backlogs.submitReleaseMarkdown(
+              {
+                items: args.items,
+                title: args.title,
+                ends: args.ends,
+                testers: args.testers,
+                branches: args.branches,
+                urls: args.urls,
+                taskId: args.taskId,
+              },
               iterationActorOf(principal),
               { user: principal.user, worker: principal.worker },
             );
-            return markdownResult(
-              await this.tickets.ticketMarkdown(ticket.ticketId),
-            );
+            return markdownResult(markdown);
           },
         ),
     );

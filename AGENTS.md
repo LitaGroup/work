@@ -128,6 +128,7 @@
 - 详情页只允许两种布局：`DetailPageLayout` 传入 `ai` 时为“内容区 + 右侧 AI 区”，不传时为单栏。不得新增永久业务侧栏或第三栏；窄屏 AI 收为浮动入口和全屏抽屉。
 - 普通详情页与任务/工单详情的右侧 AI 区统一使用 `DetailAgentPanel`（仅「我的助理」个人 AI 会话）；任务对话与提问答复在正文「会话」分区完成，不再占用 AI 区。业务属性、历史、筛选、产物等全部留在内容区。
 - 「我的 AI」会话按详情对象隔离：任务使用 `agent:task:{id}`，其他详情使用 `agent:page:{type}:{hash}`。新增详情上下文类型时同步扩展后端白名单；`contextReadUrl` 只允许站内只读 `/api/` 地址。
+- 使用 tab 布局的详情页（需求 / 迭代项 / 任务 / 工单等），分区与 URL hash 一一对应：`/{主体}/{id}#{分区}` 直达（如 `/tickets/12#topics`、`/backlogs/2#docs`），切换分区用 `history.replaceState` 同步地址栏且不产生历史记录，并监听 `hashchange` 回写分区；统一复用 `frontend/src/lib/use-tab-hash.ts` 的 `useTabHash`，不得各页手写。新增 tab 详情页时同步补充分区 key；工作台等嵌入场景传 `enabled=false` 关闭同步。`DocumentDetailPage` 的标题锚点 hash 属另一用途，不适用本约定。
 - `MarkdownEditor` 是非受控组件，切换内容用 `key` 重挂载；保存前通过 ref 的 `getMarkdown()` 取实时内容。Mermaid 统一走 `src/lib/mermaid.ts`，解析失败回退源码与错误。
 - 任务定义、机器人相关的前端搜索和联想必须复用 `matchesPinyinSearch`；后端关键词过滤复用 `backend/src/common/pinyin-search.ts`。支持原文、无声调全拼和首字母，不要退回纯子串匹配。
 - 前端 SSE 统一使用 `visibleEventSource`，不要直接 `new EventSource`。标签页隐藏时断开、恢复可见时重连；服务端重连后先推快照，不能依赖定时轮询补齐状态。
@@ -140,7 +141,7 @@
 
 - 顶级分区「业务」（原「项目」）左侧只保留五个业务栏目：需求 `/requirements`、迭代 `/iterations`、灵感 `/ideas`、调研（占位，未启用）、反馈 `/feedback`；落地页 `/` 重定向到需求池，概览页仅保留 `/overview` 路由不挂导航。
 - 需求池复用项目实体（飞书需求池单向同步 + 平台内新建）。需求详情页为 `/requirements/{id}`，内容分区与 URL hash 一一对应：**详情**（`#details`，信息属性、需求摘要、需求描述三个纵向块，均可编辑）、**资料**（`#docs`，文档清单与新建/导入/按来源同步）、**讨论**（`#topics`，`TopicsPanel` 与迭代项「话题」一致并显示计数）、**操作**（`#ops`，仅删除需求）。迭代入口在标题右上角：存在未取消迭代项时「进入迭代」直达 `/backlogs/{id}`，否则管理员可见「移入迭代」（`TransferToIterationButton`）；需求状态为推导值，不可手动修改。不再展示任务/资源/节点/检查/测试/缺陷等研发过程数据，也没有「安排项目机器人」「提测」按钮（分别走 `POST /api/projects/{id}/delivery-task` 与迭代项详情提测）。需求不维护成员，只保留需求方（`projects.owner`），人员/成员统一由迭代项 `backlogs.members` 维护。
-- 需求 Agent 视图：`GET /api/requirements/{id}.md`（基本信息 + 对应迭代 + 文档资料 + 少量需求级 AI 操作）、`GET /api/requirements/search.md`、`POST /api/requirements/{id}/update.md`；旧 `/api/projects/{id}.md`、`/api/projects/search.md`、`/api/projects/{id}/update.md` 视图已下线。JSON 接口仍为 `/api/projects*`，提测操作端点仍为 `POST /api/projects/{id}/release[.md]`。`/projects` 重定向到 `/requirements`，项目子路由（`/projects/:id/...`）保留；`/projects/:id` 详情路由已移除。
+- 需求 Agent 视图：`GET /api/requirements/{id}.md`（基本信息 + 对应迭代 + 文档资料 + 少量需求级 AI 操作）、`GET /api/requirements/search.md`、`POST /api/requirements/{id}/update.md`；旧 `/api/projects/{id}.md`、`/api/projects/search.md`、`/api/projects/{id}/update.md` 视图已下线。JSON 接口仍为 `/api/projects*`，提测入口为 `POST /api/backlogs/release[.md]`（旧的 `POST /api/projects/{id}/release[.md]` 已下线）。`/projects` 重定向到 `/requirements`，项目子路由（`/projects/:id/...`）保留；`/projects/:id` 详情路由已移除。
 - 研发类操作指南（脚本运行、节点、代码分支、提测、缺陷）随系统任务定义 ID=7 / ID=9 的说明下发给执行机器人（`system-task-templates.ts` 的 `DEVELOPMENT_OPERATION_GUIDE`），不再放在需求详情 .md 中。
 - 迭代独立建模（`iterations` + `backlogs`，见「迭代与 Backlog」）；`projects.iterationCycle` 仅保留为飞书同步的参考字段与需求筛选值（界面统一展示为「计划周(w)」，字段名不变），旧分组接口 `GET /api/projects/iterations` 不再作为迭代页数据源。
 - 原全局工具页（缺陷/用例/检查/导出/定时任务/文档/资源/节点/提交/APP/设置）不再提供导航入口：管理分区「研发工具」仅保留「系统设置」（`/settings`），其余工具页路由与访问权限不变，仅可经深链或其它页面跳转进入；`TOOL_PATHS` 仍用于把这些路径的导航归属判定为管理分区。
@@ -158,7 +159,7 @@
 - **负责人/需求方自动列入成员**（系统维护、不可手动移除、不授予成员操作权限）：负责人取 `ownerWorkerId`（真人或 AI 机器人），需求方取 `projects.owner` 姓名对应的真人机器人；自动行角色为 负责人/需求方，按 `(role, workerId)` 去重，同一人不同角色显示多次。需求方在需求编辑/飞书同步变更时联动刷新该需求全部未取消迭代项的成员行。
 - 成员权限按机器人判定：仅「手动成员」授予操作权限（管理员与负责人既有规则不变），自动列入的负责人/需求方只展示不入权限。
 - 迭代项飞书沟通群按成员机器人进群：真人机器人 → 绑定真人 open_id，AI 机器人 → 绑定的飞书应用 app_id；成员新增（含负责人/需求方自动列入）自动拉入已有群，**只加不减**（移除成员不踢人），`feishu_bot_backlog_chats.memberWorkerIds` 跟踪已入群机器人。升级前的存量群没有成员跟踪，不能假定成员已在群内：迁移 `1801300000000` 重置既有跟踪，对账（非终态）按当前全部成员实际补拉（飞书拉人接口忽略已入群成员，重复调用安全），上线后一轮对账补齐历史遗漏成员；对账校验群存活，飞书侧已解散（`chat_status=dissolved`）或 chat_id 失效（错误码 232006）时把绑定置为 `destroyed` 并记录原因，详情页重新提供「飞书建群」。
-- `lita-work` MCP 的迭代项工具与网页写能力等价（权限复用成员/负责人/管理员规则）：`get_backlog`、`update_backlog_members`、`update_backlog`（预期上线时间、负责人改派）、`change_backlog_status`（状态 + 备注）、`move_backlog`（移动迭代）、`create_backlog_task`（子任务/交付任务）、`create_backlog_release_ticket`（发起提测工单）。
+- `lita-work` MCP 的迭代项工具与网页写能力等价（权限复用成员/负责人/管理员规则）：`get_backlog`、`update_backlog_members`、`update_backlog`（预期上线时间、负责人改派）、`change_backlog_status`（状态 + 备注）、`move_backlog`（移动迭代）、`create_backlog_task`（子任务/交付任务）、`create_backlog_release`（批量提测：迭代项 + 提测端/测试人员/分支/地址）。
 - 状态：等待 → 执行 → 测试 → 发布 → 完成，允许回退与取消；由成员或管理员手动流转，记录操作人与各阶段时间；取消时联动取消未结束的交付任务。状态与任务/需求状态解耦。推进走弹窗（选状态 + 备注可空，备注写入事件流），网页两处（迭代表格/迭代项详情）共用同一弹窗组件，不再使用行内下拉。
 - 迭代项有自己的标题：转入后异步用 `title-naming` 场景生成 `「BL-{id}」+ 模型标题`（乐观条件更新，失败保留需求名快照兜底，不覆盖人工修改）；迭代表格展示迭代项标题并链接 `/backlogs/{id}`（需求仅保留 `#id` 提示）。
 - 属性：预期上线时间到小时（`backlogs.expectedOnlineAt`，timestamptz，北京时间展示），成员或管理员可改（`PATCH /api/backlogs/{id}`）。
@@ -166,7 +167,7 @@
 - 文档：原始需求下的全部文档默认自动关联到迭代项（转入时迁移 + 文档新增/导入/同步后自动绑定，取消的迭代项不绑定）；文档 Tab 不提供手动关联/取消关联，可继续新建、导入；删除文档时应用层清理关联，文档本体始终归属需求。
 - 事件流：`backlog_events` append-only 记录 created / status（from/to/remark）/ moved / owner（负责人 from/to/taskId）/ release-ticket（提测工单）等，`GET /api/backlogs/{id}/events`；`.md` 视图附文档清单与最近事件。
 - 任务与工单面板：`GET /api/backlogs/{id}/tasks` 返回交付任务为根的任务树（含全部子任务）与相关工单（`tickets.backlogId` ∪ `tickets.taskId` ∪ `ticket_workflow_runs.taskId` 去重）。
-- 提测：迭代项详情页「提测」按钮按系统工作流 `release-ticket`（代码预置，启动与迁移均按规范定义幂等发布 v1）创建工单，描述自动填入迭代项上下文、人工可补充；`tickets.backlogId` 记录关联，创建成功写 `release-ticket` 事件。提测不与迭代项/迭代状态绑定，同一迭代项可多次发起提测工单（完成、取消后仍可提测）。
+- 提测：迭代项详情页「提测」按钮按系统工作流 `release-ticket`（代码预置，启动与迁移均按规范定义幂等发布 v1）创建工单，**支持一次选择多个迭代项（不限制同一迭代）**；每个迭代项各创建一张提测工单 + 一条提测记录（`project_releases.ticketId/ticketCode` 互相绑定），多个迭代项汇总为一条提测群消息（平台官方机器人，`RELEASE_FEISHU_CHAT_ID` 配置群）。描述自动填入迭代项上下文、提测端/测试人员/分支/地址与本迭代项提测内容、人工可补充；`tickets.backlogId` 记录关联，创建成功写 `release-ticket` 事件。提测不与迭代项/迭代状态绑定，同一迭代项可多次发起提测工单（完成、取消后仍可提测）。
 - 新建任务：迭代项详情页「任务」分区「新建任务」按 `POST /api/backlogs/{id}/tasks` 处理——已有交付任务时创建其子任务（成员或管理员），任务描述自动附带迭代上下文（迭代 ID、标识、描述与 `.md` 链接）和任务上下文（父任务与已有兄弟任务的 ID、标题）；无交付任务时按所选执行机器人创建交付任务（系统任务定义「迭代-Backlog交付」）并登记迭代项负责人（仅管理员，等价于指定负责人）。
 - 迭代项详情页为标准双栏布局 + 右下角可收起 AI 面板（⌥A）；内容分区为 信息 / 文档 / 任务（任务树 + 相关工单）/ 缺陷（按 `backlogId` 关联，支持页内新建）/ 话题 / 事件 / 成员，分区与 URL hash 一一对应（如 `/backlogs/{id}#topics` 直达话题，切换分区同步 `history.replaceState`）；「话题」页签显示话题数（其他页面的 `TopicsPanel` 卡片标题也显示计数）。AI 页面上下文类型 `backlog`（`agent:page:backlog:*`），`contextReadUrl` 固定 `/api/backlogs/{id}.md`。
 - 迭代项成员在详情页「成员」分区内直接维护（管理员）：角色 + 成员（真人或 AI 机器人）选择后「添加」、每个手动成员「移除」，均立即调用 `PATCH /api/backlogs/{id}/members`（整体替换手动成员，负责人/需求方自动维持）。
@@ -199,7 +200,7 @@
 - 导出脚本仅扫描项目脚本目录的 `exports/` 子目录，运行追加 `--output-dir={exportWebroot()}/{exportId}/{runId}`；产物通过 `[files]` 行协议登记并下载。
 - 脚本通过逐行 JSON 协议上报进度，原始输出持续累积；检查/测试运行状态为 `running/success/fail/error`。运行历史与产物清理由应用层负责。
 - 定时任务运行已登记检查，支持 5 段或 6 段 cron；停用的任务不参与计划调度，但可手动触发。`nextRunAt` 和运行统计实时计算，不重复落库。
-- **检查运行不再发送任何飞书群 webhook 通知**（开始/终态卡片已随群 webhook 下线移除），运行结果只在平台内展示；提测恢复「提测群 webhook + 测试人员与迭代项成员私聊卡片」双重通知。
+- **检查运行不再发送任何飞书群 webhook 通知**（开始/终态卡片已随群 webhook 下线移除），运行结果只在平台内展示；提测由平台官方机器人推送提测群消息（不再发送测试人员/成员私聊卡片）。
 
 ### 知识库
 
@@ -233,6 +234,7 @@
 - 创建后为待分配，平台按任务定义分配，机器人接受后才执行。拒绝仅发生在待接受阶段并需要理由与分发建议。
 - 执行中提问进入待反馈，答复进入待继续；答复提问允许任务需求方或管理员操作（管理员不改写需求方归属，事件记录实际操作人），恢复时按并行上限占用 AI 机器人，达到上限则排队。
 - 待接受卡住（分配后 10 分钟仍未接受/拒绝）只提醒机器人本身：AI 机器人经会话重发带提醒的邀约，真人机器人发飞书工作台卡片；每任务最多 3 次（计数落库，重新分配时清零），北京时间 22:00~08:00 静默顺延，发送失败不计数；不通知负责人，也不自动接受或改派。
+- 待反馈与待验收每 30 分钟提醒需求方，自首次提醒起满 7 天仍未处理则自动收尾（待反馈→已结束-取消 / 待验收→已结束-完成）。「任务待反馈」的飞书推送当前由 `task-loop.rules.ts` 的 `TASK_PENDING_FEEDBACK_NOTIFY_PAUSED` 统一暂停（提问转待反馈、机器人提问提醒与周期提醒），状态机、事件流与计时不受影响，恢复推送改回 `false`。
 - 执行器会话最终成功后进入待申请验收并释放机器人；**会话成功不等于任务完成**，执行方必须显式申请验收。
 - 需求方可验收通过、验收不通过或判失败。验收不通过始终退回原执行机器人；历史上“多次不通过转负责人”的升级逻辑已移除。
 - 曾申请过验收的任务，返工后需求方仍可直接验收；从未申请验收的任务不可直接完成。
@@ -267,8 +269,9 @@
 - 新工单一律携带 `workflowDefinitionId` 创建；旧 category + 默认调度任务定义模型已退役，不要恢复。
 - 发起身份：网页会话与真人机器人令牌以「用户绑定的真人机器人」为发起机器人（`createdById` 记真人）；AI 机器人可经 `lita-work` MCP `create_ticket` 以自身为发起机器人，此时 `createdById` 为空、`createdByName` 记机器人名称快照，节点任务需求方为该机器人。验收节点仅发起机器人（或其绑定用户）可操作，MCP 提供 `accept_ticket`。
 - `workflow_definitions` 保存草稿与最新发布版本号，`workflow_definition_versions` 保存不可变发布版本。创建工单固定使用最新发布版本，实例继续引用创建时版本。
-- 起始节点输入字段类型为 `text/textarea/number/date/select/multiselect/file`；单选与多选共用英文逗号分隔的选项配置，多选值以英文逗号拼接存入 `tickets.inputValues`，MCP 可传字符串数组；判断节点对多选只支持 `contains`（选中项包含某选项，按整项精确匹配）/`empty`/`notEmpty`。
-- 节点类型为 `start/operation/approval/acceptance/condition`；流转结果为 `succeeded/failed/approved/rejected`，`$end` 是流程结束虚拟节点。判断节点不创建任务，进入后按起始输入字段的结构化条件（字段 + 运算符 + 值，多条件「且」）自动分流，必须恰好配置一条默认（无条件）分支兜底，分支可直接流转到 `$end`；单次流转链对连续判断节点有循环上限保护。
+- 起始节点输入字段类型为 `text/textarea/number/date/select/multiselect/file/iteration/iteration_multi/backlog/backlog_multi`；单选与多选共用英文逗号分隔的选项配置，多选值以英文逗号拼接存入 `tickets.inputValues`，MCP 可传字符串数组；迭代字段（`iteration` 单选 / `iteration_multi` 多选）的值为迭代 ID、迭代项字段（`backlog` / `backlog_multi`）的值为迭代项 ID（多选英文逗号拼接，MCP 可传 ID 数组），创建时校验记录存在，展示与模板渲染统一转为迭代标识 / `BL` 标题；判断节点对多选、迭代多选与迭代项多选只支持 `contains`（选中项包含某选项 / 某迭代 / 某迭代项，按整项精确匹配）/`empty`/`notEmpty`，单选比较值为对应 ID。
+- 节点类型为 `start/operation/approval/acceptance/condition/feishu-message`；流转结果为 `succeeded/failed/approved/rejected`，`$end` 是流程结束虚拟节点。判断节点不创建任务，进入后按起始输入字段的结构化条件（字段 + 运算符 + 值，多条件「且」）自动分流，必须恰好配置一条默认（无条件）分支兜底，分支可直接流转到 `$end`；单次流转链对连续判断节点有循环上限保护。
+- 飞书群消息节点（`feishu-message`）不创建任务：进入后以平台官方机器人身份向配置的飞书群（`feishuChatId/feishuChatName`，来自 `GET /api/ticket-workflow-definitions/feishu-chats` 读取的官方机器人所在群）发送 Handlebars 模板（`messageTemplate`，上下文 `ticket.*` / `initiator.mention` / `testers`、`developers`、`demanders` / `backlogs` / `values.<字段key>` / `node.name`，`noEscape` 不做 HTML 转义）渲染的 Markdown 卡片，然后按唯一一条无条件流转推进（可直接流转到 `$end`）。`initiator` 取实际发起工单的机器人；`testers/developers/demanders` 按起始节点「迭代项」字段选中的迭代项（「迭代」字段则展开为各迭代下全部未取消迭代项，`tickets.backlogId` 仅该迭代项）成员角色汇总去重（测试 / 前端·后端·客户端 / 需求方，兼容历史 `members.userId` 写法）；`backlogs` 为这些迭代项（含 `requirementType/requirementTitle`）；真人机器人经绑定真人的官方应用 open_id 生成 `<at id=ou_xxx></at>`，AI 机器人与解析失败回退姓名。发送失败（飞书异常、`FEISHU_GROUP_SEND_PAUSED`、模板渲染失败）只把节点运行记为「已失败」并写入 `ticket_workflow_runs.note`，**不阻断工单**；发送成功写官方消息审计表。
 - 审批节点创建的节点任务类型为「审批」：创建后自动接受并停留执行中，真人审批人可通过/驳回（通过意见可选、驳回意见必填），也可在飞书审批卡片内一键通过；飞书审批卡片携带工单链接、关键正文与通过/驳回/查看按钮，由平台官方机器人发送。
 - 发布前校验引用存在、机器人启用且非个人 AGENT、节点可达并保证路径可结束。审批驳回直接结束记为工单失败；验收驳回不可直接结束。
 - 工单交付文档独立存 `ticket_documents`，链接与正文两种形态互斥。只有来源任务当前执行机器人可写；交付文档不自动改变任务状态。
@@ -292,8 +295,10 @@
 
 ### 提测与缺陷
 
-- 提测是创建 `ProjectRelease` 记录；重复提测追加记录，不改变需求状态（状态由迭代项/创建时间推导）。提测状态：待冒烟 / 进行中 / 已通过 / 未通过。
-- 提测至少需要一名用户系统内测试人员；提测群 webhook（`RELEASE_WEBHOOK_URL` 可覆盖，缺省内置正式提测群「H5 Release | 提测上线」）与测试人员 + 该需求全部未取消迭代项成员的机器人私聊卡片异步发送，失败不阻断提测；webhook 与机器人 API 的卡片信封格式不同，不得混用，群推送受 `FEISHU_GROUP_SEND_PAUSED` 约束。
+- 提测是创建 `ProjectRelease` 记录；重复提测追加记录，不改变需求状态（状态由迭代项/创建时间推导）。提测状态：待冒烟 / 进行中 / 已通过 / 未通过。提测记录含提测端（`ends`，APP / H5 / 后端至少 1 个）与关联提测工单（`ticketId/ticketCode`）。
+- 提测入口为 `POST /api/backlogs/release[.md]`（批量，迭代项维度）；旧的 `POST /api/projects/{id}/release[.md]` 与 `RELEASE_WEBHOOK_URL` 群机器人 webhook 已下线，不要再恢复。
+- 提测群消息统一以**平台官方机器人**身份发送（Markdown 卡片，`RELEASE_FEISHU_CHAT_ID` 指定群 chat_id），@ 提测人/需求方/测试人员/开发人员（官方应用 open_id 优先，回退登录 openId，解析不到降级姓名）；受 `FEISHU_GROUP_SEND_PAUSED` 约束，发送失败只告警不影响提测。
+- 提测至少需要一名用户系统内测试人员，提测端至少 1 个；提测群消息（平台官方机器人，`RELEASE_FEISHU_CHAT_ID`）异步发送，失败不阻断提测；不再发送测试人员/成员私聊卡片。
 - 真实提测状态变化后记录判定人/时间；切回待冒烟或进行中时清空。机器人提测的状态变化写入其收件箱，由 LOOP 在空闲时通知。
 - 缺陷状态：开放 / 修复 / 关闭；优先级：高 / 中 / 低；端：前端 / 后端 / APP端 / 未知。缺陷仅平台内维护，不回写飞书。
 - 缺陷可经 `defects.backlogId` 关联迭代项（应用层软引用，可为空）：迭代项详情页「缺陷」Tab 按 `backlogId` 过滤并支持页内新建（`GET /api/defects?backlogId=`、`POST /api/defects` 带 `backlogId`）；迭代项场景新建默认不关联项目级提测（`releaseId=null`），不触发自动派单；历史缺陷保持为空，仍按项目维度可查。
@@ -340,7 +345,7 @@
 ### 飞书与 Appium
 
 - **飞书文档/项目同步永远单向：飞书 → 平台**。`FeishuService` 只读，任何回写飞书都是需求变更。
-- 运维止血开关 `FEISHU_GROUP_SEND_PAUSED=true`（重启生效，`feishu-bot-group-pause.ts`）：暂停所有发往飞书群的外发——任务群/迭代沟通群/项目沟通群的建群、拉人、状态卡片与文本，话题落群与回帖，外部群策略回复，反馈群回执，以及指定 `chat_id` 的平台名义发送（显式调用直接拒绝并记审计失败）；私聊、飞书登录、文档/需求池同步与群解散不受影响。暂停期间对账跳过且不消耗建群重试次数，恢复后自动补建并补发一次最新状态；状态在设置页与 `/api/settings.md` 展示。
+- 运维止血开关 `FEISHU_GROUP_SEND_PAUSED=true`（重启生效，`feishu-bot-group-pause.ts`）：暂停所有发往飞书群的外发——任务群/迭代沟通群/项目沟通群的建群、拉人、状态卡片与文本，话题落群与回帖，话题 @ 提及派生的飞书私聊卡片与机器人自动答复（收件箱保留、恢复后继续），外部群策略回复，反馈群回执，以及指定 `chat_id` 的平台名义发送（显式调用直接拒绝并记审计失败）；其它私聊、飞书登录、文档/需求池同步与群解散不受影响。暂停期间对账跳过且不消耗建群重试次数，恢复后自动补建并补发一次最新状态；状态在设置页与 `/api/settings.md` 展示。
 - 飞书 tenant token 与 OAuth 网页登录统一使用数据库配置的「平台官方机器人」应用凭据（`feishu_bot_configs` kind=official，Secret 加密落库），后端定时刷新；不再使用 LITA_USER_TOKEN、环境变量 `FEISHU_APP_ID`/`FEISHU_APP_SECRET` 或静态 token。官方机器人应用需在飞书后台开启「网页授权登录」并具备文档/多维表格/通讯录/消息权限。
 - 文档导入统一转 Markdown；判重包含 doc/sheet/table 子标识。wiki 先解析实际资源，sheet/table/view 等查询参数需透传。
 - bitable `records/search` 必须传 `automatic_fields: true`，增量同步依赖记录级修改时间。

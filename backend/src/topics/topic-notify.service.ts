@@ -13,6 +13,7 @@ import { WorkerRuntime } from '../common/enums';
 import { FeishuBotClientService } from '../feishu-bot/feishu-bot-client.service';
 import { FeishuBotConfigService } from '../feishu-bot/feishu-bot-config.service';
 import { FeishuBotIdentityService } from '../feishu-bot/feishu-bot-identity.service';
+import { feishuGroupSendPaused } from '../feishu-bot/feishu-bot-group-pause';
 import { markdownCard } from '../feishu-bot/feishu-bot-message.service';
 import { Worker } from '../workers/worker.entity';
 import { TopicPost } from './topic-post.entity';
@@ -44,7 +45,9 @@ function excerpt(content: string): string {
  * 话题通知：关注新帖与 @ 真人机器人的飞书私聊卡片。
  * - 订阅话题事件总线，异步发送、失败只告警，不阻断话题/帖子写入；
  * - 关注通知排除发帖人本人；同一条帖子对同一用户只发一次（@ 优先）；
- * - @ AI 机器人的答复由收件箱与话题 LOOP 处理，这里只处理真人机器人。
+ * - @ AI 机器人的答复由收件箱与话题 LOOP 处理，这里只处理真人机器人；
+ * - `FEISHU_GROUP_SEND_PAUSED` 暂停期间不发 @ 提及卡片（仍按「已提及」占位，
+ *   避免关注通知补发同一条内容）。
  */
 @Injectable()
 export class TopicNotifyService implements OnModuleInit, OnModuleDestroy {
@@ -111,7 +114,7 @@ export class TopicNotifyService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  /** @ 真人机器人：给其绑定真人发飞书私聊卡片；返回已通知的用户 ID（关注通知去重） */
+  /** @ 真人机器人：给其绑定真人发飞书私聊卡片；返回已处理（发出或暂停跳过）的用户 ID（关注通知去重） */
   private async notifyMentions(
     topic: Topic,
     content: string,
@@ -120,6 +123,7 @@ export class TopicNotifyService implements OnModuleInit, OnModuleDestroy {
   ): Promise<Set<number>> {
     const notified = new Set<number>();
     if (!mentions?.length) return notified;
+    const paused = feishuGroupSendPaused();
     const workers = await this.workers.find({
       where: { id: In(mentions) },
       select: {
@@ -137,6 +141,11 @@ export class TopicNotifyService implements OnModuleInit, OnModuleDestroy {
       if (!worker.humanUserId) continue;
       const userId = worker.humanUserId;
       if (excludeUserId && userId === excludeUserId) continue;
+      if (paused) {
+        // 暂停期间不发卡片，但按已提及占位，避免关注通知补发同一条内容
+        notified.add(userId);
+        continue;
+      }
       const sent = await this.sendToUser(
         userId,
         '你在话题中被提及',

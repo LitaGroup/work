@@ -1,13 +1,12 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { User } from '../auth/user.entity';
-import { FeishuModule } from '../feishu/feishu.module';
-import { Backlog } from '../iterations/backlog.entity';
+import { FeishuBotModule } from '../feishu-bot/feishu-bot.module';
 import { Project } from '../projects/project.entity';
 import { Task } from '../tasks/task.entity';
 import { TasksModule } from '../tasks/tasks.module';
-import { Worker } from '../workers/worker.entity';
 import { ProjectRelease } from './project-release.entity';
+import { ReleaseNotifyService } from './release-notify.service';
 import {
   ReleaseRecordsController,
   ReleasesController,
@@ -17,15 +16,8 @@ import { ReleasesService } from './releases.service';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([
-      ProjectRelease,
-      Project,
-      User,
-      Task,
-      Backlog,
-      Worker,
-    ]),
-    FeishuModule,
+    TypeOrmModule.forFeature([ProjectRelease, Project, User, Task]),
+    FeishuBotModule,
     TasksModule,
   ],
   controllers: [
@@ -33,7 +25,7 @@ import { ReleasesService } from './releases.service';
     ReleasesMarkdownController,
     ReleaseRecordsController,
   ],
-  providers: [ReleasesService],
+  providers: [ReleasesService, ReleaseNotifyService],
   exports: [ReleasesService],
 })
 export class ReleasesModule {}

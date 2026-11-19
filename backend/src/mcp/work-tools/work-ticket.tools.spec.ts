@@ -86,6 +86,8 @@ function buildTools(principal: 'user' | 'worker' = 'worker') {
     }),
   };
   const tools = new Map<string, Handler>();
+  const iterations = { find: jest.fn().mockResolvedValue([]) };
+  const backlogs = { find: jest.fn().mockResolvedValue([]) };
   const server = {
     registerTool: (name: string, _meta: unknown, handler: Handler) => {
       tools.set(name, handler);
@@ -95,6 +97,8 @@ function buildTools(principal: 'user' | 'worker' = 'worker') {
     tickets as never,
     ticketDocuments as never,
     workflows as never,
+    iterations as never,
+    backlogs as never,
   ).register(
     server,
     principal === 'worker'

@@ -148,7 +148,7 @@ describe('normalizeWorkflowDefinition', () => {
         : edge,
     );
     expect(() => normalizeWorkflowDefinition(definition, true)).toThrow(
-      '只有验收通过、审批通过/驳回、操作节点的成功/失败结果或判断节点的流转',
+      '只有验收通过、审批通过/驳回、操作节点的成功/失败结果、判断节点的流转或飞书群消息节点',
     );
   });
 
@@ -649,5 +649,238 @@ describe('normalizeWorkflowDefinition', () => {
     expect(() => normalizeWorkflowDefinition(definition, true)).toThrow(
       '存在重复的流转条件',
     );
+  });
+});
+
+describe('迭代字段与飞书群消息节点', () => {
+  /** 起始节点带迭代字段、飞书群消息节点直连验收的最小流程 */
+  const iterationDefinition = (): WorkflowDefinitionJson => ({
+    startNode: 'start',
+    nodes: [
+      {
+        key: 'start',
+        name: '发起工单',
+        kind: 'start',
+        taskTemplateId: null,
+        responsibleWorkerId: null,
+        inputFields: [
+          {
+            key: 'iteration',
+            label: '迭代',
+            type: 'iteration',
+            required: true,
+            defaultValue: '12',
+          },
+          {
+            key: 'iterations',
+            label: '多个迭代',
+            type: 'iteration_multi',
+            required: false,
+            defaultValue: '12,13',
+          },
+        ],
+        autoAccept: false,
+        description: null,
+      },
+      {
+        key: 'notify',
+        name: '通知群',
+        kind: 'feishu-message',
+        taskTemplateId: null,
+        responsibleWorkerId: null,
+        inputFields: null,
+        autoAccept: false,
+        feishuChatId: 'oc_test',
+        feishuChatName: '测试群',
+        messageTemplate: '【{{ ticket.code }}】发起迭代 {{ values.iteration }}',
+        description: null,
+      },
+      {
+        key: 'acceptance',
+        name: '验收',
+        kind: 'acceptance',
+        taskTemplateId: null,
+        responsibleWorkerId: null,
+        inputFields: null,
+        autoAccept: false,
+        description: null,
+      },
+    ],
+    edges: [
+      { from: 'start', to: 'notify', outcome: null, label: null },
+      { from: 'notify', to: 'acceptance', outcome: null, label: null },
+      { from: 'acceptance', to: '$end', outcome: 'approved', label: null },
+    ],
+  });
+
+  it('接受迭代单选/多选字段并按 ID 归一化默认值', () => {
+    const normalized = normalizeWorkflowDefinition(iterationDefinition(), true);
+    const fields =
+      normalized.nodes.find((node) => node.kind === 'start')?.inputFields ?? [];
+    expect(fields.map((field) => [field.type, field.defaultValue])).toEqual([
+      ['iteration', '12'],
+      ['iteration_multi', '12,13'],
+    ]);
+  });
+
+  it('接受迭代项单选/多选字段并按 ID 归一化默认值', () => {
+    const definition = iterationDefinition();
+    const start = definition.nodes.find((item) => item.kind === 'start');
+    if (!start) throw new Error('起始节点缺失');
+    start.inputFields = [
+      {
+        key: 'backlog',
+        label: '迭代项',
+        type: 'backlog',
+        required: true,
+        defaultValue: '21',
+      },
+      {
+        key: 'backlogs',
+        label: '迭代项多选',
+        type: 'backlog_multi',
+        required: false,
+        defaultValue: '21,22',
+      },
+    ];
+    const normalized = normalizeWorkflowDefinition(definition, true);
+    const fields =
+      normalized.nodes.find((node) => node.kind === 'start')?.inputFields ?? [];
+    expect(fields.map((field) => [field.type, field.defaultValue])).toEqual([
+      ['backlog', '21'],
+      ['backlog_multi', '21,22'],
+    ]);
+  });
+
+  it('迭代项字段默认值必须是迭代项 ID', () => {
+    const definition = iterationDefinition();
+    const start = definition.nodes.find((item) => item.kind === 'start');
+    if (!start?.inputFields) throw new Error('起始节点缺失');
+    start.inputFields[0] = {
+      key: 'backlog',
+      label: '迭代项',
+      type: 'backlog',
+      required: true,
+      defaultValue: 'BL-0001',
+    };
+    expect(() => normalizeWorkflowDefinition(definition, true)).toThrow(
+      '迭代项字段「backlog」的默认值「BL-0001」必须是迭代项 ID',
+    );
+  });
+
+  it('迭代字段默认值必须是迭代 ID', () => {
+    const definition = iterationDefinition();
+    const start = definition.nodes.find((item) => item.kind === 'start');
+    if (!start?.inputFields) throw new Error('起始节点缺失');
+    start.inputFields[0].defaultValue = 'abc';
+    expect(() => normalizeWorkflowDefinition(definition, true)).toThrow(
+      '必须是迭代 ID',
+    );
+  });
+
+  it('迭代字段参与判断条件时比较值必须是迭代 ID', () => {
+    const definition = iterationDefinition();
+    definition.nodes.push({
+      key: 'condition',
+      name: '判断迭代',
+      kind: 'condition',
+      taskTemplateId: null,
+      responsibleWorkerId: null,
+      inputFields: null,
+      autoAccept: false,
+      description: null,
+    });
+    definition.edges = [
+      { from: 'start', to: 'condition', outcome: null, label: null },
+      {
+        from: 'condition',
+        to: 'notify',
+        outcome: null,
+        conditions: [{ field: 'iteration', operator: 'eq', value: 'not-id' }],
+        label: null,
+      },
+      { from: 'condition', to: 'acceptance', outcome: null, label: null },
+      { from: 'notify', to: 'acceptance', outcome: null, label: null },
+      { from: 'acceptance', to: '$end', outcome: 'approved', label: null },
+    ];
+    expect(() => normalizeWorkflowDefinition(definition, true)).toThrow(
+      '比较值必须是迭代 ID',
+    );
+    definition.edges[1].conditions = [
+      { field: 'iteration', operator: 'eq', value: '12' },
+    ];
+    expect(() => normalizeWorkflowDefinition(definition, true)).not.toThrow();
+  });
+
+  it('飞书群消息节点发布时必须选择群并填写模板', () => {
+    const missingChat = iterationDefinition();
+    const chatNode = missingChat.nodes.find(
+      (item) => item.kind === 'feishu-message',
+    );
+    if (!chatNode) throw new Error('飞书群消息节点缺失');
+    chatNode.feishuChatId = null;
+    expect(() => normalizeWorkflowDefinition(missingChat, true)).toThrow(
+      '未选择目标飞书群',
+    );
+
+    const missingTemplate = iterationDefinition();
+    const templateNode = missingTemplate.nodes.find(
+      (item) => item.kind === 'feishu-message',
+    );
+    if (!templateNode) throw new Error('飞书群消息节点缺失');
+    templateNode.messageTemplate = '  ';
+    expect(() => normalizeWorkflowDefinition(missingTemplate, true)).toThrow(
+      '未配置消息模板',
+    );
+  });
+
+  it('飞书群消息节点只能无条件流转且不能配置任务/机器人', () => {
+    const withOutcome = iterationDefinition();
+    const outcomeEdge = withOutcome.edges.find(
+      (edge) => edge.from === 'notify',
+    );
+    if (!outcomeEdge) throw new Error('飞书群消息流转缺失');
+    outcomeEdge.outcome = 'succeeded';
+    expect(() => normalizeWorkflowDefinition(withOutcome, true)).toThrow(
+      '飞书群消息节点的流转不能指定结果',
+    );
+
+    const withTemplate = iterationDefinition();
+    const notifyNode = withTemplate.nodes.find(
+      (item) => item.kind === 'feishu-message',
+    );
+    if (!notifyNode) throw new Error('飞书群消息节点缺失');
+    notifyNode.taskTemplateId = 1001;
+    expect(() => normalizeWorkflowDefinition(withTemplate, true)).toThrow(
+      '飞书群消息节点不能配置任务定义或机器人',
+    );
+  });
+
+  it('飞书群消息节点可以直接流转到流程结束', () => {
+    const definition = iterationDefinition();
+    definition.nodes.push({
+      key: 'condition',
+      name: '判断是否只通知',
+      kind: 'condition',
+      taskTemplateId: null,
+      responsibleWorkerId: null,
+      inputFields: null,
+      autoAccept: false,
+      description: null,
+    });
+    definition.edges = [
+      { from: 'start', to: 'condition', outcome: null, label: null },
+      {
+        from: 'condition',
+        to: 'notify',
+        outcome: null,
+        conditions: [{ field: 'iteration', operator: 'eq', value: '12' }],
+        label: null,
+      },
+      { from: 'condition', to: 'acceptance', outcome: null, label: null },
+      { from: 'notify', to: '$end', outcome: null, label: null },
+      { from: 'acceptance', to: '$end', outcome: 'approved', label: null },
+    ];
+    expect(() => normalizeWorkflowDefinition(definition, true)).not.toThrow();
   });
 });

@@ -64,6 +64,7 @@ import {
   type TaskDeliveryReportInput,
 } from './task-delivery-report';
 import { TaskNotifyService } from './task-notify.service';
+import { TASK_PENDING_FEEDBACK_NOTIFY_PAUSED } from './task-loop.rules';
 import { TaskQuestionAutoAnswerService } from './task-question-auto-answer.service';
 import { TaskRealtimeService } from './task-realtime.service';
 import { TaskWorkerInboxService } from './task-worker-inbox.service';
@@ -1420,6 +1421,9 @@ export class TaskDispatchService
     taskId: number,
     request: OpencodeQuestionRequest,
   ): Promise<void> {
+    // 「任务待反馈」飞书推送已暂停（TASK_PENDING_FEEDBACK_NOTIFY_PAUSED）：
+    // 机器人提问不再私聊推送需求方，提问卡片、状态机与事件流不受影响。
+    if (TASK_PENDING_FEEDBACK_NOTIFY_PAUSED) return;
     const key = `${taskId}:${request.id}`;
     if (this.questionNotified.has(key)) return;
     this.questionNotified.add(key);

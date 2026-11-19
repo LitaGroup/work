@@ -12,6 +12,8 @@ import { FeishuBotModule } from '../feishu-bot/feishu-bot.module';
 import { FilesModule } from '../files/files.module';
 import { GithubModule } from '../github/github.module';
 import { IdeasModule } from '../ideas/ideas.module';
+import { Iteration } from '../iterations/iteration.entity';
+import { Backlog } from '../iterations/backlog.entity';
 import { IterationsModule } from '../iterations/iterations.module';
 import { KnowledgeModule } from '../knowledge/knowledge.module';
 import { ProjectsModule } from '../projects/projects.module';
@@ -54,7 +56,7 @@ import { WorkWakeupTools } from './work-tools/work-wakeup.tools';
  */
 @Module({
   imports: [
-    TypeOrmModule.forFeature([McpCallLog, FeishuBotGroup]),
+    TypeOrmModule.forFeature([McpCallLog, FeishuBotGroup, Iteration, Backlog]),
     AuthModule,
     WorkersModule,
     ProjectsModule,

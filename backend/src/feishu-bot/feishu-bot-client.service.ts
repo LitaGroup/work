@@ -559,6 +559,38 @@ export class FeishuBotClientService {
   }
 
   /**
+   * 列出机器人所在群（GET /im/v1/chats，机器人须具备 im:chat:readonly）。
+   * 单页 100，最多 20 页（2000 群）防止异常循环。
+   */
+  async listChats(
+    configId: number,
+    secrets: FeishuBotSecrets,
+  ): Promise<Array<{ chatId: string; name: string | null }>> {
+    const chats: Array<{ chatId: string; name: string | null }> = [];
+    let pageToken: string | null = null;
+    for (let page = 0; page < 20; page += 1) {
+      const query = new URLSearchParams({ page_size: '100' });
+      if (pageToken) query.set('page_token', pageToken);
+      const data = await this.request(
+        configId,
+        secrets,
+        'GET',
+        `/im/v1/chats?${query.toString()}`,
+      );
+      for (const item of Array.isArray(data.items) ? data.items : []) {
+        const row = item as Record<string, unknown>;
+        const chatId = readString(row, 'chat_id');
+        if (!chatId) continue;
+        chats.push({ chatId, name: readString(row, 'name') });
+      }
+      const hasMore = data.has_more === true;
+      pageToken = readString(data, 'page_token');
+      if (!hasMore || !pageToken) break;
+    }
+    return chats;
+  }
+
+  /**
    * 创建群（操作者为机器人本身，默认群主）；userIds 为 open_id 列表。
    * botIds 使用应用的 App ID；idempotencyKey 由飞书 uuid 参数保证重试幂等。
    */

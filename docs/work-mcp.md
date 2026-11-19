@@ -104,7 +104,7 @@ claude mcp add --transport http lita-work http://your-host:3100/api/mcp/work \
 | `change_backlog_status` | `backlogId`、`status`、`remark?` | 状态流转（等待/执行/测试/发布/完成/取消），备注写入事件流；成员或管理员 |
 | `move_backlog` | `backlogId`、`iterationId` | 移动到另一个未结束的迭代（仅管理员），不重建交付任务与沟通群 |
 | `create_backlog_task` | `backlogId`、`title?`、`description?`、`templateId?`、`agentId?` | 新建交付子任务；无交付任务时按 `agentId` 创建交付任务并登记负责人（仅管理员） |
-| `create_backlog_release_ticket` | `backlogId`、`title?`、`supplement?` | 按「提测工单」工作流发起提测，自动填入迭代项上下文 |
+| `create_backlog_release` | `items`（`[{backlogId, content?}]`）、`ends`（APP/H5/后端 ≥1）、`testers`（≥1）、`title?`、`branches?`、`urls?`、`taskId?` | 批量提测：每个迭代项建提测工单 + 提测记录（互相绑定），多迭代项汇总一条提测群消息 |
 
 ### 运行 / 脚本 / 设置
 

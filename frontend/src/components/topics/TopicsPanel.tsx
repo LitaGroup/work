@@ -86,8 +86,8 @@ export function TopicsPanel({
   const reload = useCallback(() => setRefresh((value) => value + 1), [])
 
   return (
-    <Card>
-      <CardHeader>
+    <Card className="min-h-0 flex-1">
+      <CardHeader className="flex-none">
         <CardTitle className="flex items-center justify-between gap-2">
           <span className="flex items-center gap-2">
             {label}
@@ -106,7 +106,7 @@ export function TopicsPanel({
           主体下的讨论串：帖子支持引用回复与 @ 机器人，关注后新帖经平台官方机器人飞书通知
         </CardDescription>
       </CardHeader>
-      <div className="flex flex-col gap-4 px-4 pb-4 group-data-inset/card:px-4">
+      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 pb-4 group-data-inset/card:px-4">
         {error && <p className="text-sm text-error">{error}</p>}
         <TopicList
           topics={topics ?? []}

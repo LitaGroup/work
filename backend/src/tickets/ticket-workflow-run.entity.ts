@@ -60,6 +60,10 @@ export class TicketWorkflowRun {
   @Column({ type: 'varchar', length: 20 })
   status: string;
 
+  /** 节点运行说明（飞书群消息发送失败原因等；可空） */
+  @Column({ type: 'varchar', length: 500, nullable: true })
+  note: string | null;
+
   /** 进入下一节点使用的流转结果 */
   @Column({ type: 'varchar', length: 20, nullable: true })
   outcome: string | null;

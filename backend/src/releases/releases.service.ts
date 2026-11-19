@@ -5,32 +5,24 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { ConfigService } from '@nestjs/config';
-import { In, Not, Repository } from 'typeorm';
-import {
-  BacklogStatus,
-  ReleaseStatus,
-  TaskStatus,
-  TaskSubStatus,
-} from '../common/enums';
+import { In, Repository } from 'typeorm';
+import { ReleaseStatus, TaskStatus, TaskSubStatus } from '../common/enums';
 import { splitMemberNames } from '../common/names';
 import { beijingTime, mdFrontmatter } from '../common/frontmatter';
-import { FeishuService } from '../feishu/feishu.service';
-import { feishuGroupSendPaused } from '../feishu-bot/feishu-bot-group-pause';
-import { Backlog } from '../iterations/backlog.entity';
 import { Project } from '../projects/project.entity';
 import { User } from '../auth/user.entity';
 import { Task } from '../tasks/task.entity';
 import { TaskWorkerInboxService } from '../tasks/task-worker-inbox.service';
-import { Worker } from '../workers/worker.entity';
-import { ProjectRelease, ReleaseBranch } from './project-release.entity';
-
-/** 提测群机器人 webhook 默认地址（「H5 Release | 提测上线」群），可用 RELEASE_WEBHOOK_URL 覆盖 */
-const DEFAULT_RELEASE_WEBHOOK =
-  'https://open.feishu.cn/open-apis/bot/v2/hook/819b2008-2cb9-4a2d-a44a-92d01cea83d9';
-
-/** 卡片内提测内容截断长度（lark_md 卡片过长会被飞书折叠/截断） */
-const CONTENT_CARD_MAX = 800;
+import {
+  ProjectRelease,
+  RELEASE_END_VALUES,
+  ReleaseBranch,
+  ReleaseEnd,
+} from './project-release.entity';
+import {
+  ReleaseNoticeInput,
+  ReleaseNotifyService,
+} from './release-notify.service';
 
 /** 提测状态可选值（待冒烟 / 进行中 / 已通过 / 未通过） */
 export const RELEASE_STATUS_VALUES: string[] = Object.values(ReleaseStatus);
@@ -42,12 +34,21 @@ function releaseStatusOf(status?: string | null): ReleaseStatus {
     : ReleaseStatus.PENDING;
 }
 
-export interface SubmitReleaseInput {
-  content?: string;
-  urls?: string[];
-  branches?: { repo: string; branch: string }[];
+/** 批量提测入参（迭代项维度；多条汇总为一条提测群消息） */
+export interface SubmitReleaseBatchInput {
+  /** 迭代项 + 各自的提测内容 */
+  items: Array<{ backlogId: number; content?: string }>;
+  /** 提测标题（多迭代项缺省「{首个迭代项标题} 等x个迭代」） */
+  title?: string;
+  /** 提测端（APP / H5 / 后端，至少 1 个） */
+  ends: string[];
+  /** 测试人员（至少 1 人，须为用户系统内用户） */
   testers: string[];
-  /** 来源任务（机器人可直接传入；缺省自动取该机器人当前执行中的任务） */
+  /** 代码分支（整单共用，可空） */
+  branches?: { repo: string; branch: string }[];
+  /** 访问地址（整单共用，可空） */
+  urls?: string[];
+  /** 来源任务（机器人可选；缺省自动取当前执行中的任务） */
   taskId?: number;
 }
 
@@ -60,12 +61,36 @@ export interface ReleaseActor {
 
 export type ReleaseActorInput = ReleaseActor | string | null | undefined;
 
+/** 一次批量提测的整单共用字段（校验并归一后） */
+export interface ReleaseBatchShared {
+  ends: ReleaseEnd[];
+  testers: string[];
+  branches: ReleaseBranch[];
+  urls: string[];
+  operator: string | null;
+  workerId: number | null;
+  sourceTaskId: number | null;
+}
+
+/** 单条提测记录落库入参 */
+export interface ReleaseRecordInput {
+  projectId: number;
+  content?: string | null;
+  ends: string[];
+  testers: string[];
+  branches: ReleaseBranch[];
+  urls: string[];
+  operator: string | null;
+  workerId: number | null;
+  sourceTaskId: number | null;
+  /** 关联提测工单（可空） */
+  ticketId?: number | null;
+  ticketCode?: string | null;
+}
+
 @Injectable()
 export class ReleasesService {
   private readonly logger = new Logger(ReleasesService.name);
-  private readonly appUrl: string;
-  /** 提测群 webhook（RELEASE_WEBHOOK_URL 非空则覆盖默认群，调试时可指向测试群） */
-  private readonly releaseWebhook: string;
 
   constructor(
     @InjectRepository(ProjectRelease)
@@ -76,69 +101,67 @@ export class ReleasesService {
     private readonly users: Repository<User>,
     @InjectRepository(Task)
     private readonly tasks: Repository<Task>,
-    @InjectRepository(Backlog)
-    private readonly backlogs: Repository<Backlog>,
-    @InjectRepository(Worker)
-    private readonly workers: Repository<Worker>,
     private readonly workerInbox: TaskWorkerInboxService,
-    private readonly feishu: FeishuService,
-    config: ConfigService,
-  ) {
-    this.appUrl = config.get<string>('APP_URL') ?? 'http://localhost:5273';
-    this.releaseWebhook =
-      (config.get<string>('RELEASE_WEBHOOK_URL') ?? '').trim() ||
-      DEFAULT_RELEASE_WEBHOOK;
-  }
+    private readonly notify: ReleaseNotifyService,
+  ) {}
 
   /**
-   * 提测：创建提测记录并把项目状态流转为「测试中」。
-   * 测试人员至少 1 人且均须存在于用户系统（users 表，飞书登录落库），否则 400。
-   * 通知（提测群 + 测试人员与迭代项成员私聊）异步发送，失败仅告警不阻断提测。
+   * 批量提测的公共字段校验：
+   * - 测试人员至少 1 人且须存在于用户系统；
+   * - 提测端至少 1 个（APP / H5 / 后端）；
+   * - 解析机器人来源任务（网页人工提测不自动关联任务）。
    */
-  async submit(
-    projectId: number,
-    input: SubmitReleaseInput,
+  async prepareBatch(
+    input: SubmitReleaseBatchInput,
     actorInput?: ReleaseActorInput,
-  ): Promise<ProjectRelease> {
-    const project = await this.projects.findOne({ where: { id: projectId } });
-    if (!project) throw new NotFoundException(`Project ${projectId} not found`);
-
+  ): Promise<ReleaseBatchShared> {
+    const actor = this.normalizeActor(actorInput);
     const testers = splitMemberNames((input.testers ?? []).join('、'));
     if (testers.length === 0) {
       throw new BadRequestException('测试人员至少填写 1 人');
     }
     await this.assertNamesInUserSystem(testers, '测试人员');
-
-    const actor = this.normalizeActor(actorInput);
+    const ends = this.normalizeEnds(input.ends);
     const sourceTask = await this.resolveSourceTask(
       actor.workerId ?? null,
       input.taskId ?? actor.sourceTaskId ?? null,
     );
-    const content = input.content?.trim() || null;
-    const urls = this.normalizeUrls(input.urls);
-    const branches = this.normalizeBranches(input.branches);
+    return {
+      ends,
+      testers,
+      branches: this.normalizeBranches(input.branches),
+      urls: this.normalizeUrls(input.urls),
+      operator: actor.operator?.trim() || null,
+      workerId: actor.workerId ?? null,
+      sourceTaskId: sourceTask?.id ?? null,
+    };
+  }
 
-    const release = await this.releases.save(
-      this.releases.create({
-        projectId: project.id,
-        content,
-        urls: urls.length > 0 ? urls : null,
-        branches: branches.length > 0 ? branches : null,
-        testers,
-        operator: actor.operator?.trim() || null,
-        workerId: actor.workerId ?? null,
-        sourceTaskId: sourceTask?.id ?? null,
-        // 新提测一律「待冒烟」，由测试同学判定通过与否
-        status: ReleaseStatus.PENDING,
-        verifier: null,
-        verifiedAt: null,
-      }),
-    );
+  /** 保存一条提测记录（每个迭代项一条，绑定其提测工单） */
+  async createRecord(input: ReleaseRecordInput): Promise<ProjectRelease> {
+    const release = this.releases.create({
+      projectId: input.projectId,
+      content: input.content?.trim() || null,
+      urls: input.urls.length > 0 ? input.urls : null,
+      branches: input.branches.length > 0 ? input.branches : null,
+      ends: input.ends.length > 0 ? input.ends : null,
+      testers: input.testers,
+      operator: input.operator,
+      workerId: input.workerId,
+      sourceTaskId: input.sourceTaskId,
+      ticketId: input.ticketId ?? null,
+      ticketCode: input.ticketCode ?? null,
+      // 新提测一律「待冒烟」，由测试同学判定通过与否
+      status: ReleaseStatus.PENDING,
+      verifier: null,
+      verifiedAt: null,
+    });
+    return this.releases.save(release);
+  }
 
-    // 状态由平台按迭代项/创建时间推导，提测不再修改需求状态（重复提测仅追加记录）
-    // 通知不阻断提测（群机器人 / 私聊失败仅告警）
-    void this.notify(release, project);
-    return release;
+  /** 批量提测群通知（平台官方机器人；失败只告警，不阻断提测） */
+  async notifyBatch(notice: ReleaseNoticeInput): Promise<boolean> {
+    return this.notify.notify(notice);
   }
 
   /** 提测记录列表（倒序）；不传 projectId 返回全部 */
@@ -224,58 +247,15 @@ export class ReleasesService {
       `- 项目：${project?.name ?? `#${release.projectId}`}（#${release.projectId}）`,
       `- 提测记录：id ${release.id}（提测时间 ${beijingTime(release.createdAt)}）`,
       `- 提测人：${release.operator ?? '—'}`,
+      `- 提测端：${release.ends?.length ? release.ends.join(' / ') : '—'}`,
       `- 测试人员：${release.testers.join('、')}`,
+      release.ticketCode ? `- 提测工单：${release.ticketCode}` : null,
       `- 当前状态：**${releaseStatusOf(release.status)}**`,
       release.verifier ? `- 判定人：${release.verifier}` : null,
       release.verifiedAt
         ? `- 判定时间：${beijingTime(release.verifiedAt)}`
         : null,
       `- 提测记录清单：GET /api/releases.md?projectId=${release.projectId}`,
-      '',
-    ]
-      .filter((line): line is string => line !== null)
-      .join('\n');
-  }
-
-  /** AI 用：提测并返回 Markdown 结果 */
-  async submitMarkdown(
-    projectId: number,
-    input: SubmitReleaseInput,
-    actor?: ReleaseActorInput,
-  ): Promise<string> {
-    const release = await this.submit(projectId, input, actor);
-    const project = await this.projects.findOne({
-      where: { id: release.projectId },
-    });
-    return [
-      mdFrontmatter({
-        update: release.createdAt,
-        title: `项目提测 - ${project?.name ?? release.projectId}`,
-      }),
-      '# 项目已提测',
-      '',
-      `- 项目：${project?.name ?? `#${release.projectId}`}（#${release.projectId}）`,
-      `- 提测人：${release.operator ?? '—'}`,
-      release.workerId ? `- 提测机器人：\`#${release.workerId}\`` : null,
-      release.sourceTaskId ? `- 来源任务：#${release.sourceTaskId}` : null,
-      `- 提测时间：${beijingTime(release.createdAt)}`,
-      `- 测试人员：${release.testers.join('、')}`,
-      `- 访问地址：${release.urls?.length ? release.urls.join('、') : '—'}`,
-      `- 代码分支：${
-        release.branches?.length
-          ? release.branches
-              .map((b) => `\`${b.repo}\` @ \`${b.branch}\``)
-              .join('、')
-          : '—'
-      }`,
-      `- 提测内容：${release.content ? '已记录（见项目详情）' : '—'}`,
-      `- 提测状态：**${releaseStatusOf(release.status)}**（待冒烟 / 进行中 / 已通过 / 未通过）`,
-      `- 已通知：提测群「H5 Release | 提测上线」+ 测试人员与迭代项成员私聊（发送失败仅告警，不影响提测）`,
-      `- 阅读地址：GET /api/requirements/${release.projectId}.md`,
-      `- 提测记录：GET /api/releases.md?projectId=${release.projectId}`,
-      release.workerId
-        ? `- 后续缺陷派单：该提测处于 待冒烟 / 进行中 / 未通过 时，新缺陷会自动创建处理任务并指派给该机器人`
-        : null,
       '',
     ]
       .filter((line): line is string => line !== null)
@@ -291,7 +271,11 @@ export class ReleasesService {
       const status = releaseStatusOf(r.status);
       const head = `- **${beijingTime(r.createdAt)}**（id：${r.id}）提测人 ${r.operator ?? '—'} — 状态：**${status}**`;
       const detail = [
+        `提测端：${r.ends?.length ? r.ends.join(' / ') : '—'}`,
         `测试人员：${r.testers.join('、')}`,
+        r.ticketCode
+          ? `提测工单：${r.ticketCode}${r.ticketId ? `（#${r.ticketId}）` : ''}`
+          : null,
         r.workerId ? `提测机器人：#${r.workerId}` : null,
         r.sourceTaskId ? `来源任务：#${r.sourceTaskId}` : null,
         r.verifier ? `判定人：${r.verifier}` : null,
@@ -308,7 +292,7 @@ export class ReleasesService {
       mdFrontmatter({ title }),
       `# ${title}`,
       '',
-      `共 ${items.length} 条（按提测时间倒序）。提测：\`POST /api/projects/{projectId}/release.md\`，body \`{"testers": ["张三"], "content": "提测内容 Markdown", "urls": ["https://..."], "branches": [{"repo": "LitaGroup/xxx", "branch": "test"}], "taskId": 123}\`（仅 testers 必填且须为用户系统内用户；机器人令牌会记录提测机器人，taskId 可选，缺省自动取当前执行中的任务）`,
+      `共 ${items.length} 条（按提测时间倒序）。提测：\`POST /api/backlogs/release.md\`，body \`{"items": [{"backlogId": 123, "content": "提测内容 Markdown"}], "ends": ["APP"], "testers": ["张三"], "branches": [{"repo": "LitaGroup/xxx", "branch": "test"}], "urls": ["https://..."], "title": "可选", "taskId": 123}\`（提测端至少 1 个：APP / H5 / 后端；测试人员至少 1 人且须为用户系统内用户；多个迭代项汇总为一条提测群消息；机器人令牌会记录提测机器人，taskId 可省略，缺省自动取当前执行中的任务）`,
       `推进提测状态（由测试同学操作）：\`POST /api/releases/{id}/status.md\`，body \`{"status": "待冒烟" | "进行中" | "已通过" | "未通过"}\`——新提测默认「待冒烟」，开始测试后改为「进行中」；仅「已通过 / 未通过」记录判定人/判定时间，切回「待冒烟 / 进行中」会清空`,
       '',
       ...(lines.length > 0 ? lines : ['（暂无提测记录）']),
@@ -378,6 +362,32 @@ export class ReleasesService {
     });
   }
 
+  /** 提测端：至少 1 个，仅允许 APP / H5 / 后端（去重） */
+  private normalizeEnds(ends?: string[]): ReleaseEnd[] {
+    if (!Array.isArray(ends)) {
+      throw new BadRequestException('提测端至少选择 1 个（APP / H5 / 后端）');
+    }
+    const unique = [
+      ...new Set(
+        ends
+          .map((end) => (typeof end === 'string' ? end.trim() : ''))
+          .filter(Boolean),
+      ),
+    ];
+    if (unique.length === 0) {
+      throw new BadRequestException('提测端至少选择 1 个（APP / H5 / 后端）');
+    }
+    const invalid = unique.filter(
+      (end) => !RELEASE_END_VALUES.includes(end as ReleaseEnd),
+    );
+    if (invalid.length > 0) {
+      throw new BadRequestException(
+        `提测端包含无效值「${invalid.join('、')}」，可选值：${RELEASE_END_VALUES.join(' / ')}`,
+      );
+    }
+    return unique as ReleaseEnd[];
+  }
+
   /** 访问地址：trim 去空（格式宽松，允许内网地址） */
   private normalizeUrls(urls?: string[]): string[] {
     if (!Array.isArray(urls)) return [];
@@ -397,169 +407,6 @@ export class ReleasesService {
         branch: (b?.branch ?? '').trim(),
       }))
       .filter((b) => b.repo && b.branch);
-  }
-
-  /**
-   * 提测通知：提测群 webhook + 测试人员与迭代项成员（去重）机器人私聊卡片。
-   * 人员按姓名在 users 表查 openId，查不到的跳过并告警。
-   */
-  private async notify(
-    release: ProjectRelease,
-    project: Project,
-  ): Promise<void> {
-    const card = this.buildCard(release, project);
-    await Promise.all([
-      this.sendGroupWebhook(release.projectId, card),
-      this.notifyMembers(release, project, card),
-    ]);
-  }
-
-  private buildCard(
-    release: ProjectRelease,
-    project: Project,
-  ): Record<string, unknown> {
-    const lines = [
-      `**项目**：${project.name}（#${project.id}）`,
-      `**提测人**：${release.operator ?? '—'}`,
-      `**提测时间**：${beijingTime(release.createdAt)}`,
-      `**测试人员**：${release.testers.join('、')}`,
-    ];
-    if (release.branches?.length) {
-      lines.push(
-        `**代码分支**：${release.branches.map((b) => `\`${b.repo}\` @ \`${b.branch}\``).join('\n')}`,
-      );
-    }
-    if (release.urls?.length) {
-      // lark_md 对裸 URL 自动加链（尖括号 <url> 语法会导致卡片解析失败 code 230099）
-      lines.push(`**访问地址**：${release.urls.join('\n')}`);
-    }
-    if (release.content) {
-      lines.push(`**提测内容**：${oneLine(release.content, CONTENT_CARD_MAX)}`);
-    }
-    lines.push(
-      `**详情**：[查看需求](${this.appUrl.replace(/\/$/, '')}/requirements/${project.id})`,
-    );
-    // 卡片体：机器人 API（sendUserCard）直接发送该对象
-    return {
-      config: { wide_screen_mode: true },
-      header: {
-        title: { tag: 'plain_text', content: `[提测] ${project.name}` },
-        template: 'blue',
-      },
-      elements: [
-        { tag: 'div', text: { tag: 'lark_md', content: lines.join('\n') } },
-      ],
-    };
-  }
-
-  /**
-   * 提测群 webhook 推送。
-   * 群机器人 webhook 免签，卡片需外层包 msg_type 信封（与机器人 API 的裸 card 不同，不得混用）；
-   * 业务失败也可能 HTTP 200，必须校验响应体 code。
-   * FEISHU_GROUP_SEND_PAUSED 暂停期间跳过（提测记录照常创建，恢复后不补发历史提测）。
-   */
-  private async sendGroupWebhook(
-    projectId: number,
-    card: Record<string, unknown>,
-  ): Promise<void> {
-    if (feishuGroupSendPaused()) {
-      this.logger.debug(
-        `提测群通知已暂停（FEISHU_GROUP_SEND_PAUSED）：project=${projectId}`,
-      );
-      return;
-    }
-    try {
-      const res = await fetch(this.releaseWebhook, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ msg_type: 'interactive', card }),
-      });
-      const body = (await res.json().catch(() => null)) as {
-        code?: number;
-        StatusCode?: number;
-        msg?: string;
-        StatusMessage?: string;
-      } | null;
-      const code = body?.code ?? body?.StatusCode ?? (res.ok ? 0 : -1);
-      if (!res.ok || code !== 0) {
-        this.logger.warn(
-          `提测群推送失败（HTTP ${res.status}, code ${code}: ${body?.msg ?? body?.StatusMessage ?? '-'}）: project=${projectId}`,
-        );
-      }
-    } catch (e) {
-      this.logger.warn(
-        `提测群推送异常: ${(e as Error).message}（project=${projectId}）`,
-      );
-    }
-  }
-
-  /** 测试人员 + 该需求全部未取消迭代项的成员 去重后逐个私聊卡片 */
-  private async notifyMembers(
-    release: ProjectRelease,
-    project: Project,
-    card: Record<string, unknown>,
-  ): Promise<void> {
-    const names = new Set(release.testers);
-    const userIds = new Set<number>();
-    let backlogMembers: Backlog['members'] = [];
-    try {
-      const backlogs = await this.backlogs.find({
-        where: {
-          projectId: project.id,
-          status: Not(BacklogStatus.CANCELED),
-        },
-        select: { id: true, members: true },
-      });
-      backlogMembers = backlogs.flatMap((row) => row.members ?? []);
-    } catch (e) {
-      this.logger.warn(`提测通知查询迭代项成员失败: ${(e as Error).message}`);
-    }
-    // 成员统一为机器人：真人机器人取绑定真人私聊；AI 机器人无可私聊真人，跳过
-    const workerIds = [
-      ...new Set((backlogMembers ?? []).map((member) => member.workerId)),
-    ];
-    const workers = workerIds.length
-      ? await this.workers.find({ where: { id: In(workerIds) } })
-      : [];
-    const workerById = new Map(workers.map((worker) => [worker.id, worker]));
-    for (const member of backlogMembers ?? []) {
-      const worker = workerById.get(member.workerId);
-      if (!worker || worker.humanUserId === null) continue;
-      userIds.add(worker.humanUserId);
-      if (worker.humanUserName) names.add(worker.humanUserName);
-    }
-    if (names.size === 0 && userIds.size === 0) return;
-    let members: User[];
-    try {
-      members = await this.users.find({
-        where: [
-          ...(userIds.size > 0 ? [{ id: In([...userIds]) }] : []),
-          ...(names.size > 0 ? [{ name: In([...names]) }] : []),
-        ],
-      });
-    } catch (e) {
-      this.logger.warn(`提测通知查询用户失败: ${(e as Error).message}`);
-      return;
-    }
-    const resolved = new Set(members.map((m) => m.name));
-    for (const name of names) {
-      if (!resolved.has(name)) {
-        this.logger.warn(
-          `提测私聊跳过「${name}」：用户系统中不存在（project=${release.projectId}）`,
-        );
-      }
-    }
-    await Promise.allSettled(
-      members
-        .filter((m) => m.feishuOpenId)
-        .map((m) =>
-          this.feishu.sendUserCard(m.feishuOpenId, card).catch((e: Error) => {
-            this.logger.warn(
-              `提测私聊发送失败「${m.name}」: ${e.message}（需应用具备 im:message:send_as_bot 且用户在可用范围内）`,
-            );
-          }),
-        ),
-    );
   }
 }
 

@@ -78,6 +78,27 @@ export interface BacklogReleaseWorkflow {
   enabled: boolean;
 }
 
+/** 批量提测单条结果：每个迭代项一张工单 + 一条提测记录（互相绑定） */
+export interface BacklogReleaseItemResult {
+  backlogId: number;
+  /** 迭代项编码（BL-xxxx） */
+  code: string;
+  /** 迭代项标题 */
+  title: string;
+  /** 原始需求（projects.id） */
+  projectId: number;
+  ticketId: number;
+  ticketCode: string;
+  releaseId: number;
+}
+
+/** 批量提测结果：多迭代项汇总为一条提测群消息 */
+export interface BacklogReleaseResult {
+  /** 提测标题（多个迭代项时为「xxx 等x个迭代」） */
+  title: string;
+  items: BacklogReleaseItemResult[];
+}
+
 /** 迭代项任务面板任务摘要（交付任务树，含子任务） */
 export interface BacklogTaskSummary {
   id: number;

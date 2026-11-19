@@ -1265,7 +1265,7 @@ describe('TaskLoopService 多机器人协同', () => {
     expect(taskNotify.notifyTaskRequester).not.toHaveBeenCalled();
   });
 
-  it('待反馈提醒按 30 分钟节流并通知需求方', async () => {
+  it('待反馈推送已暂停：按 30 分钟节流推进计时但不调用飞书通知', async () => {
     const task = baseTask({
       subStatus: TaskSubStatus.PENDING_FEEDBACK,
       missingItems: [{ item: '请提供活动规则' }],
@@ -1273,17 +1273,29 @@ describe('TaskLoopService 多机器人协同', () => {
     returnForStatus(TaskSubStatus.PENDING_FEEDBACK, task);
 
     await service.tick();
-    expect(taskNotify.notifyTaskRequester).toHaveBeenCalledTimes(1);
+    expect(taskNotify.notifyTaskRequester).not.toHaveBeenCalled();
+    expect(tasksRepo.update).toHaveBeenCalledWith(
+      {
+        id: 1,
+        status: TaskStatus.WAITING,
+        subStatus: TaskSubStatus.PENDING_FEEDBACK,
+      },
+      expect.objectContaining({ remindCount: 1 }),
+    );
 
     task.remindCount = 1;
     task.firstRemindedAt = new Date(Date.now() - TASK_REMIND_INTERVAL_MS * 2);
     task.lastRemindedAt = new Date();
     await service.tick();
-    expect(taskNotify.notifyTaskRequester).toHaveBeenCalledTimes(1);
+    expect(taskNotify.notifyTaskRequester).not.toHaveBeenCalled();
 
     task.lastRemindedAt = new Date(Date.now() - TASK_REMIND_INTERVAL_MS - 1);
     await service.tick();
-    expect(taskNotify.notifyTaskRequester).toHaveBeenCalledTimes(2);
+    expect(taskNotify.notifyTaskRequester).not.toHaveBeenCalled();
+    expect(tasksRepo.update).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({ remindCount: 2 }),
+    );
   });
 
   it('待反馈首次提醒满 7 天仍未处理 → 取消', async () => {

@@ -44,7 +44,7 @@ export const DEVELOPMENT_OPERATION_GUIDE = [
   '',
   '### 提测与缺陷',
   '',
-  '- 提测：`POST /api/projects/{projectId}/release.md`，body `{"testers": ["张三"], "content": "提测内容 Markdown", "urls": ["https://..."], "branches": [{"repo": "LitaGroup/xxx", "branch": "test"}], "taskId": 123}`（仅 testers 必填且须为用户系统内用户；taskId 可省略，缺省自动关联当前执行中的任务）。',
+  '- 提测：`POST /api/backlogs/release.md`，body `{"items": [{"backlogId": 123, "content": "提测内容 Markdown"}], "ends": ["APP"], "testers": ["张三"], "branches": [{"repo": "LitaGroup/xxx", "branch": "test"}], "urls": ["https://..."], "title": "可选", "taskId": 123}`（提测端至少 1 个：APP / H5 / 后端；测试人员至少 1 人且须为用户系统内用户；每个迭代项生成提测工单与提测记录，多个迭代项汇总为一条提测群消息；taskId 可省略，缺省自动关联当前执行中的任务）。',
   '- 提测记录与状态：`GET /api/releases.md?projectId={projectId}`；`POST /api/releases/{id}/status.md`，body `{"status": "已通过"}`。',
   '- 缺陷：`GET /api/defects.md?projectId={projectId}`；新建 `POST /api/defects/create.md`；详情 `GET /api/defects/{id}.md`；状态变更 `POST /api/defects/{id}/status.md`。',
   '',

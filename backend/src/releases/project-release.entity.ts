@@ -2,12 +2,18 @@ import {
   Column,
   CreateDateColumn,
   Entity,
+  Index,
   JoinColumn,
   ManyToOne,
   PrimaryGeneratedColumn,
 } from 'typeorm';
 import { ReleaseStatus } from '../common/enums';
 import { Project } from '../projects/project.entity';
+
+/** 提测端可选值（至少选 1 个） */
+export const RELEASE_END_VALUES = ['APP', 'H5', '后端'] as const;
+
+export type ReleaseEnd = (typeof RELEASE_END_VALUES)[number];
 
 /** 提测单上的代码分支（仓库 + 分支，提测时快照，不关联 project_branches 登记） */
 export interface ReleaseBranch {
@@ -59,6 +65,19 @@ export class ProjectRelease {
   /** 测试人员姓名（至少 1 个，均须为用户系统内用户） */
   @Column({ type: 'simple-json' })
   testers: string[];
+
+  /** 提测端（APP / H5 / 后端，至少 1 个） */
+  @Column({ type: 'simple-json', nullable: true })
+  ends: string[] | null;
+
+  /** 关联提测工单（tickets.id，可空；迭代项提测创建时写入） */
+  @Index('IDX_project_releases_ticketId')
+  @Column({ type: 'int', nullable: true })
+  ticketId: number | null;
+
+  /** 关联提测工单编号快照（WO-xxxx，可空） */
+  @Column({ type: 'varchar', length: 30, nullable: true })
+  ticketCode: string | null;
 
   /** 提测人姓名（网页登录用户 / 绑定真人机器人的令牌 / 机器人名称） */
   @Column({ type: 'varchar', length: 100, nullable: true })

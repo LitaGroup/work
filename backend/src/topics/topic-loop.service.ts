@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import { IsNull, LessThan, Repository } from 'typeorm';
+import { feishuGroupSendPaused } from '../feishu-bot/feishu-bot-group-pause';
 import { TopicWorkerInbox } from './topic-worker-inbox.entity';
 import { Topic } from './topic.entity';
 import { TopicReplyService } from './topic-reply.service';
@@ -16,6 +17,7 @@ const STALE_DELIVERED_MS = 10 * 60 * 1000;
  * 话题 LOOP：每 30 秒扫描 @ AI 机器人的待答复收件箱，
  * 交 TopicReplyService 创建一次性会话；未完成由服务自身退避重试。
  * 同时回收卡在 delivered 的条目，避免进程重启后永久停摆。
+ * `FEISHU_GROUP_SEND_PAUSED` 暂停期间整体跳过（不消费重试次数），恢复后继续答复。
  */
 @Injectable()
 export class TopicLoopService {
@@ -32,6 +34,8 @@ export class TopicLoopService {
 
   @Cron('*/30 * * * * *')
   async tick(): Promise<void> {
+    // 暂停期间不创建答复会话，收件箱条目保持待处理，恢复后继续答复
+    if (feishuGroupSendPaused()) return;
     if (this.running) return;
     this.running = true;
     try {
