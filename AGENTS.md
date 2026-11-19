@@ -90,6 +90,7 @@
 
 - JSON API 统一带 `/api` 前缀；实体枚举使用 `backend/src/common/enums.ts` 的中文原文，不要随意改名。
 - `.md` URL 是 Agent 视图或操作入口，返回 `text/markdown`，并以 YAML Frontmatter 开头。Frontmatter 由 `backend/src/common/frontmatter.ts` 统一生成，至少含北京时间 `update`。
+- 浏览器导航（地址栏或链接点击）打开实体 `.md` 地址时，`main.ts` 注册的 `common/md-browser-redirect.ts` 中间件先 302 到对应网页视图（如 `/api/docs/detail/...md` → `/docs/detail/...`、`/api/tasks/{id}/handoff.md` → `/tasks/{id}#handoff`），丢弃原查询串并 `Cache-Control: no-store`。带机器人令牌（`X-Worker-Token` / `X-Agent-Token` / `?token=`）或没有浏览器导航特征（`Sec-Fetch-Mode: navigate`，老浏览器回退 `Accept: text/html`）的请求保持返回 Markdown；工具型端点（`search.md`、`defines.md`、`recognize.md`、各类清单 `*.md`）与未映射路径不重定向。新增实体 `.md` 视图时同步补齐映射与 `md-browser-redirect.spec.ts`。
 - 知识目录 URL 必须以 `/` 结尾，文章不带 `/`；对应 Markdown 视图分别为 `.../.md` 与 `....md`。
 - 静态路由和 `.md` 路由必须声明在 `:id` 前，避免被参数路由捕获。
 - 运行、初始化等长任务优先使用“立即返回运行记录 + SSE 推送快照/增量/终态”，避免同步长请求被网关超时切断。终态快照需支持晚订阅，心跳用于保活。

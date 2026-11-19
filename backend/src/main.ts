@@ -2,8 +2,10 @@ import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import * as express from 'express';
 import * as fs from 'fs';
+import { DataSource } from 'typeorm';
 import { AgentGateway } from './agent/agent.gateway';
 import { AppModule } from './app.module';
+import { createMdBrowserRedirectMiddleware } from './common/md-browser-redirect';
 import { imageWebroot, exportWebroot, fileWebroot } from './common/paths';
 
 async function bootstrap() {
@@ -18,6 +20,10 @@ async function bootstrap() {
   app.use('/api/mcp', express.json({ limit: '72mb' }));
   app.use(express.json({ limit: '100kb' }));
   app.use(express.urlencoded({ extended: true, limit: '100kb' }));
+
+  // Agent 视图（.md）被浏览器打开时 302 到人类网页视图：Agent 请求（带令牌或无导航特征）不重定向。
+  // 必须注册在 Nest 路由与 AuthGuard 之前（app.use 先于 app.listen 挂载的路由）。
+  app.use(createMdBrowserRedirectMiddleware(app.get(DataSource)));
 
   // 图片静态资源：http://{host}/images/{image-path} → DIR_IMAGE_WEBROOT（不走 /api 前缀）
   const webroot = imageWebroot();
