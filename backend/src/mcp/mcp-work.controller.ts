@@ -51,7 +51,7 @@ export class McpWorkController {
       const worker = await this.workers.findByAgentToken(workerToken);
       if (!worker) {
         throw new UnauthorizedException(
-          '无效的机器人访问令牌（由平台在初始化或首次派发时生成到工位 .opencode/agent-token）',
+          '无效的机器人访问令牌（由平台在初始化或首次派发时生成到工位 .agents/.env 的 LITA_WORK_TOKEN）',
         );
       }
       return this.principalOf(worker);
@@ -78,7 +78,7 @@ export class McpWorkController {
     }
     const publicAgent = this.auth.getPublicAgentByToken(token);
     if (publicAgent) return { user: publicAgent };
-    // 工位 .opencode/.env 的 LITA_WORK_TOKEN 是机器人令牌：
+    // 工位 .agents/.env 的 LITA_WORK_TOKEN 是机器人令牌：
     // 统一按 Bearer / X-Agent-Token 传入时同样识别为机器人身份
     const worker = await this.workers.findByAgentToken(token);
     if (worker) return this.principalOf(worker);

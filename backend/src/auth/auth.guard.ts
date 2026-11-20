@@ -76,7 +76,7 @@ export class AuthGuard implements CanActivate {
       const worker = await this.workersService.findByAgentToken(workerToken);
       if (!worker) {
         throw new UnauthorizedException(
-          '无效的机器人访问令牌（由平台在初始化或首次派发时生成到工位 .opencode/agent-token）',
+          '无效的机器人访问令牌（由平台在初始化或首次派发时生成到工位 .agents/.env 的 LITA_WORK_TOKEN）',
         );
       }
       await this.attachWorker(req, worker);
@@ -96,7 +96,7 @@ export class AuthGuard implements CanActivate {
         (req as AuthedRequest).user = publicAgent;
         return true;
       }
-      // 工位 .opencode/.env 的 LITA_WORK_TOKEN 是机器人令牌，
+      // 工位 .agents/.env 的 LITA_WORK_TOKEN 是机器人令牌，
       // 统一按 X-Agent-Token（项目 SKILL 约定）传入时同样识别为机器人身份
       const worker = await this.workersService.findByAgentToken(provided);
       if (worker) {

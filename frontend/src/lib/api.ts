@@ -1681,7 +1681,7 @@ export interface WorkerStandardCatalogItem {
   sourceUrl: string
 }
 
-/** 机器人技能引用（保存后安装到工位 .opencode/skills） */
+/** 机器人技能引用（保存后安装到工位 .agents/skills） */
 export interface WorkerSkill {
   name: string
   path: string
@@ -1691,7 +1691,7 @@ export interface WorkerSkill {
   sourceUrl?: string | null
 }
 
-/** 机器人规范引用（保存后初始化时同步其目录到工位 .opencode/rules） */
+/** 机器人规范引用（保存后初始化时同步其目录到工位 .agents/rules） */
 export interface WorkerStandard {
   name: string
   path: string

@@ -1744,7 +1744,7 @@ export class WorkerDebugService implements OnModuleInit, OnModuleDestroy {
       worker,
       executor,
       option: this.toOption(worker, executor),
-      // 调试/聊天与正式任务共用工位根目录：AGENTS.md、技能与 .opencode/.env
+      // 调试/聊天与正式任务共用工位根目录：AGENTS.md、技能与 .agents/.env
       // 都在当前目录，避免调试目录缺少身份定义和令牌。
       workdir,
     };

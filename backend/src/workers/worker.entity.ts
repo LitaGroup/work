@@ -32,7 +32,7 @@ export interface WorkerTaskDef {
   how?: string;
 }
 
-/** 技能清单条目：技能库 SKILL.md 的引用（保存后安装到工位 .opencode/skills） */
+/** 技能清单条目：技能库 SKILL.md 的引用（保存后安装到工位 .agents/skills） */
 export interface WorkerSkill {
   /** 展示名（frontmatter name，缺失时取目录名） */
   name: string;

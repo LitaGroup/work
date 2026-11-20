@@ -34,6 +34,22 @@ describe('WorkerEnvironmentService.assertDone', () => {
     expect(() => buildService()['assertDone'](text)).not.toThrow();
   });
 
+  it('接受 devin 叙述粘连且以 DONE 收尾的输出', () => {
+    expect(() =>
+      buildService()['assertDone'](
+        'Fresh workspace. Now fetching the skills.Now writing AGENTS.md.DONE',
+      ),
+    ).not.toThrow();
+  });
+
+  it('接受句读标点后粘连 DONE 的整段输出', () => {
+    expect(() =>
+      buildService()['assertDone'](
+        'Workspace prepared.AGENTS.md updated.DONE.',
+      ),
+    ).not.toThrow();
+  });
+
   it('优先返回 ERROR 内容', () => {
     expect(() =>
       buildService()['assertDone'](
@@ -42,9 +58,25 @@ describe('WorkerEnvironmentService.assertDone', () => {
     ).toThrow(BadRequestException);
   });
 
+  it('识别粘连在句读标点后的 ERROR', () => {
+    expect(() =>
+      buildService()['assertDone'](
+        'Fresh workspace. Now fetching the skills.ERROR: remote skill not found',
+      ),
+    ).toThrow(/remote skill not found/);
+  });
+
   it('拒绝没有独立 DONE 的报告', () => {
     expect(() =>
       buildService()['assertDone']('Workspace updated successfully.'),
+    ).toThrow(/未返回 DONE/);
+  });
+
+  it('拒绝未以 DONE 收尾的叙述', () => {
+    expect(() =>
+      buildService()['assertDone'](
+        'Fresh workspace. Now fetching the skills. Now writing AGENTS.md.',
+      ),
     ).toThrow(/未返回 DONE/);
   });
 });
@@ -96,12 +128,12 @@ describe('WorkerEnvironmentService.buildPrompt', () => {
     expect(prompt).toContain(
       'http://gitea.cinta.team/docs/standard/raw/branch/main/fe/h5/DEVELOP.md',
     );
-    expect(prompt).toContain('.opencode/rules/.standards-manifest.json');
+    expect(prompt).toContain('.agents/rules/.standards-manifest.json');
     expect(prompt).toContain(
-      '需存在的规范文件（左侧为相对 .opencode/rules/ 的路径',
+      '需存在的规范文件（左侧为相对 .agents/rules/ 的路径',
     );
-    expect(prompt).toContain('目录从 docs 迁移到 rules');
-    expect(prompt).toContain('不要删除 .opencode/docs/ 或其他流程产生的文档');
+    expect(prompt).toContain('目录迁移到 .agents/rules');
+    expect(prompt).toContain('不要删除 docs/ 或其他流程产生的文档');
   });
 
   it('把规范名称、说明、工位目录与文档清单写入 AGENTS.md 的规范小节', async () => {
@@ -109,7 +141,7 @@ describe('WorkerEnvironmentService.buildPrompt', () => {
     expect(prompt).toContain('## 规范与规则');
     expect(prompt).toContain('### H5 场景开发规范');
     expect(prompt).toContain('说明：H5 场景开发与交付规范');
-    expect(prompt).toContain('工位目录：`.opencode/rules/fe/h5`');
+    expect(prompt).toContain('工位目录：`.agents/rules/fe/h5`');
     expect(prompt).toContain('`README.md`');
     expect(prompt).toContain('`DEVELOP.md`');
     expect(prompt).toContain('把以下内容原样写入 AGENTS.md');
@@ -128,8 +160,8 @@ describe('WorkerEnvironmentService.buildPrompt', () => {
   it('AGENTS.md 说明机器人令牌用于所有 .md 接口且不得外泄', async () => {
     const prompt = await buildService()['buildPrompt'](worker);
     expect(prompt).toContain('调用平台所有 .md 接口');
-    expect(prompt).toContain('X-Worker-Token: $TOKEN');
-    expect(prompt).toContain('.opencode/agent-token');
+    expect(prompt).toContain('X-Worker-Token: $LITA_WORK_TOKEN');
+    expect(prompt).toContain('.agents/.env');
     expect(prompt).toContain('不得读取展示、改写或删除');
     expect(prompt).toContain('不得把令牌写入聊天、交付物或文档');
   });
@@ -144,16 +176,16 @@ describe('WorkerEnvironmentService.buildPrompt', () => {
 
   it('AGENTS.md 说明 Lita 用户令牌的位置、加载方式与最高优先级', async () => {
     const prompt = await buildService()['buildPrompt'](worker);
-    expect(prompt).toContain('.opencode/.env');
+    expect(prompt).toContain('.agents/.env');
     expect(prompt).toContain('LITA_USER_TOKEN');
     expect(prompt).toContain('LITA_WORK_TOKEN');
     expect(prompt).toContain('LITA_PROJECT_TOKEN');
-    expect(prompt).toContain('set -a; . .opencode/.env; set +a');
+    expect(prompt).toContain('set -a; . .agents/.env; set +a');
     expect(prompt).toContain('调用 lita-work 等技能前');
     expect(prompt).toContain('环境变量优先级（硬性）');
     expect(prompt).toContain('优先级最高');
     expect(prompt).toContain('高于当前进程环境变量');
-    expect(prompt).toContain('同名变量必须以 `.opencode/.env` 为准');
+    expect(prompt).toContain('同名变量必须以 `.agents/.env` 为准');
   });
 
   it('AGENTS.md 注入工作区边界（平台强制）条款', async () => {
@@ -237,10 +269,9 @@ describe('WorkerEnvironmentService.start / stream / snapshotOf', () => {
     expect(['running', 'failed']).toContain(service.snapshotOf(1001).status);
   });
 
-  it('初始化时把机器人独立令牌写入工位 agent-token 与 .env', async () => {
+  it('初始化时把机器人令牌与平台地址写入工位 .agents/.env', async () => {
     const ensureWorkToken = jest.fn().mockResolvedValue('worker-token-123');
     const ensureDir = jest.fn().mockResolvedValue(undefined);
-    const writeSecretFile = jest.fn().mockResolvedValue(undefined);
     const upsertEnvFile = jest.fn().mockResolvedValue(undefined);
     const service = new WorkerEnvironmentService(
       {} as never,
@@ -249,30 +280,26 @@ describe('WorkerEnvironmentService.start / stream / snapshotOf', () => {
       {} as never,
       {} as never,
       {} as never,
-      { get: () => 'test-lita-token' } as never,
+      {
+        get: jest.fn((key: string) =>
+          key === 'APP_URL' ? 'http://work.cinta.team/' : undefined,
+        ),
+      } as never,
     );
-    await service['writeAgentToken'](
-      { ensureDir, writeSecretFile, upsertEnvFile } as never,
+    await service['writeWorkerSecrets'](
+      { ensureDir, upsertEnvFile } as never,
       1001,
       '/tmp/runtime/worker/1001',
     );
     expect(ensureWorkToken).toHaveBeenCalledWith(1001);
-    // 机器人身份令牌文件（兼容旧协议），权限由 writeSecretFile 语义保证（600）
-    expect(ensureDir).toHaveBeenCalledWith(
-      '/tmp/runtime/worker/1001/.opencode',
-    );
-    expect(writeSecretFile).toHaveBeenCalledWith(
-      '/tmp/runtime/worker/1001',
-      '.opencode/agent-token',
-      'worker-token-123',
-    );
-    // .opencode/.env 同步注入新名与兼容旧名，供 SKILL 统一读取
+    // 令牌、兼容旧名与平台地址合并写入 .agents/.env（权限 600 由 upsertEnvFile 保证）
     expect(upsertEnvFile).toHaveBeenCalledWith(
       '/tmp/runtime/worker/1001',
-      '.opencode/.env',
+      '.agents/.env',
       {
         LITA_WORK_TOKEN: 'worker-token-123',
         LITA_PROJECT_TOKEN: 'worker-token-123',
+        LITA_APP_URL: 'http://work.cinta.team',
       },
     );
   });
@@ -295,13 +322,13 @@ describe('WorkerEnvironmentService.start / stream / snapshotOf', () => {
       config as never,
     );
     await service['writeLitaUserToken'](
-      { upsertEnvFile, shell } as never,
+      { ensureDir: jest.fn(), upsertEnvFile, shell } as never,
       '/tmp/runtime/worker/1001',
     );
     // 合并写入：保留其他键
     expect(upsertEnvFile).toHaveBeenCalledWith(
       '/tmp/runtime/worker/1001',
-      '.opencode/.env',
+      '.agents/.env',
       { LITA_USER_TOKEN: 'lita-user-token-123' },
     );
     // 宿主 ~/.env 同步保留 shell（bridge 执行器无 shell，失败降级告警）
@@ -329,12 +356,12 @@ describe('WorkerEnvironmentService.start / stream / snapshotOf', () => {
       } as never,
     );
     await service['writeLitaUserToken'](
-      { upsertEnvFile, shell } as never,
+      { ensureDir: jest.fn(), upsertEnvFile, shell } as never,
       '/tmp/runtime/worker/1001',
     );
     expect(upsertEnvFile).toHaveBeenCalledWith(
       '/tmp/runtime/worker/1001',
-      '.opencode/.env',
+      '.agents/.env',
       { LITA_USER_TOKEN: 'worker-user-token' },
     );
   });
@@ -355,12 +382,16 @@ describe('WorkerEnvironmentService.start / stream / snapshotOf', () => {
       } as never,
     );
     await fallback['writeLitaUserToken'](
-      { upsertEnvFile: fallbackUpsert, shell: jest.fn() } as never,
+      {
+        ensureDir: jest.fn(),
+        upsertEnvFile: fallbackUpsert,
+        shell: jest.fn(),
+      } as never,
       '/tmp/runtime/worker/1001',
     );
     expect(fallbackUpsert).toHaveBeenCalledWith(
       '/tmp/runtime/worker/1001',
-      '.opencode/.env',
+      '.agents/.env',
       { LITA_USER_TOKEN: 'fallback-token' },
     );
 
@@ -376,7 +407,11 @@ describe('WorkerEnvironmentService.start / stream / snapshotOf', () => {
       { get: () => undefined } as never,
     );
     await empty['writeLitaUserToken'](
-      { upsertEnvFile: emptyUpsert, shell: emptyShell } as never,
+      {
+        ensureDir: jest.fn(),
+        upsertEnvFile: emptyUpsert,
+        shell: emptyShell,
+      } as never,
       '/tmp/runtime/worker/1001',
     );
     expect(emptyUpsert).not.toHaveBeenCalled();

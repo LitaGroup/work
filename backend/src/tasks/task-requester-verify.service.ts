@@ -13,7 +13,11 @@ import { Executor } from '../executors/executor.entity';
 import { createExecutorClient } from '../executors/executor-client';
 import { runExecutorPrompt, planPromptModels } from '../executors/executor-run';
 import { Worker } from '../workers/worker.entity';
-import { writeAgentTokenFile } from '../workers/worker-env';
+import {
+  upsertWorkerEnv,
+  WORKER_ENV_SOURCE_COMMAND,
+  WORKER_TOKEN_SHELL_ASSIGN,
+} from '../workers/worker-env';
 import { WorkersService } from '../workers/workers.service';
 import { isRequesterInboxReachable } from './task-requester';
 import { TaskRequesterSessionService } from './task-requester-session.service';
@@ -119,7 +123,10 @@ export class TaskRequesterVerifyService {
       const token = await this.workersService.ensureWorkToken(
         endpoint.worker.id,
       );
-      await writeAgentTokenFile(client, endpoint.workdir, token);
+      await upsertWorkerEnv(client, endpoint.workdir, {
+        LITA_WORK_TOKEN: token,
+        LITA_PROJECT_TOKEN: token,
+      });
       const plan = planPromptModels(endpoint.worker, endpoint.executor.id, {
         providerId: endpoint.providerId,
         modelId: endpoint.modelId,
@@ -234,7 +241,8 @@ export class TaskRequesterVerifyService {
       '# 必须执行的动作（三选一，必须实际调用接口）',
       '',
       '```bash',
-      'TOKEN=$(cat .opencode/agent-token)',
+      WORKER_ENV_SOURCE_COMMAND,
+      WORKER_TOKEN_SHELL_ASSIGN,
       '',
       '# 1) 验收通过',
       `curl -sS -X POST '${api}/tasks/${task.id}/handoff/accept.md' \\`,

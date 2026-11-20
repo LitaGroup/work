@@ -8,7 +8,11 @@ import { Executor } from '../executors/executor.entity';
 import { createExecutorClient } from '../executors/executor-client';
 import { runExecutorPrompt, planPromptModels } from '../executors/executor-run';
 import { Worker } from '../workers/worker.entity';
-import { writeAgentTokenFile } from '../workers/worker-env';
+import {
+  upsertWorkerEnv,
+  WORKER_ENV_SOURCE_COMMAND,
+  WORKER_TOKEN_SHELL_ASSIGN,
+} from '../workers/worker-env';
 import { WorkersService } from '../workers/workers.service';
 import { nextInboxRetryDelay } from './task-loop.rules';
 import { TaskMessage } from './task-message.entity';
@@ -146,7 +150,10 @@ export class TaskRequesterReplyService {
       const token = await this.workersService.ensureWorkToken(
         endpoint.worker.id,
       );
-      await writeAgentTokenFile(client, endpoint.workdir, token);
+      await upsertWorkerEnv(client, endpoint.workdir, {
+        LITA_WORK_TOKEN: token,
+        LITA_PROJECT_TOKEN: token,
+      });
       const conversation = await this.loadConversation(task.id);
       const plan = planPromptModels(endpoint.worker, endpoint.executor.id, {
         providerId: endpoint.providerId,
@@ -296,7 +303,8 @@ export class TaskRequesterReplyService {
       '# 必须执行的动作',
       '',
       '```bash',
-      'TOKEN=$(cat .opencode/agent-token)',
+      WORKER_ENV_SOURCE_COMMAND,
+      WORKER_TOKEN_SHELL_ASSIGN,
       `curl -sS -X POST '${api}/tasks/${task.id}/messages/reply.md' \\`,
       '  -H "X-Worker-Token: $TOKEN" \\',
       '  -H "Content-Type: application/json" \\',

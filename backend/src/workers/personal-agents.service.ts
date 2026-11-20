@@ -30,10 +30,10 @@ import {
 } from './personal-agent';
 import { isDeprecatedSkill } from './worker-skill-deprecation';
 import {
+  ensureWorkerSkeleton,
   shouldDenyExternalDirectory,
   upsertWorkerEnv,
-  writeAgentTokenFile,
-  writeOpencodeConfigFile,
+  writeKernelMcpConfig,
 } from './worker-env';
 import { McpServersService } from '../mcp-servers/mcp-servers.service';
 
@@ -529,7 +529,7 @@ export class PersonalAgentsService {
   }
 
   /**
-   * 机器人令牌重置后同步个人 AGENT 工位令牌文件（agent-token / .env / opencode.json）。
+   * 机器人令牌重置后同步个人 AGENT 工位令牌文件（.agents/.env / 内核 MCP 配置）。
    * 尽力而为：执行器离线或工位不可用时只告警，不阻断重置。
    */
   async refreshTokenFile(userId: number): Promise<void> {
@@ -550,7 +550,7 @@ export class PersonalAgentsService {
     }
   }
 
-  /** 首次对话前写入工位令牌文件（agent-token / .env） */
+  /** 首次对话前写入工位令牌与环境变量（.agents/.env）与内核 MCP 配置 */
   private async prepareWorkdir(
     worker: Worker,
     executor: Executor,
@@ -565,17 +565,17 @@ export class PersonalAgentsService {
       worker.mcps ?? [],
     );
     const client = createExecutorClient(executor);
-    // 调试/聊天与任务执行共用工位根目录，AGENTS.md 与 .opencode 就是当前目录，
+    // 调试/聊天与任务执行共用工位根目录，AGENTS.md 与 .agents 就是当前目录，
     // 无需再为独立调试目录创建符号链接。
     await withTimeout(
       (async () => {
-        await client.ensureDir(`${workdir}/.opencode`);
-        await writeAgentTokenFile(client, workdir, token);
+        await ensureWorkerSkeleton(client, workdir);
         await upsertWorkerEnv(client, workdir, {
           LITA_WORK_TOKEN: token,
           LITA_PROJECT_TOKEN: token,
+          LITA_APP_URL: this.appUrl,
         });
-        await writeOpencodeConfigFile(client, workdir, mcpServers, {
+        await writeKernelMcpConfig(client, workdir, executor.type, mcpServers, {
           denyExternalDirectory: this.denyExternalDirectory,
         });
       })(),

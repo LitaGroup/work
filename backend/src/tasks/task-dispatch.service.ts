@@ -19,6 +19,7 @@ import {
   TaskSubStatus,
   WorkerRole,
   WorkerRuntime,
+  ExecutorType,
 } from '../common/enums';
 import { isAgentRuntime } from '../common/worker-runtime';
 import { Executor } from '../executors/executor.entity';
@@ -49,10 +50,12 @@ import {
 } from '../executors/executor-run';
 import { Worker } from '../workers/worker.entity';
 import {
+  ensureWorkerSkeleton,
   shouldDenyExternalDirectory,
   upsertWorkerEnv,
-  writeAgentTokenFile,
-  writeOpencodeConfigFile,
+  WORKER_ENV_SOURCE_COMMAND,
+  WORKER_TOKEN_SHELL_ASSIGN,
+  writeKernelMcpConfig,
 } from '../workers/worker-env';
 import { WorkersService } from '../workers/workers.service';
 import { McpServersService } from '../mcp-servers/mcp-servers.service';
@@ -109,7 +112,7 @@ interface LiveTaskStream {
  * 链路：mkdir 工位 → 复用/建 opencode 会话（一个任务固定一个会话）→ 发任务输入/输出要求
  * → 订阅执行器事件流（按 sessionId 路由）→ 终态（execution.completed）取最终回复
  * → 释放机器人并转「待申请验收」→ 机器人申请验收后「待验收」+ 通知责任人。
- * 机器人定义与技能由工位 AGENTS.md / .opencode/skills 提供，不在任务 prompt 中重复注入。
+ * 机器人定义与技能由工位 AGENTS.md / .agents/skills 提供，不在任务 prompt 中重复注入。
  */
 @Injectable()
 export class TaskDispatchService
@@ -414,15 +417,21 @@ export class TaskDispatchService
     this.dispatching.add(task.id);
     try {
       // 1. 工位目录与机器人令牌（幂等；结构化文件写入，bridge 执行器同样适用）
-      await client.ensureDir(`${workdir}/.opencode`);
-      await writeAgentTokenFile(client, workdir, workerToken);
+      await ensureWorkerSkeleton(client, workdir);
       await upsertWorkerEnv(client, workdir, {
         LITA_WORK_TOKEN: workerToken,
         LITA_PROJECT_TOKEN: workerToken,
+        LITA_APP_URL: this.appUrl,
       });
-      await writeOpencodeConfigFile(client, workdir, mcpServers, {
-        denyExternalDirectory: this.denyExternalDirectory,
-      });
+      await writeKernelMcpConfig(
+        client,
+        workdir,
+        executor.type ?? ExecutorType.OPENCODE,
+        mcpServers,
+        {
+          denyExternalDirectory: this.denyExternalDirectory,
+        },
+      );
 
       // 2. 固定绑定：一个任务只对应一个 opencode 会话。
       //    同一执行器上复用既有会话；执行器变更或会话已不存在时才新建。
@@ -2227,7 +2236,8 @@ export class TaskDispatchService
       '匹配时调用 task-accept，接受成功后继续在当前会话执行：',
       '',
       '```bash',
-      'TOKEN=$(cat .opencode/agent-token)',
+      WORKER_ENV_SOURCE_COMMAND,
+      WORKER_TOKEN_SHELL_ASSIGN,
       `curl -sS -X POST '${this.apiUrl}/tasks/${task.id}/accept-task.md' \\`,
       '  -H "X-Worker-Token: $TOKEN"',
       '```',
@@ -2235,7 +2245,8 @@ export class TaskDispatchService
       '不匹配时调用 task-refuse，必须给出拒绝理由与分发建议：',
       '',
       '```bash',
-      'TOKEN=$(cat .opencode/agent-token)',
+      WORKER_ENV_SOURCE_COMMAND,
+      WORKER_TOKEN_SHELL_ASSIGN,
       `curl -sS -X POST '${this.apiUrl}/tasks/${task.id}/refuse.md' \\`,
       '  -H "X-Worker-Token: $TOKEN" \\',
       '  -H "Content-Type: application/json" \\',
@@ -2302,7 +2313,8 @@ export class TaskDispatchService
           ' 查询可分发的任务定义，再按需创建子任务；不要无目的拆分。',
         '',
         '```bash',
-        'TOKEN=$(cat .opencode/agent-token)',
+        WORKER_ENV_SOURCE_COMMAND,
+        WORKER_TOKEN_SHELL_ASSIGN,
         `curl -sS -X POST '${this.apiUrl}/tasks/${task.id}/subtasks/create.md' \\`,
         '  -H "X-Worker-Token: $TOKEN" \\',
         '  -H "Content-Type: application/json" \\',
@@ -2314,7 +2326,8 @@ export class TaskDispatchService
         '执行中需要需求方澄清时，必须调用 project 提问接口，不使用 opencode 原生提问；调用后停止本轮，等待平台恢复：',
         '',
         '```bash',
-        'TOKEN=$(cat .opencode/agent-token)',
+        WORKER_ENV_SOURCE_COMMAND,
+        WORKER_TOKEN_SHELL_ASSIGN,
         `curl -sS -X POST '${this.apiUrl}/tasks/${task.id}/questions/ask.md' \\`,
         '  -H "X-Worker-Token: $TOKEN" \\',
         '  -H "Content-Type: application/json" \\',
@@ -2336,7 +2349,8 @@ export class TaskDispatchService
         '4. 任务目录下的普通文档用任务接口读写（通用知识接口对 `/task/**` 只读）：',
         '',
         '```bash',
-        'TOKEN=$(cat .opencode/agent-token)',
+        WORKER_ENV_SOURCE_COMMAND,
+        WORKER_TOKEN_SHELL_ASSIGN,
         `curl -sS '${this.apiUrl}/tasks/${task.id}/documents.md' \\`,
         '  -H "X-Worker-Token: $TOKEN"',
         '',
@@ -2370,7 +2384,8 @@ export class TaskDispatchService
         '7. 需要快速追加进展时可用 `append` 代替完整 `content`；申请验收前仍应提交完整的最终正文。',
         '',
         '```bash',
-        'TOKEN=$(cat .opencode/agent-token)',
+        WORKER_ENV_SOURCE_COMMAND,
+        WORKER_TOKEN_SHELL_ASSIGN,
         `curl -sS '${this.apiUrl}/tasks/${task.id}/handoff.md' \\`,
         '  -H "X-Worker-Token: $TOKEN"',
         '',
@@ -2392,7 +2407,8 @@ export class TaskDispatchService
         '3. 在工位目录执行以下命令申请验收（机器人令牌不要写入聊天或文档）：',
         '',
         '```bash',
-        'TOKEN=$(cat .opencode/agent-token)',
+        WORKER_ENV_SOURCE_COMMAND,
+        WORKER_TOKEN_SHELL_ASSIGN,
         `curl -sS -X POST '${this.apiUrl}/tasks/${task.id}/handoff/apply.md' \\`,
         '  -H "X-Worker-Token: $TOKEN" \\',
         '  -H "Content-Type: application/json" \\',

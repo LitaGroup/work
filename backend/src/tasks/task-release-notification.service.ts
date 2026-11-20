@@ -8,7 +8,7 @@ import { Executor } from '../executors/executor.entity';
 import { createExecutorClient } from '../executors/executor-client';
 import { runExecutorPrompt, planPromptModels } from '../executors/executor-run';
 import { Worker } from '../workers/worker.entity';
-import { writeAgentTokenFile } from '../workers/worker-env';
+import { upsertWorkerEnv } from '../workers/worker-env';
 import { WorkersService } from '../workers/workers.service';
 import { nextInboxRetryDelay } from './task-loop.rules';
 import { Task } from './task.entity';
@@ -186,7 +186,10 @@ export class TaskReleaseNotificationService {
       const token = await this.workersService.ensureWorkToken(
         endpoint.worker.id,
       );
-      await writeAgentTokenFile(client, endpoint.workdir, token);
+      await upsertWorkerEnv(client, endpoint.workdir, {
+        LITA_WORK_TOKEN: token,
+        LITA_PROJECT_TOKEN: token,
+      });
       const plan = planPromptModels(endpoint.worker, endpoint.executor.id, {
         providerId: endpoint.providerId,
         modelId: endpoint.modelId,

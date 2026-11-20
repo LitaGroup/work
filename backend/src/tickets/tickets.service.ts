@@ -27,6 +27,10 @@ import { TasksService } from '../tasks/tasks.service';
 import { TaskDocumentService } from '../tasks/task-document.service';
 import { TaskMessage } from '../tasks/task-message.entity';
 import { Worker } from '../workers/worker.entity';
+import {
+  WORKER_ENV_SOURCE_COMMAND,
+  WORKER_TOKEN_SHELL_ASSIGN,
+} from '../workers/worker-env';
 import { Backlog } from '../iterations/backlog.entity';
 import { Iteration } from '../iterations/iteration.entity';
 import type { BacklogTicketSummary } from '../iterations/iteration.types';
@@ -721,7 +725,8 @@ export class TicketsService {
       '信息明确后调用以下接口，任务将更新识别结果并转交给目标任务定义的机器人；调用后结束本轮，不要申请验收：',
       '',
       '```bash',
-      'TOKEN=$(cat .opencode/agent-token)',
+      WORKER_ENV_SOURCE_COMMAND,
+      WORKER_TOKEN_SHELL_ASSIGN,
       `curl -sS -X POST '${this.apiUrl}/tasks/${task.id}/ticket-route.md' \\`,
       '  -H "X-Worker-Token: $TOKEN" \\',
       '  -H "Content-Type: application/json" \\',
@@ -1005,7 +1010,8 @@ export class TicketsService {
         `当前工单处于节点「${currentNode.name}」（key=${currentNode.key}）。若确认需求不符合要求、当前节点无法完成，调用以下接口拒绝（当前节点任务将置为失败，工作流按「failed/rejected」流转）：`,
         '',
         '```bash',
-        'TOKEN=$(cat .opencode/agent-token)',
+        WORKER_ENV_SOURCE_COMMAND,
+        WORKER_TOKEN_SHELL_ASSIGN,
         `curl -sS -X POST '${this.apiUrl}/tickets/${ticket.id}/reject.md' \\`,
         '  -H "X-Worker-Token: $TOKEN" \\',
         '  -H "Content-Type: application/json" \\',

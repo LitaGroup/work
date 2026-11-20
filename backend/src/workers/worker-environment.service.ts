@@ -12,6 +12,7 @@ import { EventEmitter } from 'events';
 import { Observable } from 'rxjs';
 import { Repository } from 'typeorm';
 import {
+  ExecutorType,
   WorkerGithubPermission,
   WorkerResourcePermission,
 } from '../common/enums';
@@ -35,8 +36,7 @@ import {
   ensureWorkerSkeleton,
   shouldDenyExternalDirectory,
   upsertWorkerEnv,
-  writeAgentTokenFile,
-  writeOpencodeConfigFile,
+  writeKernelMcpConfig,
 } from './worker-env';
 import { WorkersService } from './workers.service';
 import { McpServersService } from '../mcp-servers/mcp-servers.service';
@@ -58,34 +58,47 @@ const STREAM_PING_MS = 15_000;
 /** 进度行上限（防失控任务撑爆内存） */
 const MAX_LINES = 500;
 
-/** 平台统一注入工位 AGENTS.md 的多机器人协同协议（角色定义之后原样保留）。 */
-const TASK_COLLABORATION_AGENTS = `## 多机器人任务协同协议（平台固定）
+/**
+ * 平台统一注入工位 AGENTS.md 的多机器人协同协议（角色定义之后原样保留）。
+ * `appUrl` 为平台对外地址（含协议），用于写明 .md 端点的基础地址。
+ */
+export function buildTaskCollaborationAgents(appUrl: string): string {
+  const base = appUrl.replace(/\/+$/, '');
+  return `## 多机器人任务协同协议（平台固定）
+
+### 平台地址（硬性）
+
+- 平台访问地址：${base}（工位 \`.agents/.env\` 的 \`LITA_APP_URL\` 同值）。
+- 所有 .md 端点与 JSON 接口的完整地址 = 平台访问地址 + \`/api\` + 路径，例如 \`${base}/api/tasks.md\`、\`${base}/api/backlogs/{id}.md\`。
+- 不要猜测域名，也不要自行改写 http/https 协议；一律以上述地址为准。
 
 ### 基本原则
 
 1. 一个任务有且只有一个负责机器人和一个需求方；需求方可以是人类用户，也可以是父任务机器人。
 2. 任务来源包括人类创建和机器人通过 task-create 创建。你可以并行执行多个「进行中」任务，上限由平台配置（默认 3，1 表示串行）；达到上限时新任务保持等待，等待中的任务不占用执行容量，可以接受其他任务。
-3. 机器人身份令牌位于 .opencode/agent-token，同时写入 .opencode/.env 的 LITA_WORK_TOKEN（新名，优先）与 LITA_PROJECT_TOKEN（兼容旧名），两者同值。调用平台所有 .md 接口时先执行 \`set -a; . .opencode/.env; set +a\`，再使用 \`X-Agent-Token: \${LITA_WORK_TOKEN:-$LITA_PROJECT_TOKEN}\`（或 \`TOKEN=$(cat .opencode/agent-token)\` + \`X-Worker-Token: $TOKEN\`）；不得把令牌写入聊天、交付物或文档。
+3. 机器人身份令牌位于工位 \`.agents/.env\` 的 \`LITA_WORK_TOKEN\`（新名，优先）与 \`LITA_PROJECT_TOKEN\`（兼容旧名），两者同值。调用平台所有 .md 接口时先执行 \`set -a; . .agents/.env; set +a\`，再使用 \`X-Agent-Token: \${LITA_WORK_TOKEN:-$LITA_PROJECT_TOKEN}\` 或 \`X-Worker-Token: $LITA_WORK_TOKEN\`；不得把令牌写入聊天、交付物或文档。
 
-### 工位环境变量（.opencode/.env）
+### 工位环境变量（.agents/.env）
 
-- .opencode/.env 由平台注入并维护（权限 600，不得读取展示、改写或删除）：
-  - \`LITA_WORK_TOKEN\`：访问项目平台 .md 接口的机器人独立令牌（新名，优先使用），与 .opencode/agent-token 同值，放在 \`X-Agent-Token\` 或 \`X-Worker-Token\` 均可。
+- .agents/.env 由平台注入并维护（权限 600，不得读取展示、改写或删除）：
+  - \`LITA_WORK_TOKEN\`：访问项目平台 .md 接口的机器人独立令牌（新名，优先使用），放在 \`X-Agent-Token\` 或 \`X-Worker-Token\` 均可。
   - \`LITA_PROJECT_TOKEN\`：同一机器人令牌的兼容旧名，仅在旧脚本只认旧名时使用；新调用优先 \`LITA_WORK_TOKEN\`。
   - \`LITA_USER_TOKEN\`：访问 Lita 平台的用户令牌，供 lita-api 等技能使用。
-- **环境变量优先级（硬性）**：调用 lita-work 等技能前，工位 \`.opencode/.env\` 中的环境变量优先级最高，高于当前进程环境变量；同名变量必须以 \`.opencode/.env\` 为准，不得用进程环境中的同名值覆盖。
-- 每次调用相关技能前，必须在同一个 shell 中先执行：\`set -a; . .opencode/.env; set +a\`，再执行技能或接口调用。
+  - \`LITA_APP_URL\`：平台访问地址（含协议），用于拼接 .md 端点；与上方「平台地址」一致。
+- **环境变量优先级（硬性）**：调用 lita-work 等技能前，工位 \`.agents/.env\` 中的环境变量优先级最高，高于当前进程环境变量；同名变量必须以 \`.agents/.env\` 为准，不得用进程环境中的同名值覆盖。
+- 每次调用相关技能前，必须在同一个 shell 中先执行：\`set -a; . .agents/.env; set +a\`，再执行技能或接口调用。
 - 不得把令牌写入聊天、交付物、文档或代码仓库。
 
 ### 工作区边界（平台强制）
 
 - 全部文件读写必须位于当前工位目录内；禁止读写工位之外的任何路径，包括但不限于其他机器人工位、执行器宿主的 ~/.env、~/.config、/tmp、/etc，也不要用 .. 或绝对路径访问工位外文件；需要临时文件时放在工位目录内。
-- 平台已在 .opencode/opencode.json 注入权限限制，越界的读取、写入与命令会被直接拒绝。
+- opencode 执行器已在 \`.opencode/opencode.json\` 注入权限限制，越界的读取、写入与命令会被直接拒绝；其它执行内核以本协议约定为准（平台暂未提供强制拦截）。
 - 任务确需工位之外的资料时，不要自行越界获取；通过 lita-work MCP、文档上传等平台渠道向需求方说明并获取。
 
 ### 平台 MCP 服务（lita-work）
 
-- 工位由平台注入 \`.opencode/opencode.json\`，MCP 服务 \`lita-work\` 指向平台 \`/api/mcp/work\`（Streamable HTTP，机器人令牌鉴权），自动连接，无需手动配置或启动。
+- MCP 服务由平台初始化/派发时按当前执行内核写入并自动连接：opencode 为 \`.opencode/opencode.json\`、kiro 为 \`.kiro/settings/mcp.json\`、devin 为 \`.devin/mcp_config.json\`、droid 为 \`.factory/mcp.json\`；另有内核无关声明 \`.agents/mcp.json\`（平台维护，含凭据，不得读取展示、改写或删除）。
+- MCP 服务 \`lita-work\` 指向平台 \`/api/mcp/work\`（Streamable HTTP，机器人令牌鉴权），无需手动配置或启动。
 - 项目搜索/详情、项目文档、知识库、检查/用例/导出运行、缺陷、提测、代码分支、文件上传等操作优先使用 lita-work 的 MCP 工具。
 - 任务协同、工单与机器人/任务定义管理同样已提供 MCP 工具：任务 \`list_my_tasks\` / \`get_task\` / \`create_task\` / \`create_subtask\` / \`accept_task\` / \`refuse_task\` / \`ask_task_question\` / \`answer_task_question\` / \`reply_task_message\` / \`list_task_documents\` / \`upsert_task_document\` / \`read_task_handoff\` / \`update_task_handoff\` / \`apply_task_acceptance\` / \`accept_task_handoff\` / \`refuse_task_handoff\` / \`fail_task\`；工单 \`get_task_ticket\` / \`route_task_ticket\` / \`get_ticket\` / \`reject_ticket_node\` / 工单文档工具；机器人/任务定义 \`list_workers\` / \`get_worker\` / \`create_worker\` / \`update_worker\` / \`delete_worker\` / 任务定义工具。MCP 不可用时再回退下方 \`.md\` 端点。
 - 任务动作优先使用 MCP：接受邀约 \`accept_task\`、拒绝 \`refuse_task\`、提问 \`ask_task_question\`、更新交付 \`update_task_handoff\`、申请验收 \`apply_task_acceptance\`、验收 \`accept_task_handoff\` / \`refuse_task_handoff\`、判失败 \`fail_task\`。
@@ -139,6 +152,7 @@ const TASK_COLLABORATION_AGENTS = `## 多机器人任务协同协议（平台固
 - task-handoff-refuse：POST /api/tasks/{taskId}/handoff/refuse.md
 - task-fail：POST /api/tasks/{taskId}/fail.md
 `;
+}
 
 /** 初始化状态：idle=无任务（从未初始化或快照已过期清理） */
 export type WorkerInitializeStatus = 'idle' | 'running' | 'success' | 'failed';
@@ -192,11 +206,13 @@ const TOOL_LABELS: Record<string, string> = {
 
 /**
  * 机器人工作环境初始化：把数据库中的 AGENTS.md、技能引用与规范引用应用到工位。
- * 工位目录结构：
+ * 工位目录结构（内核无关）：
  * - AGENTS.md
- * - .opencode/skills/
- * - .opencode/rules/（选中规范的目录镜像，另有 .standards-manifest.json 受管清单）
- * - .opencode/docs/（机器人自行维护的知识文档）
+ * - .agents/skills/（技能源；opencode、devin 原生发现，kiro/droid 由初始化镜像）
+ * - .agents/rules/（规范源 + .standards-manifest.json 受管清单；按内核镜像）
+ * - .agents/.env、.agents/mcp.json（平台注入，权限 600）
+ * - docs/（机器人自行维护的知识文档）
+ * - 内核适配物（.opencode/opencode.json、.kiro/settings/mcp.json 等，平台生成）
  *
  * 执行模型：POST 启动后台任务并立即返回运行快照，进度经 SSE 实时推送。
  * 同步长请求会被网关（ALB 60s）以 504 掐断而后端继续跑完，故刻意异步化。
@@ -361,10 +377,13 @@ export class WorkerEnvironmentService implements OnModuleDestroy {
       // 幂等建立工位骨架，初始化会话内仍会按需补齐
       this.pushLine(job, '· 创建工位目录…');
       await ensureWorkerSkeleton(client, workdir);
-      this.pushLine(job, '· 写入机器人身份令牌（agent-token / .env）…');
-      await this.writeAgentToken(client, worker.id, workdir);
-      this.pushLine(job, '· 注入 MCP 配置（lita-work + 已选服务）…');
-      await this.writeWorkMcpConfig(client, worker, workdir);
+      this.pushLine(job, '· 写入工位环境变量（令牌 / 平台地址）…');
+      await this.writeWorkerSecrets(client, worker.id, workdir);
+      this.pushLine(
+        job,
+        `· 注入 MCP 配置（${executor.type ?? ExecutorType.OPENCODE} + 已选服务）…`,
+      );
+      await this.writeWorkMcpConfig(client, worker, executor, workdir);
       this.pushLine(job, '· 注入 Lita 用户令牌…');
       await this.writeLitaUserToken(client, workdir);
       const githubCredentialStatus = (await this.githubCredentials?.statusOf(
@@ -386,7 +405,11 @@ export class WorkerEnvironmentService implements OnModuleDestroy {
         }`,
       );
       this.pushLine(job, '· 生成初始化指令（AGENTS.md + 技能 + 规范）…');
-      const prompt = await this.buildPrompt(worker, githubCredentialStatus);
+      const prompt = await this.buildPrompt(
+        worker,
+        githubCredentialStatus,
+        executor.type ?? ExecutorType.OPENCODE,
+      );
       // 主模型限额冷却中改用备用模型，避免初始化也撞限额
       const initModel = resolveWorkerModel(worker)?.model ?? {
         providerId: worker.providerId!,
@@ -466,54 +489,64 @@ export class WorkerEnvironmentService implements OnModuleDestroy {
   }
 
   /**
-   * 把机器人工作令牌写入工位 .opencode/agent-token，并同步到 .opencode/.env 的
-   * LITA_WORK_TOKEN（新名，优先）与 LITA_PROJECT_TOKEN（兼容旧名）。
+   * 把机器人工作令牌与平台地址写入工位 .agents/.env：
+   * LITA_WORK_TOKEN（新名，优先）与 LITA_PROJECT_TOKEN（兼容旧名）、LITA_APP_URL。
    * 个人 AGENT 使用其主人真人机器人的令牌。
    * 令牌只经服务端落盘，不进入初始化 Prompt、SSE 进度或日志。
    */
-  private async writeAgentToken(
+  private async writeWorkerSecrets(
     client: ExecutorClient,
     workerId: number,
     workdir: string,
   ): Promise<void> {
     const token = await this.workersService.ensureWorkToken(workerId);
-    await writeAgentTokenFile(client, workdir, token);
     await upsertWorkerEnv(client, workdir, {
       LITA_WORK_TOKEN: token,
       LITA_PROJECT_TOKEN: token,
+      LITA_APP_URL: this.appUrl(),
     });
   }
 
+  /** 平台对外访问地址（含协议，去掉结尾斜杠） */
+  private appUrl(): string {
+    return (this.config.get<string>('APP_URL') ?? 'http://localhost:5273')
+      .trim()
+      .replace(/\/+$/, '');
+  }
+
   /**
-   * 注入工位 opencode 配置（.opencode/opencode.json，权限 600）：
-   * 平台 lita-work + 机器人勾选且启用中的自定义 MCP；opencode 按项目配置自动连接。
-   * 同时注入工作区边界权限（deny external_directory，可用
-   * WORKER_DENY_EXTERNAL_DIRECTORY=false 止血关闭），禁止会话读写工位之外的路径。
-   * 令牌只经服务端落盘，不进入 Prompt、SSE 进度或日志。
+   * 按执行器内核注入 MCP 配置（平台 lita-work + 机器人勾选且启用中的自定义 MCP）：
+   * opencode / kiro / devin / droid 各自的项目级配置文件，另写内核无关声明
+   * .agents/mcp.json；opencode 同时注入工作区边界权限（WORKER_DENY_EXTERNAL_DIRECTORY=false
+   * 可止血关闭）。令牌只经服务端落盘，不进入 Prompt、SSE 进度或日志。
    */
   private async writeWorkMcpConfig(
     client: ExecutorClient,
     worker: Worker,
+    executor: Executor,
     workdir: string,
   ): Promise<void> {
     const token = await this.workersService.ensureWorkToken(worker.id);
-    const appUrl = (
-      this.config.get<string>('APP_URL') ?? 'http://localhost:5273'
-    ).replace(/\/+$/, '');
     const servers = await this.mcpServers.buildServersConfig(
-      appUrl,
+      this.appUrl(),
       token,
       worker.mcps ?? [],
     );
-    await writeOpencodeConfigFile(client, workdir, servers, {
-      denyExternalDirectory: shouldDenyExternalDirectory(
-        this.config.get<string>('WORKER_DENY_EXTERNAL_DIRECTORY'),
-      ),
-    });
+    await writeKernelMcpConfig(
+      client,
+      workdir,
+      executor.type ?? ExecutorType.OPENCODE,
+      servers,
+      {
+        denyExternalDirectory: shouldDenyExternalDirectory(
+          this.config.get<string>('WORKER_DENY_EXTERNAL_DIRECTORY'),
+        ),
+      },
+    );
   }
 
   /**
-   * 把 Lita 用户令牌写入工位 .opencode/.env 的 LITA_USER_TOKEN（权限 600，保留其他键），
+   * 把 Lita 用户令牌写入工位 .agents/.env 的 LITA_USER_TOKEN（权限 600，保留其他键），
    * 供 lita-api 等技能使用；同时同步到执行器宿主 ~/.env（保留其他变量），
    * 兼容按 ~/.env 读取令牌的技能。
    * 优先 WORKER_LITA_USER_TOKEN，未配置时回退平台自身的 LITA_USER_TOKEN。
@@ -639,6 +672,7 @@ export class WorkerEnvironmentService implements OnModuleDestroy {
       githubAccount: null,
       rotatedAt: null,
     },
+    kernel: ExecutorType = ExecutorType.OPENCODE,
   ): Promise<string> {
     const agents = worker.prompt ?? '';
     const skills = worker.skills ?? [];
@@ -675,12 +709,12 @@ export class WorkerEnvironmentService implements OnModuleDestroy {
             const standard = standardsByDirectory.get(directory);
             const sourceUrl = standard?.sourceUrl || standard?.url || directory;
             const description = standard?.description?.trim();
-            return `- [${standard?.name || directory}](${sourceUrl})（源目录：${directory}；工位目录：.opencode/rules/${directory}${
+            return `- [${standard?.name || directory}](${sourceUrl})（源目录：${directory}；工位目录：.agents/rules/${directory}${
               standard?.version ? `；版本：${standard.version}` : ''
             }${description ? `；说明：${description}` : ''}）`;
           })
           .join('\n')
-      : '（本次规范清单为空：只移除 .opencode/rules/.standards-manifest.json 中记录的旧规范文件，不处理其他文档）';
+      : '（本次规范清单为空：只移除 .agents/rules/.standards-manifest.json 中记录的旧规范文件，不处理其他文档）';
     const requiredFileLines = standards.files.length
       ? standards.files
           .map(
@@ -697,7 +731,7 @@ export class WorkerEnvironmentService implements OnModuleDestroy {
       ? [
           '## 规范与规则',
           '',
-          '以下规范由平台同步到 `.opencode/rules/`，执行任务前按需阅读对应文档。',
+          '以下规范由平台同步到 `.agents/rules/`，执行任务前按需阅读对应文档。',
           '',
           ...standards.directories.flatMap((directory) => {
             const standard = standardsByDirectory.get(directory);
@@ -717,7 +751,7 @@ export class WorkerEnvironmentService implements OnModuleDestroy {
               `- 说明：${description}`,
               ...(version ? [`- 版本：${version}`] : []),
               ...(sourceUrl ? [`- 原文：${sourceUrl}`] : []),
-              `- 工位目录：\`.opencode/rules/${directory}\``,
+              `- 工位目录：\`.agents/rules/${directory}\``,
               '- 文档：',
               ...files.map((file) => `  - \`${file}\``),
               '',
@@ -735,16 +769,31 @@ export class WorkerEnvironmentService implements OnModuleDestroy {
     const mcpSection = [
       '## 已配置的 MCP 服务',
       '',
-      `平台固定注入：lita-work（Streamable HTTP，机器人令牌鉴权）。`,
+      `平台固定注入：lita-work（Streamable HTTP，机器人令牌鉴权，由平台按执行内核写入配置文件并自动连接）。`,
       ...(mcpNames.length
         ? [
             '',
-            '机器人勾选的自定义 MCP（opencode 自动连接，可直接使用其工具）：',
+            '机器人勾选的自定义 MCP（自动连接，可直接使用其工具）：',
             '',
             ...mcpNames.map((name) => `- ${name}`),
           ]
         : ['', '机器人未勾选其它自定义 MCP 服务。']),
     ].join('\n');
+
+    const skillMirror =
+      kernel === ExecutorType.KIRO
+        ? '当前执行内核 kiro 需要镜像：把 `.agents/skills/` 下的技能目录一并复制到 `.kiro/skills/`（同名覆盖；本次清单之外的旧技能目录同步删除）。'
+        : kernel === ExecutorType.DROID
+          ? '当前执行内核 droid 需要镜像：把 `.agents/skills/` 下的技能目录一并复制到 `.factory/skills/`（同名覆盖；本次清单之外的旧技能目录同步删除）。'
+          : `当前执行内核 ${kernel} 直接读取 \`.agents/skills/\`，无需镜像。`;
+    const ruleMirror =
+      kernel === ExecutorType.OPENCODE
+        ? '当前执行内核 opencode 需要镜像：把 `.agents/rules/` 的内容复制到 `.opencode/rules/`（.agents 为唯一源；镜像目录中已不存在的旧文件同步删除）。'
+        : kernel === ExecutorType.KIRO
+          ? '当前执行内核 kiro 需要镜像：把 `.agents/rules/` 的内容复制到 `.kiro/steering/`（.agents 为唯一源；镜像目录中已不存在的旧文件同步删除）。'
+          : kernel === ExecutorType.DROID
+            ? '当前执行内核 droid 需要镜像：把 `.agents/rules/` 的内容复制到 `.factory/rules/`（.agents 为唯一源；镜像目录中已不存在的旧文件同步删除）。'
+            : '当前执行内核 devin 不设规范目录：AGENTS.md 已注明从 `.agents/rules/` 按需阅读，无需镜像。';
 
     return `接下来，更新当前的工作环境：
 
@@ -757,7 +806,7 @@ ${agents}
 
 ### 平台固定协同协议
 \`\`\`\`markdown
-${TASK_COLLABORATION_AGENTS}
+${buildTaskCollaborationAgents(this.appUrl())}
 \`\`\`\`
 
 ### GitHub 操作权限（必须写入 AGENTS.md）
@@ -795,14 +844,14 @@ ${mcpSection}
 ### 目录结构
 
 - AGENTS.md    机器人的工作基本原则
-- .opencode/   opencode自身的目录
-- .opencode/agent-token   平台注入的机器人身份令牌（权限 600，不得读取展示、改写或删除）
-- .opencode/.env   平台注入的工位环境变量（权限 600，不得读取展示、改写或删除）：LITA_WORK_TOKEN 访问项目平台 .md 接口（新名，优先，与 agent-token 同值）、LITA_PROJECT_TOKEN 兼容旧名（同值）、LITA_USER_TOKEN 访问 Lita 平台技能
-- .opencode/opencode.json   平台注入的 MCP 配置与工作区边界权限（lita-work、机器人勾选的 MCP 服务与 permissions 边界规则，权限 600，不得读取展示、改写或删除）
-- .opencode/skills/   当前机器人的技能
-- .opencode/rules/   平台同步的规范与规则文档（保持规范库原始目录结构；.standards-manifest.json 是受管清单）
-- .opencode/rules/.standards-manifest.json   本次同步的规范文件清单（JSON：{"version":1,"files":[...]}）
-- .opencode/docs/     机器人自行维护的知识文档（opencode 可以根据完成任务的情况更新总结）
+- .agents/     通用 Agent 目录（内核无关的技能、规范与平台注入内容）
+- .agents/.env   平台注入的工位环境变量（权限 600，不得读取展示、改写或删除）：LITA_WORK_TOKEN 访问项目平台 .md 接口（新名，优先）、LITA_PROJECT_TOKEN 兼容旧名（同值）、LITA_USER_TOKEN 访问 Lita 平台技能、LITA_APP_URL 平台访问地址
+- .agents/mcp.json   平台注入的内核无关 MCP 声明（权限 600，含凭据，不得读取展示、改写或删除）
+- .agents/skills/    当前机器人的技能源目录（opencode、devin 原生发现；kiro、droid 需镜像）
+- .agents/rules/     平台同步的规范与规则源文档（保持规范库原始目录结构；.standards-manifest.json 是受管清单）
+- .agents/rules/.standards-manifest.json   本次同步的规范文件清单（JSON：{"version":1,"files":[...]}）
+- docs/         机器人自行维护的知识文档（可以根据完成任务的情况更新总结）
+- 内核适配物（平台按执行器类型生成，权限 600，不得读取展示、改写或删除）：opencode 为 .opencode/opencode.json 与 .opencode/rules 镜像；kiro 为 .kiro/settings/mcp.json 与 .kiro/skills、.kiro/steering 镜像；devin 为 .devin/mcp_config.json；droid 为 .factory/mcp.json 与 .factory/skills、.factory/rules 镜像
 
 ### 更新要求
 
@@ -812,17 +861,20 @@ ${mcpSection}
 4. 把「规范与规则（必须写入 AGENTS.md）」中的 Markdown 原样写入 AGENTS.md 的「## 规范与规则」小节；规范名称、说明、工位目录与文档清单不得删减。
 5. 把「MCP 服务清单（必须写入 AGENTS.md）」中的 Markdown 原样写入 AGENTS.md 的「## 已配置的 MCP 服务」小节；服务清单不得删减。
 6. 确保 AGENTS.md 中包含上面的目录结构说明。
-7. 保留 .opencode/ 下与本次更新无关的配置，尤其不得读取展示、改写或删除 .opencode/agent-token 与 .opencode/.env；不得清空或改写 .opencode/docs/ 中机器人自行维护的文档。
-8. .opencode/skills/ 以本次技能清单为准：安装或更新清单中的全部技能；移除清单之外的旧技能目录。
+7. 保留 .agents/ 下与本次更新无关的配置，尤其不得读取展示、改写或删除 .agents/.env、.agents/mcp.json 与 .agents/rules/.standards-manifest.json；不得清空或改写 docs/ 中机器人自行维护的文档。
+8. .agents/skills/ 以本次技能清单为准：安装或更新清单中的全部技能；移除清单之外的旧技能目录。
 9. 安装技能时不要只保存 SKILL.md：按技能目录保持原始结构，并下载技能引用到的脚本、模板等资源文件。
-10. .opencode/rules/ 中的规范文档以本次规范清单为准：
-   - 如果 .opencode/rules/.standards-manifest.json 存在，先读取其中 files 数组作为旧受管文件清单；不存在或内容非法时旧受管清单视为空。
-   - 如果旧的 .opencode/docs/.standards-manifest.json 存在：先按其 files 清单删除 .opencode/docs/ 下对应的旧受管文件，再删除该旧清单；这是目录从 docs 迁移到 rules 的一次性清理，其他 docs 文档不要动。
-   - 按下方「需存在的规范文件」下载并写入 .opencode/rules/ 下同名相对路径；保持文件内容与链接内容一致，不要改写或摘要。
-   - 只删除「旧受管文件清单中存在、但本次需存在清单中没有」的文件；不要删除 .opencode/docs/ 或其他流程产生的文档。
-   - 同步完成后把本次需存在的全部相对路径写入 .opencode/rules/.standards-manifest.json，格式为 {"version":1,"files":[...]}，路径按字典序排序；manifest 自身不要写入 files。
-11. 需要创建目录时保持仓库原始目录结构；同名文件以本次规范库内容覆盖。
-12. .opencode/opencode.json 由平台注入并维护（lita-work、机器人勾选的 MCP 服务与工作区边界权限），不得读取展示、改写或删除。
+10. 技能镜像：${skillMirror}
+11. .agents/rules/ 中的规范文档以本次规范清单为准：
+   - 如果 .agents/rules/.standards-manifest.json 存在，先读取其中 files 数组作为旧受管文件清单；不存在或内容非法时旧受管清单视为空。
+   - 如果旧的 .opencode/docs/.standards-manifest.json 或 .opencode/rules/.standards-manifest.json 存在：先按其 files 清单删除对应旧受管文件，再删除该旧清单；这是目录迁移到 .agents/rules 的一次性清理，其他文档不要动。
+   - 按下方「需存在的规范文件」下载并写入 .agents/rules/ 下同名相对路径；保持文件内容与链接内容一致，不要改写或摘要。
+   - 只删除「旧受管文件清单中存在、但本次需存在清单中没有」的文件；不要删除 docs/ 或其他流程产生的文档。
+   - 同步完成后把本次需存在的全部相对路径写入 .agents/rules/.standards-manifest.json，格式为 {"version":1,"files":[...]}，路径按字典序排序；manifest 自身不要写入 files。
+12. 规范镜像：${ruleMirror}
+13. 需要创建目录时保持仓库原始目录结构；同名文件以本次规范库内容覆盖。
+14. 内核 MCP 配置由平台注入并维护（lita-work、机器人勾选的 MCP 服务与工作区边界权限），不得读取展示、改写或删除。
+15. 一次性迁移清理：如果工位存在旧版路径 \`.opencode/agent-token\`、\`.opencode/.env\`、\`.opencode/skills/\`、\`.opencode/docs/\`，删除它们（令牌与技能已迁移到 \`.agents/\`）；\`.opencode/opencode.json\` 是平台生成的适配物，必须保留。不要删除 \`docs/\` 与 \`.agents/\`。
 
 ## 从以下链接中，安装或更新技能
 
@@ -832,7 +884,7 @@ ${skillLines}
 
 ${standardLines}
 
-## 需存在的规范文件（左侧为相对 .opencode/rules/ 的路径，右侧为原始文件地址）
+## 需存在的规范文件（左侧为相对 .agents/rules/ 的路径，右侧为原始文件地址）
 
 ${requiredFileLines}
 
@@ -940,7 +992,7 @@ ${requiredFileLines}
 允许事项：
 - 通过 AI Gateway 查询可访问的只读资源。
 - 对 readOnly=true 的 MySQL 资源执行单条只读 SQL。
-- 使用 .opencode/skills 中已安装的 resource-gateway 技能调用资源接口。
+- 使用 .agents/skills 中已安装的 resource-gateway 技能调用资源接口。
 
 禁止事项：
 - 不要访问或尝试执行 readOnly=false 的可写资源；网关会返回 403。
@@ -955,7 +1007,7 @@ ${requiredFileLines}
 允许事项：
 - 通过 AI Gateway 查询并访问全部已登记资源。
 - 对 MySQL 资源执行任务所需的单条 SQL。
-- 使用 .opencode/skills 中已安装的 resource-gateway 技能调用资源接口。
+- 使用 .agents/skills 中已安装的 resource-gateway 技能调用资源接口。
 
 禁止事项：
 - readOnly=true 的资源仍执行只读事务；不要尝试绕过该限制。
@@ -985,14 +1037,18 @@ ${requiredFileLines}
   /**
    * 校验初始化协议输出。
    * 优先接受整段 `DONE`；同时兜底接受独立成行的 DONE（部分模型会先输出验证报告，
-   * 再把 DONE 放进代码块）。ERROR 优先于 DONE 判定，避免失败报告被误判成功。
+   * 再把 DONE 放进代码块），以及整段以 DONE 收尾的输出（devin 等内核把多段叙述直接
+   * 拼接，DONE 会粘在句尾，如 `...AGENTS.md.DONE`）。
+   * ERROR 优先于 DONE 判定，避免失败报告被误判成功；ERROR 同样允许粘在句读标点之后。
    */
   private assertDone(text: string): void {
     const output = text.trim();
-    const error = output.match(/(?:^|\n)\s*(?:`{3,}\s*)?ERROR:\s*([\s\S]+)$/);
+    const error = output.match(
+      /(?:^|\n)\s*(?:`{3,}\s*)?ERROR:\s*([\s\S]+)$|(?:[.。!！?？;；:：`>）)])(?:`{3,}\s*)?ERROR:\s*([\s\S]+)$/,
+    );
     if (error) {
       throw new BadRequestException(
-        `工作环境初始化失败：${error[1].replace(/`+$/, '').trim() || '未知错误'}`,
+        `工作环境初始化失败：${(error[1] ?? error[2] ?? '').replace(/`+$/, '').trim() || '未知错误'}`,
       );
     }
     if (this.hasStandaloneDone(output)) return;
@@ -1004,13 +1060,23 @@ ${requiredFileLines}
     );
   }
 
-  /** 判断输出中是否有独立成行的 DONE（允许被代码围栏包裹） */
+  /**
+   * 判断输出是否以 DONE 收尾。
+   * 接受整段 `DONE`、独立成行的 DONE（允许被代码围栏包裹），以及整段以 DONE 收尾
+   * （句读标点后粘连的 DONE，如 `...Now writing AGENTS.md.DONE`，devin 的叙述 chunk
+   * 不带尾换行，bridge 兜底拼接后会粘成一行）。
+   */
   private hasStandaloneDone(output: string): boolean {
     if (output === 'DONE') return true;
-    return output
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .includes('DONE');
+    if (
+      output
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .includes('DONE')
+    ) {
+      return true;
+    }
+    return /(?:^|[\s.。!！?？;；:：`>）)])DONE[.。]?\s*$/.test(output);
   }
 
   /** 去掉模型偶尔包裹的代码围栏（与 WorkerAiService 相同的兜底） */

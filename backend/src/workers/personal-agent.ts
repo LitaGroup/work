@@ -27,15 +27,15 @@ export function buildPersonalAgentPrompt(
 ## 工位与鉴权
 
 - 项目平台 API 基础地址：${base}
-- 当前会话工作目录就是工位根目录，角色定义在 AGENTS.md，令牌文件在 .opencode/.env（LITA_WORK_TOKEN 优先、LITA_PROJECT_TOKEN 兼容旧名，均与 .opencode/agent-token 相同）。
+- 当前会话工作目录就是工位根目录，角色定义在 AGENTS.md，令牌文件在 .agents/.env（LITA_WORK_TOKEN 优先、LITA_PROJECT_TOKEN 兼容旧名）。
 - 你的工作令牌与主人对应的真人机器人令牌一致；通过平台接口执行操作时，统一以该真人机器人身份出现。
-- 调用平台接口前先执行：\`set -a; . .opencode/.env; set +a\`
+- 调用平台接口前先执行：\`set -a; . .agents/.env; set +a\`
 - 请求头使用 \`X-Agent-Token: \${LITA_WORK_TOKEN:-$LITA_PROJECT_TOKEN}\` 或 \`X-Worker-Token: \${LITA_WORK_TOKEN:-$LITA_PROJECT_TOKEN}\`。
-- 不得在任何回复、文档、代码或交付物中输出令牌；不要读取或展示 .opencode/.env 的内容。
+- 不得在任何回复、文档、代码或交付物中输出令牌；不要读取或展示 .agents/.env 的内容。
 
 ## 平台 MCP 工具（优先使用）
 
-工位已注入 \`lita-work\` MCP（\`.opencode/opencode.json\`，自动连接），任务协同、工单、机器人与任务定义、项目/文档/知识/运行/缺陷等平台能力均优先使用 MCP 工具；本提示词中的 \`.md\` 接口仅作 MCP 不可用时的兼容回退。
+工位已按执行内核注入 \`lita-work\` MCP（opencode 为 \`.opencode/opencode.json\`，kiro 为 \`.kiro/settings/mcp.json\`，devin 为 \`.devin/mcp_config.json\`，droid 为 \`.factory/mcp.json\`，自动连接），任务协同、工单、机器人与任务定义、项目/文档/知识/运行/缺陷等平台能力均优先使用 MCP 工具；本提示词中的 \`.md\` 接口仅作 MCP 不可用时的兼容回退。
 
 - 任务：\`list_my_tasks\` / \`get_task\` / \`create_task\` / \`list_task_defines\` / \`create_subtask\` / \`accept_task\` / \`refuse_task\` / \`ask_task_question\` / \`answer_task_question\` / \`reply_task_message\` / \`list_task_documents\` / \`upsert_task_document\` / \`read_task_handoff\` / \`update_task_handoff\` / \`apply_task_acceptance\` / \`accept_task_handoff\` / \`refuse_task_handoff\` / \`fail_task\`
 - 工单：\`get_task_ticket\` / \`route_task_ticket\` / \`get_ticket\` / \`reject_ticket_node\` / 工单文档工具
@@ -136,8 +136,8 @@ export function buildPersonalAgentFirstPrompt(
         '# 工作台会话目录',
         '',
         `- 当前会话工作目录：${workdir}（工位根目录）`,
-        `- 令牌文件：${workdir}/.opencode/.env`,
-        `- 调用平台接口前执行：\`set -a; . '${workdir}/.opencode/.env'; set +a\``,
+        `- 令牌文件：${workdir}/.agents/.env`,
+        `- 调用平台接口前执行：\`set -a; . '${workdir}/.agents/.env'; set +a\``,
       ].join('\n')
     : '';
   const context = channelContext?.trim() ? `\n\n${channelContext.trim()}` : '';

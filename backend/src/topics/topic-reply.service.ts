@@ -11,7 +11,11 @@ import { planPromptModels, runExecutorPrompt } from '../executors/executor-run';
 import { nextInboxRetryDelay } from '../tasks/task-loop.rules';
 import { TaskRequesterSessionService } from '../tasks/task-requester-session.service';
 import { Worker } from '../workers/worker.entity';
-import { writeAgentTokenFile } from '../workers/worker-env';
+import {
+  upsertWorkerEnv,
+  WORKER_ENV_SOURCE_COMMAND,
+  WORKER_TOKEN_SHELL_ASSIGN,
+} from '../workers/worker-env';
 import { WorkersService } from '../workers/workers.service';
 import { TopicPost } from './topic-post.entity';
 import { TopicWorkerInbox } from './topic-worker-inbox.entity';
@@ -107,7 +111,10 @@ export class TopicReplyService {
       const token = await this.workersService.ensureWorkToken(
         endpoint.worker.id,
       );
-      await writeAgentTokenFile(client, endpoint.workdir, token);
+      await upsertWorkerEnv(client, endpoint.workdir, {
+        LITA_WORK_TOKEN: token,
+        LITA_PROJECT_TOKEN: token,
+      });
       const plan = planPromptModels(endpoint.worker, endpoint.executor.id, {
         providerId: endpoint.providerId,
         modelId: endpoint.modelId,
@@ -271,7 +278,8 @@ export class TopicReplyService {
         '` 了解完整上下文后，调用回帖接口：',
       '',
       '```bash',
-      'TOKEN=$(cat .opencode/agent-token)',
+      WORKER_ENV_SOURCE_COMMAND,
+      WORKER_TOKEN_SHELL_ASSIGN,
       `curl -sS -X POST '${this.apiUrl}/topics/${topic.id}/posts.md' \\`,
       '  -H "X-Worker-Token: $TOKEN" \\',
       '  -H "Content-Type: application/json" \\',

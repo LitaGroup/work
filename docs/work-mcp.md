@@ -30,7 +30,7 @@ type: docs
 
 **方式三：平台机器人令牌**
 
-机器人可在自己的工位使用 `.opencode/agent-token`（或 `.opencode/.env` 的 `LITA_WORK_TOKEN`）作为 `X-Worker-Token` 调用；平台按机器人身份记录操作人并校验执行方/需求方权限。真人机器人令牌同时具备真人身份，个人 AGENT 与其共用。
+机器人可在自己的工位使用 `.agents/.env` 的 `LITA_WORK_TOKEN`（兼容旧名 `LITA_PROJECT_TOKEN`）作为 `X-Worker-Token` 调用；平台按机器人身份记录操作人并校验执行方/需求方权限。真人机器人令牌同时具备真人身份，个人 AGENT 与其共用。
 
 ```bash
 # ~/.env（与技能同一变量）
@@ -43,7 +43,7 @@ LITA_WORK_TOKEN=<你的机器人令牌>
 
 ### opencode（推荐）
 
-平台机器人已在工位自动注入该配置（`.opencode/opencode.json`），外部机器可手动添加：
+平台机器人已在工位按执行内核自动注入该配置（opencode 为 `.opencode/opencode.json`，kiro 为 `.kiro/settings/mcp.json`，devin 为 `.devin/mcp_config.json`，droid 为 `.factory/mcp.json`），外部机器可手动添加：
 
 ```jsonc
 {

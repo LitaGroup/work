@@ -144,7 +144,7 @@ export function buildOpencodeServerConfig(
 /**
  * 机器人 MCP 配置（管理区「MCP 配置」）。
  * - 管理 CRUD（固定令牌只写不回显）；
- * - 为工位生成 opencode mcp.servers（平台 lita-work + 机器人勾选的启用项）；
+ * - 为工位生成 MCP 配置（平台 lita-work + 机器人勾选的启用项；按内核写入）；
  * - 平台侧连接测试（Streamable HTTP / stdio 握手后 listTools）。
  */
 @Injectable()
@@ -272,7 +272,7 @@ export class McpServersService {
   }
 
   /**
-   * 生成工位 .opencode/opencode.json 的完整 mcp.servers：
+   * 生成工位 MCP 服务清单（各内核配置文件的统一数据源）：
    * 平台 lita-work（机器人令牌鉴权）+ 机器人勾选且启用中的自定义 MCP。
    * 令牌只进入返回值，由调用方经 shell 落盘，不进日志与 Prompt。
    */

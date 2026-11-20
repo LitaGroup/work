@@ -8,6 +8,10 @@ import {
   type TaskWorkerInboxKind,
 } from './task-worker-inbox.entity';
 import { isWorkerRequester } from './task-requester';
+import {
+  WORKER_ENV_SOURCE_COMMAND,
+  WORKER_TOKEN_SHELL_ASSIGN,
+} from '../workers/worker-env';
 
 const OPEN_STATUSES = ['pending', 'queued', 'delivered'] as const;
 
@@ -408,7 +412,8 @@ export function taskInboxPrompt(
             : ['事件未携带问题正文，请先读取子任务详情。']),
           '',
           '```bash',
-          'TOKEN=$(cat .opencode/agent-token)',
+          WORKER_ENV_SOURCE_COMMAND,
+          WORKER_TOKEN_SHELL_ASSIGN,
           `curl -sS -X POST '${answerUrl}' \\`,
           '  -H "X-Worker-Token: $TOKEN" \\',
           '  -H "Content-Type: application/json" \\',
@@ -425,7 +430,8 @@ export function taskInboxPrompt(
             ...(handoffUrl ? [`- 文档查看地址：${handoffUrl}`] : []),
             '',
             '```bash',
-            'TOKEN=$(cat .opencode/agent-token)',
+            WORKER_ENV_SOURCE_COMMAND,
+            WORKER_TOKEN_SHELL_ASSIGN,
             '# 验收通过',
             `curl -sS -X POST '${acceptUrl}' \\`,
             '  -H "X-Worker-Token: $TOKEN" \\',
@@ -458,7 +464,8 @@ export function taskInboxPrompt(
                 '（事件未携带消息正文，请先读取子任务详情与对话记录。）',
               '',
               '```bash',
-              'TOKEN=$(cat .opencode/agent-token)',
+              WORKER_ENV_SOURCE_COMMAND,
+              WORKER_TOKEN_SHELL_ASSIGN,
               `curl -sS -X POST '${replyUrl}' \\`,
               '  -H "X-Worker-Token: $TOKEN" \\',
               '  -H "Content-Type: application/json" \\',

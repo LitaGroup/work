@@ -174,7 +174,7 @@ describe('TaskRequesterAnswerService 机器人需求方答问', () => {
 
     expect(inbox.markEventDelivered).toHaveBeenCalledWith(40);
     expect(shell).toHaveBeenCalledWith(
-      expect.stringContaining('/tmp/worker-1063/.opencode/agent-token'),
+      expect.stringContaining('/tmp/worker-1063/.agents/.env'),
     );
     expect(run).toHaveBeenCalledWith(
       expect.any(OpencodeClient),

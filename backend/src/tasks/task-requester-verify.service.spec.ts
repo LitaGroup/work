@@ -110,9 +110,7 @@ describe('TaskRequesterVerifyService 根任务机器人需求方自动验收', (
     await expect(service.verify(task())).resolves.toBe(true);
 
     expect(shell).toHaveBeenCalledWith(
-      expect.stringContaining(
-        '/tmp/worker-1002/.opencode/agent-token',
-      ) as string,
+      expect.stringContaining('/tmp/worker-1002/.agents/.env') as string,
     );
     expect(run).toHaveBeenCalledWith(
       expect.any(OpencodeClient),

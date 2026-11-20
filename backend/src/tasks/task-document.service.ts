@@ -15,6 +15,10 @@ import { encodeKnowledgePath } from '../knowledge/knowledge.path';
 import { KnowledgeService } from '../knowledge/knowledge.service';
 import type { KnowledgeNode } from '../knowledge/knowledge.types';
 import { Task } from './task.entity';
+import {
+  WORKER_ENV_SOURCE_COMMAND,
+  WORKER_TOKEN_SHELL_ASSIGN,
+} from '../workers/worker-env';
 import { TaskRealtimeService } from './task-realtime.service';
 import { TaskTemplate } from './task-template.entity';
 
@@ -783,7 +787,8 @@ export class TaskDocumentService implements OnApplicationBootstrap {
       '任务目录下的普通文档（不含 HANDOFF / REVIEW）使用任务接口写入，通用知识接口对 `/task/**` 只读：',
       '',
       '```bash',
-      'TOKEN=$(cat .opencode/agent-token)',
+      WORKER_ENV_SOURCE_COMMAND,
+      WORKER_TOKEN_SHELL_ASSIGN,
       `curl -sS -X POST '{BASE}/api/tasks/${task.id}/documents.md' \\`,
       '  -H "X-Worker-Token: $TOKEN" \\',
       '  -H "Content-Type: application/json" \\',

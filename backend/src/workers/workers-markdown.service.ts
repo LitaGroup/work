@@ -153,7 +153,7 @@ export class WorkersMarkdownService {
         '',
         '## MCP 服务',
         '',
-        '初始化时与平台 lita-work 一起写入工位 `.opencode/opencode.json`：',
+        '初始化时与平台 lita-work 一起写入工位 MCP 配置（按内核生成，另有 `.agents/mcp.json` 通用声明）：',
         '',
         ...mcpNames.map((name) => `- ${name}`),
       );

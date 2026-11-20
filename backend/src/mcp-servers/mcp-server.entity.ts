@@ -65,8 +65,9 @@ export interface SaveMcpServerInput {
 /**
  * 机器人可用的外部 MCP 服务配置（管理区「MCP 配置」维护）。
  * 机器人在创建/编辑页多选，初始化与派发时与平台 lita-work 一起写入工位
- * `.opencode/opencode.json` 的 mcp.servers。
- * `name` 同时作为 opencode 服务标识（工具名前缀），限字母、数字、- 和 _。
+ * 内核无关声明 `.agents/mcp.json`，并按执行器内核写入各自的项目级 MCP 配置。
+ * `name` 同时作为各内核服务标识（工具名前缀）。
+ * `name` 限字母、数字、- 和 _。
  */
 @Entity('mcp_servers')
 export class McpServer {

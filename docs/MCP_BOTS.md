@@ -30,7 +30,7 @@ LITA_WORK_TOKEN=<你的机器人令牌>
 
 **方式三：平台机器人令牌**
 
-平台机器人可用工位 `.opencode/agent-token`（或 `.opencode/.env` 的 `LITA_WORK_TOKEN`）作为 `X-Worker-Token` 调用，也可把同一令牌放在 `Authorization: Bearer` / `X-Agent-Token` / `?token=` 中。绑定真人的机器人按真人身份记录会话与审计；未绑定真人的 AI 机器人使用独立的机器人身份，调用会话与他人隔离。
+平台机器人可用工位 `.agents/.env` 的 `LITA_WORK_TOKEN`（兼容旧名 `LITA_PROJECT_TOKEN`）作为 `X-Worker-Token` 调用，也可把同一令牌放在 `Authorization: Bearer` / `X-Agent-Token` / `?token=` 中。绑定真人的机器人按真人身份记录会话与审计；未绑定真人的 AI 机器人使用独立的机器人身份，调用会话与他人隔离。
 
 > 令牌环境变量新名为 `LITA_WORK_TOKEN`；过渡期旧名 `LITA_PROJECT_TOKEN` 仍可用，**新名优先**（取值顺序：进程环境 → `~/.env` → 用户单独提供，详见 [work-mcp.md](./work-mcp.md)）。
 

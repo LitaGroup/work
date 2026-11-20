@@ -83,7 +83,7 @@ opencode 执行器不经 bridge，端口不受本规范约束（当前本机 409
 | POST | `/fs/upsert-env` | body `{directory,path,entries}`；按键合并 env 文件（保留其他键，权限 600） |
 | GET | `/events` | SSE 事件流（见二） |
 
-bridge 不提供 shell（`capabilities.exec=false`）；令牌与 MCP 配置写入只走 `/fs/*`。
+bridge 不提供 shell（`capabilities.exec=false`）；令牌与 MCP 配置写入只走 `/fs/*`。工位目录布局与各内核适配物见 `docs/WORKER_STATION.md`（平台按执行器类型生成 `.opencode/opencode.json`、`.kiro/settings/mcp.json`、`.devin/mcp_config.json`、`.factory/mcp.json` 与 `.agents/mcp.json`，bridge 内核按各自原生配置自动连接）。
 
 ---
 

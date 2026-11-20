@@ -9,6 +9,10 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import type { Worker } from '../workers/worker.entity';
 import { WorkersService } from '../workers/workers.service';
+import {
+  WORKER_ENV_SOURCE_COMMAND,
+  WORKER_TOKEN_SHELL_ASSIGN,
+} from '../workers/worker-env';
 import { beijingTime, mdFrontmatter } from '../common/frontmatter';
 import { Task } from '../tasks/task.entity';
 import { TicketDocument, TicketDocumentFormat } from './ticket-document.entity';
@@ -469,7 +473,8 @@ export class TicketDocumentsService {
       '更新或删除仅允许该文档的来源任务当前执行机器人操作。',
       '',
       '```bash',
-      'TOKEN=$(cat .opencode/agent-token)',
+      WORKER_ENV_SOURCE_COMMAND,
+      WORKER_TOKEN_SHELL_ASSIGN,
       '',
       '# 交付链接（链接来自任务文档清单或其它可访问地址）',
       `curl -sS -X POST '${this.apiUrl}/tasks/${task.id}/ticket-documents.md' \\`,

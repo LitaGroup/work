@@ -138,8 +138,8 @@ function testStatusBadge(result: McpServerTestResult) {
 
 /**
  * 管理区「MCP 配置」：维护机器人可连接的外部 MCP 服务。
- * 一条配置对应一个 MCP server；机器人在配置页多选后，初始化/派发时写入工位
- * `.opencode/opencode.json`（与平台 lita-work 并列）。固定令牌只写不回显。
+ * 一条配置对应一个 MCP server；机器人在配置页多选后，初始化/派发时按执行内核
+ * 写入工位 MCP 配置（与平台 lita-work 并列）。固定令牌只写不回显。
  */
 export function McpServersPage() {
   const [items, setItems] = useState<McpServerConfig[]>([])
@@ -434,8 +434,8 @@ export function McpServersPage() {
         <div>
           <h1 className="text-2xl font-semibold">MCP 配置</h1>
           <p className="mt-1 text-sm text-foreground-muted">
-            机器人可连接的外部 MCP 服务；在机器人配置页多选后，初始化时写入工位
-            opencode.json（与 lita-work 并列）。
+            机器人可连接的外部 MCP 服务；在机器人配置页多选后，初始化时按执行内核
+            写入工位 MCP 配置（与 lita-work 并列）。
           </p>
         </div>
         <Button size="sm" onClick={openCreate}>

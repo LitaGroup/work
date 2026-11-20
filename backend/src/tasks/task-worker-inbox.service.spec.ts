@@ -138,7 +138,7 @@ describe('TaskWorkerInboxService 子任务收件箱', () => {
       'http://api.example/api/tasks/2/handoff/refuse.md',
     );
     expect(prompt).toContain('http://api.example/api/tasks/2/fail.md');
-    expect(prompt).toContain('.opencode/agent-token');
+    expect(prompt).toContain('.agents/.env');
     expect(prompt).toContain('不能只回复消息');
   });
 
@@ -224,7 +224,7 @@ describe('TaskWorkerInboxService 子任务收件箱', () => {
       'http://api.example/api/tasks/2/messages/reply.md',
     );
     expect(prompt).toContain('"content":"回复内容"');
-    expect(prompt).toContain('.opencode/agent-token');
+    expect(prompt).toContain('.agents/.env');
   });
 
   it('需求方回复后只完成已投递的消息事件，保留处理期间新到的消息', async () => {

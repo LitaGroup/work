@@ -1344,7 +1344,7 @@ function WorkerSkillPickerDialog({
   )
 }
 
-/** 规范选择/清单展示：保存时仅保存规范库 README 引用，初始化任务负责整目录同步到工位 .opencode/rules */
+/** 规范选择/清单展示：保存时仅保存规范库 README 引用，初始化任务负责整目录同步到工位 .agents/rules */
 function WorkerStandardSection({
   standards,
   onChange,
@@ -1377,7 +1377,7 @@ function WorkerStandardSection({
       </div>
       {standards.length === 0 ? (
         <p className="text-xs text-foreground-muted">
-          未选择规范；保存初始化后会按选中目录同步到工位 .opencode/rules
+          未选择规范；保存初始化后会按选中目录同步到工位 .agents/rules
         </p>
       ) : (
         <div className="flex flex-col gap-2">
@@ -1492,7 +1492,7 @@ function WorkerStandardPickerDialog({
         <DialogHeader>
           <DialogTitle>添加规范</DialogTitle>
           <DialogDescription>
-            从规范库选择目录 README.md；保存初始化后会同步该目录下的全部文档到机器人 .opencode/rules
+            从规范库选择目录 README.md；保存初始化后会同步该目录下的全部文档到机器人 .agents/rules
           </DialogDescription>
         </DialogHeader>
         <DialogBody>
@@ -1943,7 +1943,7 @@ function OptimizeIcon() {
 
 /**
  * MCP 服务选择：勾选管理区「MCP 配置」中的服务，保存后初始化时与 lita-work
- * 一起写入工位 .opencode/opencode.json。
+ * 一起按执行内核写入工位 MCP 配置（opencode 为 .opencode/opencode.json 等）。
  */
 function WorkerMcpSection({
   mcps,
@@ -2069,7 +2069,7 @@ function WorkerMcpPickerDialog({
         <DialogHeader>
           <DialogTitle>选择 MCP 服务</DialogTitle>
           <DialogDescription>
-            勾选后保存并初始化，服务会写入工位 .opencode/opencode.json；
+            勾选后保存并初始化，服务会按执行内核写入工位 MCP 配置；
             停用的配置保留选择但不会注入。
           </DialogDescription>
         </DialogHeader>
