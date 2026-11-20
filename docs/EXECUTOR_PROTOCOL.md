@@ -133,7 +133,7 @@ kiro / devin / droid 内核 v1 均上报：`questions=false, interrupt=true, swi
 | kiro | `kiro-cli chat --no-interactive --output-format stream-json`（ACP 事件流：正文 `agent_message_chunk` + 思考 `agent_thought_chunk`）+ `--resume-id` 续聊 | v1 已实现 |
 | kiro（优化） | `kiro-cli serve`（KAS，ACP over WebSocket，默认 8082） | 待研：WS 握手含 acp-callback 鉴权，未探明 |
 | devin | `devin acp --process-model in-process`（ACP JSON-RPC over stdio，每回合 spawn）：`initialize` → `session/load`（续聊）/ `session/new` → `session/set_config_option`（`mode`/`model`/`thought_level`）→ `session/prompt`；正文 `agent_message_chunk`、思考 `agent_thought_chunk`；无 cancel 方法，中断即杀进程。**方言**：`mcpServers` 传数组、`prompt` 传内容块数组、响应无 finalText（正文由 bridge turnBuffer 兜底） | v1 已实现 |
-| droid | `droid exec --cwd <工位目录> -o stream-json`（JSONL：`system/init` 带 `session_id` → `message`/`tool_call`/`error` → 终态 `result`）；`-s <sessionId>` 续聊、`-m` 模型、`-r` 思考等级；模型清单解析 `droid exec --help`（Available Models / Model details）。**自治**：默认 `--skip-permissions-unsafe`，`DROID_PERMISSION_MODE=low\|medium\|high` 改走 `--auto` | v1 已实现 |
+| droid | `droid exec --cwd <工位目录> -o stream-json`（JSONL：`system/init` 带 `session_id` → `message`/`reasoning`/`tool_call`/`error` → 终态 `result`；思考为独立 `reasoning` 事件，每段一条全量文本，可与工具调用交错）；`-s <sessionId>` 续聊、`-m` 模型、`-r` 思考等级；模型清单解析 `droid exec --help`（Available Models / Model details）。**自治**：默认 `--skip-permissions-unsafe`，`DROID_PERMISSION_MODE=low\|medium\|high` 改走 `--auto` | v1 已实现 |
 | codex | `codex app-server` JSON-RPC（stdio） | 规划 |
 | claude-code | Claude Agent SDK（进程内 `query()` + streaming input） | 规划 |
 

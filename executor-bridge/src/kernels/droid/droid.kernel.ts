@@ -1,6 +1,8 @@
 /**
  * droid 内核（v1）：每回合 spawn `droid exec --cwd <工位目录> -o stream-json`，
- * stdout 为 JSONL 事件流（system/init、message、tool_call、tool_result、error、终态 result）。
+ * stdout 为 JSONL 事件流（system/init、message、reasoning、tool_call、tool_result、error、终态 result）。
+ * - 思考为独立 `reasoning` 事件（每段一条、text 为全量文本，可与工具调用/正文多次交错），
+ *   逐条转 onThoughtChunk，由 sessions 层按块开闭切分；
  * - 会话标识取 system/init 的 session_id，续聊用 `-s <sessionId>`（droid 本地 store 持久化）；
  * - 模型走 `-m`、思考等级走 `-r/--reasoning-effort`，逐回合传参（下一回合生效）；
  * - 终态 result（type=result 或 completion）带 result 文本与 usage，
@@ -276,6 +278,14 @@ export class DroidKernel implements Kernel {
               event.text
             ) {
               input.events.onChunk(event.text);
+            }
+            continue;
+          }
+          if (event.type === 'reasoning') {
+            // droid 1.x：思考为独立事件，每段一条且携带全量文本（非增量），
+            // 可与 tool_call / message 交错；逐条透传，由 sessions 层切块收尾
+            if (typeof event.text === 'string' && event.text) {
+              input.events.onThoughtChunk(event.text);
             }
             continue;
           }
