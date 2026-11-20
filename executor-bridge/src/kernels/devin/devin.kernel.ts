@@ -341,6 +341,11 @@ export class DevinKernel implements Kernel {
         { once: true },
       );
 
+      /** 上一条已转发的 session update 类型：正文跟在非正文 update 之后时可能是新段落 */
+      let lastUpdateKind: string | null = null;
+      /** 已转发的正文尾部：只有上一段以句读结束才补换行，避免拆开流式词块 */
+      let emittedText = '';
+
       acp.onMessage((msg) => {
         if (msg.method !== 'session/update') return;
         const update = (msg.params as { update?: AcpSessionUpdate } | undefined)
@@ -348,19 +353,34 @@ export class DevinKernel implements Kernel {
         if (!update) return;
         // session/load 的历史重放不是本回合产物：prompt 发出前一律不转发
         if (!promptSent) return;
+        const kind = update.sessionUpdate ?? '';
         if (
-          update.sessionUpdate === 'agent_thought_chunk' &&
+          kind === 'agent_thought_chunk' &&
           update.content?.type === 'text' &&
           update.content.text
         ) {
           input.events.onThoughtChunk(update.content.text);
         } else if (
-          update.sessionUpdate === 'agent_message_chunk' &&
+          kind === 'agent_message_chunk' &&
           update.content?.type === 'text' &&
           update.content.text
         ) {
-          input.events.onChunk(update.content.text);
+          // devin 的叙述 chunk 不带尾换行：正文跟在非正文 update 之后、且上一段已以
+          // 句读结束时补段落换行；否则 bridge turnBuffer 直接拼接会把相邻段落
+          // （含末尾 DONE）粘成一行，平台按行校验 DONE 会失败。
+          let text = update.content.text;
+          if (
+            lastUpdateKind &&
+            lastUpdateKind !== 'agent_message_chunk' &&
+            !/^\s/.test(text) &&
+            /[.。!！?？;；:：`>）)\]}\s]$/.test(emittedText)
+          ) {
+            text = `\n\n${text}`;
+          }
+          emittedText += text;
+          input.events.onChunk(text);
         }
+        lastUpdateKind = kind;
       });
 
       child.on('error', (error) => {
