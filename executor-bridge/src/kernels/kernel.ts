@@ -41,6 +41,8 @@ export interface KernelTurnResult {
 export interface Kernel {
   readonly name: string;
   capabilities(): ExecutorCapabilities;
+  /** 内核（Agent CLI）自身版本号；探测失败返回 'unknown'。与 bridge 版本区分展示 */
+  version(): Promise<string>;
   location(): Promise<{ directory: string }>;
   providers(): Promise<ProviderInfo[]>;
   models(): Promise<ModelInfo[]>;

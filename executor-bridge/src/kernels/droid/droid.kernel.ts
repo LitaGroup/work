@@ -21,6 +21,7 @@ import type {
   KernelRunTurnInput,
   KernelTurnResult,
 } from '../kernel.js';
+import { probeCliVersion } from '../cli-version.js';
 
 const DROID_PROVIDER_ID = 'droid';
 const MODEL_CACHE_MS = 10 * 60 * 1000;
@@ -73,6 +74,11 @@ export class DroidKernel implements Kernel {
 
   async location(): Promise<{ directory: string }> {
     return { directory: this.root };
+  }
+
+  /** droid CLI 自身版本（平台执行器「版本」列展示） */
+  async version(): Promise<string> {
+    return probeCliVersion(this.cli);
   }
 
   async providers(): Promise<ProviderInfo[]> {

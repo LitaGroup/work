@@ -11,6 +11,8 @@ import { EventBus } from './bus.js';
 
 const PROTOCOL_VERSION = 1;
 const BODY_LIMIT = 32 * 1024 * 1024;
+/** bridge 自身版本（与内核/Agent 版本分开上报） */
+const BRIDGE_VERSION = 'executor-bridge/0.1';
 
 export interface BridgeServerOptions {
   port: number;
@@ -80,7 +82,9 @@ async function handle(
 
   if (method === 'GET' && path === '/health') {
     sendJson(res, 200, {
-      version: `executor-bridge/0.1 (${ctx.kernel.name})`,
+      // version 为内核（Agent CLI）自身版本，平台执行器「版本」展示它
+      version: await ctx.kernel.version(),
+      bridgeVersion: BRIDGE_VERSION,
       protocol: PROTOCOL_VERSION,
       kernel: ctx.kernel.name,
       pid: process.pid,

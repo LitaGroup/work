@@ -23,7 +23,10 @@ import type { ModelErrorLike } from './model-availability';
 import type { OpencodeTodo } from './opencode-todos';
 
 interface BridgeHealth {
+  /** 内核（Agent CLI）自身版本，如 kiro-cli 3.5.0 / devin 3000.14.30821 / droid 1.16.0 */
   version: string;
+  /** bridge 自身版本（内部诊断用，不覆盖执行器版本展示） */
+  bridgeVersion?: string;
   protocol: number;
   kernel: string;
   pid: number;

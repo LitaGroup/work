@@ -59,7 +59,7 @@ opencode 执行器不经 bridge，端口不受本规范约束（当前本机 409
 
 | 方法 | 路径 | 说明 |
 |:---|:---|:---|
-| GET | `/health` | `{ version, protocol, kernel, capabilities }`，健康检查与能力协商 |
+| GET | `/health` | `{ version, bridgeVersion, protocol, kernel, capabilities }`，健康检查与能力协商；`version` 为内核（Agent CLI）自身版本（平台执行器「版本」展示），`bridgeVersion` 为 bridge 版本 |
 | GET | `/location` | `{ directory }` 默认工作目录 |
 | GET | `/providers` | 供应商清单 `[{id,name}]` |
 | GET | `/models` | 模型清单（含 `providerID/modelID/variants`） |
