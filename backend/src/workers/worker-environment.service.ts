@@ -33,9 +33,10 @@ import { toOpencodeModelRef } from '../executors/executor-run';
 import { Worker } from './worker.entity';
 import {
   ensureWorkerSkeleton,
+  shouldDenyExternalDirectory,
   upsertWorkerEnv,
   writeAgentTokenFile,
-  writeMcpConfigFile,
+  writeOpencodeConfigFile,
 } from './worker-env';
 import { WorkersService } from './workers.service';
 import { McpServersService } from '../mcp-servers/mcp-servers.service';
@@ -71,10 +72,16 @@ const TASK_COLLABORATION_AGENTS = `## 多机器人任务协同协议（平台固
 - .opencode/.env 由平台注入并维护（权限 600，不得读取展示、改写或删除）：
   - \`LITA_WORK_TOKEN\`：访问项目平台 .md 接口的机器人独立令牌（新名，优先使用），与 .opencode/agent-token 同值，放在 \`X-Agent-Token\` 或 \`X-Worker-Token\` 均可。
   - \`LITA_PROJECT_TOKEN\`：同一机器人令牌的兼容旧名，仅在旧脚本只认旧名时使用；新调用优先 \`LITA_WORK_TOKEN\`。
-  - \`LITA_USER_TOKEN\`：访问 Lita 平台的用户令牌，供 lita-api 等技能使用；执行器宿主 ~/.env 也有同名配置。
-- **环境变量优先级（硬性）**：调用 lita-work 等技能前，工位 \`.opencode/.env\` 中的环境变量优先级最高，高于当前进程环境变量和执行器宿主 \`~/.env\`；同名变量必须以 \`.opencode/.env\` 为准，不得用 \`~/.env\` 或进程环境中的同名值覆盖。
+  - \`LITA_USER_TOKEN\`：访问 Lita 平台的用户令牌，供 lita-api 等技能使用。
+- **环境变量优先级（硬性）**：调用 lita-work 等技能前，工位 \`.opencode/.env\` 中的环境变量优先级最高，高于当前进程环境变量；同名变量必须以 \`.opencode/.env\` 为准，不得用进程环境中的同名值覆盖。
 - 每次调用相关技能前，必须在同一个 shell 中先执行：\`set -a; . .opencode/.env; set +a\`，再执行技能或接口调用。
 - 不得把令牌写入聊天、交付物、文档或代码仓库。
+
+### 工作区边界（平台强制）
+
+- 全部文件读写必须位于当前工位目录内；禁止读写工位之外的任何路径，包括但不限于其他机器人工位、执行器宿主的 ~/.env、~/.config、/tmp、/etc，也不要用 .. 或绝对路径访问工位外文件；需要临时文件时放在工位目录内。
+- 平台已在 .opencode/opencode.json 注入权限限制，越界的读取、写入与命令会被直接拒绝。
+- 任务确需工位之外的资料时，不要自行越界获取；通过 lita-work MCP、文档上传等平台渠道向需求方说明并获取。
 
 ### 平台 MCP 服务（lita-work）
 
@@ -478,8 +485,10 @@ export class WorkerEnvironmentService implements OnModuleDestroy {
   }
 
   /**
-   * 注入工位 MCP 配置（.opencode/opencode.json，权限 600）：
+   * 注入工位 opencode 配置（.opencode/opencode.json，权限 600）：
    * 平台 lita-work + 机器人勾选且启用中的自定义 MCP；opencode 按项目配置自动连接。
+   * 同时注入工作区边界权限（deny external_directory，可用
+   * WORKER_DENY_EXTERNAL_DIRECTORY=false 止血关闭），禁止会话读写工位之外的路径。
    * 令牌只经服务端落盘，不进入 Prompt、SSE 进度或日志。
    */
   private async writeWorkMcpConfig(
@@ -496,7 +505,11 @@ export class WorkerEnvironmentService implements OnModuleDestroy {
       token,
       worker.mcps ?? [],
     );
-    await writeMcpConfigFile(client, workdir, servers);
+    await writeOpencodeConfigFile(client, workdir, servers, {
+      denyExternalDirectory: shouldDenyExternalDirectory(
+        this.config.get<string>('WORKER_DENY_EXTERNAL_DIRECTORY'),
+      ),
+    });
   }
 
   /**
@@ -785,7 +798,7 @@ ${mcpSection}
 - .opencode/   opencode自身的目录
 - .opencode/agent-token   平台注入的机器人身份令牌（权限 600，不得读取展示、改写或删除）
 - .opencode/.env   平台注入的工位环境变量（权限 600，不得读取展示、改写或删除）：LITA_WORK_TOKEN 访问项目平台 .md 接口（新名，优先，与 agent-token 同值）、LITA_PROJECT_TOKEN 兼容旧名（同值）、LITA_USER_TOKEN 访问 Lita 平台技能
-- .opencode/opencode.json   平台注入的 MCP 配置（lita-work 与机器人勾选的 MCP 服务，权限 600，不得读取展示、改写或删除）
+- .opencode/opencode.json   平台注入的 MCP 配置与工作区边界权限（lita-work、机器人勾选的 MCP 服务与 permissions 边界规则，权限 600，不得读取展示、改写或删除）
 - .opencode/skills/   当前机器人的技能
 - .opencode/rules/   平台同步的规范与规则文档（保持规范库原始目录结构；.standards-manifest.json 是受管清单）
 - .opencode/rules/.standards-manifest.json   本次同步的规范文件清单（JSON：{"version":1,"files":[...]}）
@@ -809,7 +822,7 @@ ${mcpSection}
    - 只删除「旧受管文件清单中存在、但本次需存在清单中没有」的文件；不要删除 .opencode/docs/ 或其他流程产生的文档。
    - 同步完成后把本次需存在的全部相对路径写入 .opencode/rules/.standards-manifest.json，格式为 {"version":1,"files":[...]}，路径按字典序排序；manifest 自身不要写入 files。
 11. 需要创建目录时保持仓库原始目录结构；同名文件以本次规范库内容覆盖。
-12. .opencode/opencode.json 由平台注入并维护（lita-work 与机器人勾选的 MCP 服务），不得读取展示、改写或删除。
+12. .opencode/opencode.json 由平台注入并维护（lita-work、机器人勾选的 MCP 服务与工作区边界权限），不得读取展示、改写或删除。
 
 ## 从以下链接中，安装或更新技能
 

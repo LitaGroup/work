@@ -54,18 +54,53 @@ export async function upsertWorkerEnv(
 }
 
 /**
- * 写入工位 .opencode/opencode.json 的 MCP 配置（权限 600）：
- * `mcp.servers` 由调用方统一生成（平台 lita-work + 机器人勾选的自定义 MCP），
+ * 工作区边界权限（平台强制）：opencode 会话禁止读写工位（Location）之外的任何路径。
+ * `external_directory` 在 read/edit 规则之前拦截工位外路径（含 write/patch 与 shell 扫描推断），
+ * `deny` 不会被客户端「允许」答复或已保存的 allow 规则覆盖。
+ */
+export const WORKER_BOUNDARY_PERMISSIONS = [
+  { action: 'external_directory', resource: '*', effect: 'deny' },
+] as const;
+
+/**
+ * 止血开关：环境变量 WORKER_DENY_EXTERNAL_DIRECTORY 显式为 false/0/no/off 时
+ * 关闭工作区边界权限注入，缺省（含未配置）开启。
+ */
+export function shouldDenyExternalDirectory(
+  raw: string | null | undefined,
+): boolean {
+  const value = raw?.trim().toLowerCase();
+  return (
+    value !== 'false' && value !== '0' && value !== 'no' && value !== 'off'
+  );
+}
+
+/** writeOpencodeConfigFile 选项 */
+export interface WriteOpencodeConfigOptions {
+  /** 是否注入工作区边界权限（默认 true） */
+  denyExternalDirectory?: boolean;
+}
+
+/**
+ * 写入工位 .opencode/opencode.json（权限 600）：
+ * - `mcp.servers`：平台 lita-work + 机器人勾选的自定义 MCP（由调用方统一生成）；
+ * - `permissions`：工作区边界（禁止会话读写工位之外的路径），可用
+ *   WORKER_DENY_EXTERNAL_DIRECTORY=false 止血关闭。
  * 本地包含令牌时只经服务端结构化写入，不进入日志与 Prompt。
  */
-export async function writeMcpConfigFile(
+export async function writeOpencodeConfigFile(
   client: ExecutorClient,
   workdir: string,
   servers: Record<string, OpencodeMcpServerConfig>,
+  options: WriteOpencodeConfigOptions = {},
 ): Promise<void> {
+  const denyExternalDirectory = options.denyExternalDirectory ?? true;
   const config = JSON.stringify(
     {
       $schema: 'https://opencode.ai/config.json',
+      ...(denyExternalDirectory
+        ? { permissions: WORKER_BOUNDARY_PERMISSIONS }
+        : {}),
       mcp: { servers },
     },
     null,

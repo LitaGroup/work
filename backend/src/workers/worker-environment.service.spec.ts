@@ -152,8 +152,19 @@ describe('WorkerEnvironmentService.buildPrompt', () => {
     expect(prompt).toContain('调用 lita-work 等技能前');
     expect(prompt).toContain('环境变量优先级（硬性）');
     expect(prompt).toContain('优先级最高');
-    expect(prompt).toContain('高于当前进程环境变量和执行器宿主 `~/.env`');
+    expect(prompt).toContain('高于当前进程环境变量');
     expect(prompt).toContain('同名变量必须以 `.opencode/.env` 为准');
+  });
+
+  it('AGENTS.md 注入工作区边界（平台强制）条款', async () => {
+    const prompt = await buildService()['buildPrompt'](worker);
+    expect(prompt).toContain('工作区边界（平台强制）');
+    expect(prompt).toContain('全部文件读写必须位于当前工位目录内');
+    expect(prompt).toContain('执行器宿主的 ~/.env');
+    expect(prompt).toContain('越界的读取、写入与命令会被直接拒绝');
+    expect(prompt).toContain(
+      '通过 lita-work MCP、文档上传等平台渠道向需求方说明并获取',
+    );
   });
 
   it('规范清单为空时只清理旧受管文件，不要求清空 docs', async () => {

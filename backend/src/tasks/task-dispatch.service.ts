@@ -49,9 +49,10 @@ import {
 } from '../executors/executor-run';
 import { Worker } from '../workers/worker.entity';
 import {
+  shouldDenyExternalDirectory,
   upsertWorkerEnv,
   writeAgentTokenFile,
-  writeMcpConfigFile,
+  writeOpencodeConfigFile,
 } from '../workers/worker-env';
 import { WorkersService } from '../workers/workers.service';
 import { McpServersService } from '../mcp-servers/mcp-servers.service';
@@ -148,7 +149,14 @@ export class TaskDispatchService
     this.appUrl = (
       config.get<string>('APP_URL') ?? 'http://localhost:5273'
     ).replace(/\/+$/, '');
+    // 工作区边界权限止血开关（WORKER_DENY_EXTERNAL_DIRECTORY=false 关闭）
+    this.denyExternalDirectory = shouldDenyExternalDirectory(
+      config.get<string>('WORKER_DENY_EXTERNAL_DIRECTORY'),
+    );
   }
+
+  /** 是否注入工作区边界权限（禁止会话读写工位之外的路径） */
+  private readonly denyExternalDirectory: boolean;
 
   /** opencodeSessionId → taskId 路由缓存（未命中回库查） */
   private readonly sessionRoutes = new Map<string, number>();
@@ -412,7 +420,9 @@ export class TaskDispatchService
         LITA_WORK_TOKEN: workerToken,
         LITA_PROJECT_TOKEN: workerToken,
       });
-      await writeMcpConfigFile(client, workdir, mcpServers);
+      await writeOpencodeConfigFile(client, workdir, mcpServers, {
+        denyExternalDirectory: this.denyExternalDirectory,
+      });
 
       // 2. 固定绑定：一个任务只对应一个 opencode 会话。
       //    同一执行器上复用既有会话；执行器变更或会话已不存在时才新建。

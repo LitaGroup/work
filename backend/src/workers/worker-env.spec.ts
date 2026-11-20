@@ -1,9 +1,10 @@
 import type { ExecutorClient } from '../executors/executor-client';
 import {
   ensureWorkerSkeleton,
+  shouldDenyExternalDirectory,
   upsertWorkerEnv,
   writeAgentTokenFile,
-  writeMcpConfigFile,
+  writeOpencodeConfigFile,
 } from './worker-env';
 
 /** 记录结构化文件调用的假客户端 */
@@ -34,9 +35,9 @@ function recordingClient() {
 }
 
 describe('worker-env 结构化文件助手', () => {
-  it('writeMcpConfigFile 写入 opencode V2 mcp.servers 配置', async () => {
+  it('writeOpencodeConfigFile 写入 opencode V2 mcp.servers 配置与工作区边界权限', async () => {
     const { client, calls } = recordingClient();
-    await writeMcpConfigFile(client, '/srv/work/worker/7', {
+    await writeOpencodeConfigFile(client, '/srv/work/worker/7', {
       'lita-work': {
         type: 'remote',
         url: 'http://work.cinta.team/api/mcp/work',
@@ -54,6 +55,11 @@ describe('worker-env 结构化文件助手', () => {
     expect(call?.args[1]).toBe('.opencode/opencode.json');
     const content = call?.args[2] as string;
     expect(content).toContain('https://opencode.ai/config.json');
+    // 工作区边界：禁止会话读写工位之外的路径（缺省注入）
+    expect(content).toContain('"permissions"');
+    expect(content).toContain('"action": "external_directory"');
+    expect(content).toContain('"resource": "*"');
+    expect(content).toContain('"effect": "deny"');
     expect(content).toContain('"lita-work"');
     expect(content).toContain('"type": "remote"');
     expect(content).toContain('"url": "http://work.cinta.team/api/mcp/work"');
@@ -62,6 +68,39 @@ describe('worker-env 结构化文件助手', () => {
     expect(content).toContain('"custom-sse"');
     expect(content).toContain('"type": "local"');
     expect(content).toContain('"MCP_API_KEY": "{env:MCP_API_KEY}"');
+  });
+
+  it('writeOpencodeConfigFile 止血开关关闭时不注入 permissions', async () => {
+    const { client, calls } = recordingClient();
+    await writeOpencodeConfigFile(
+      client,
+      '/srv/work/worker/7',
+      {
+        'lita-work': {
+          type: 'remote',
+          url: 'http://work.cinta.team/api/mcp/work',
+          oauth: false,
+        },
+      },
+      { denyExternalDirectory: false },
+    );
+    const content = calls.find((c) => c.method === 'writeSecretFile')
+      ?.args[2] as string;
+    expect(content).not.toContain('permissions');
+    expect(content).toContain('"lita-work"');
+  });
+
+  it('shouldDenyExternalDirectory 缺省开启，显式关闭值返回 false', () => {
+    expect(shouldDenyExternalDirectory(undefined)).toBe(true);
+    expect(shouldDenyExternalDirectory(null)).toBe(true);
+    expect(shouldDenyExternalDirectory('')).toBe(true);
+    expect(shouldDenyExternalDirectory('true')).toBe(true);
+    expect(shouldDenyExternalDirectory('1')).toBe(true);
+    expect(shouldDenyExternalDirectory('false')).toBe(false);
+    expect(shouldDenyExternalDirectory('FALSE')).toBe(false);
+    expect(shouldDenyExternalDirectory('0')).toBe(false);
+    expect(shouldDenyExternalDirectory('no')).toBe(false);
+    expect(shouldDenyExternalDirectory(' off ')).toBe(false);
   });
 
   it('writeAgentTokenFile 先建目录再写 agent-token', async () => {

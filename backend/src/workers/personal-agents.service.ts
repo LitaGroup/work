@@ -30,9 +30,10 @@ import {
 } from './personal-agent';
 import { isDeprecatedSkill } from './worker-skill-deprecation';
 import {
+  shouldDenyExternalDirectory,
   upsertWorkerEnv,
   writeAgentTokenFile,
-  writeMcpConfigFile,
+  writeOpencodeConfigFile,
 } from './worker-env';
 import { McpServersService } from '../mcp-servers/mcp-servers.service';
 
@@ -117,7 +118,14 @@ export class PersonalAgentsService {
     this.appUrl = (
       config.get<string>('APP_URL') ?? 'http://localhost:5273'
     ).replace(/\/+$/, '');
+    // 工作区边界权限止血开关（WORKER_DENY_EXTERNAL_DIRECTORY=false 关闭）
+    this.denyExternalDirectory = shouldDenyExternalDirectory(
+      config.get<string>('WORKER_DENY_EXTERNAL_DIRECTORY'),
+    );
   }
+
+  /** 是否注入工作区边界权限（禁止会话读写工位之外的路径） */
+  private readonly denyExternalDirectory: boolean;
 
   /** 按归属用户查个人 AGENT */
   findForUser(userId: number): Promise<Worker | null> {
@@ -567,7 +575,9 @@ export class PersonalAgentsService {
           LITA_WORK_TOKEN: token,
           LITA_PROJECT_TOKEN: token,
         });
-        await writeMcpConfigFile(client, workdir, mcpServers);
+        await writeOpencodeConfigFile(client, workdir, mcpServers, {
+          denyExternalDirectory: this.denyExternalDirectory,
+        });
       })(),
       PREPARE_TIMEOUT_MS,
       '准备个人 AGENT 工位超时',
