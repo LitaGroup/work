@@ -11,7 +11,7 @@ import { mkdir, writeFile } from 'fs/promises';
 import { dirname } from 'path';
 import { FindOptionsWhere, In, LessThan, Repository } from 'typeorm';
 import type { User } from '../auth/user.entity';
-import { WorkerRuntime } from '../common/enums';
+import { isAgentRuntime } from '../common/worker-runtime';
 import { fileWebroot } from '../common/paths';
 import { Worker } from '../workers/worker.entity';
 import {
@@ -608,11 +608,7 @@ export class FeishuBotGroupChatService {
     const worker = await this.workers.findOne({
       where: { id: config.workerId },
     });
-    if (
-      !worker ||
-      !worker.enabled ||
-      worker.runtime !== WorkerRuntime.OPENCODE
-    ) {
+    if (!worker || !worker.enabled || !isAgentRuntime(worker.runtime)) {
       await this.markDecision(
         record.id,
         'error',
@@ -1055,11 +1051,7 @@ export class FeishuBotGroupChatService {
       const worker = await this.workers.findOne({
         where: { id: batch.config.workerId ?? 0 },
       });
-      if (
-        !worker ||
-        !worker.enabled ||
-        worker.runtime !== WorkerRuntime.OPENCODE
-      ) {
+      if (!worker || !worker.enabled || !isAgentRuntime(worker.runtime)) {
         for (const item of messages) {
           await this.markDecision(
             item.recordId,

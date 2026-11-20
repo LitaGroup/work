@@ -2,19 +2,15 @@ import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { beijingTime } from '../common/frontmatter';
-import {
-  TaskStatus,
-  TaskSubStatus,
-  WorkerRole,
-  WorkerRuntime,
-} from '../common/enums';
+import { TaskStatus, TaskSubStatus, WorkerRole } from '../common/enums';
+import { isAgentRuntime } from '../common/worker-runtime';
 import { Executor } from '../executors/executor.entity';
 import {
-  OpencodeClient,
   type OpencodeQuestionInfo,
   type OpencodeQuestionRequest,
 } from '../executors/opencode-client';
-import { runOpencodePrompt, planPromptModels } from '../executors/opencode-run';
+import { createExecutorClient } from '../executors/executor-client';
+import { runExecutorPrompt, planPromptModels } from '../executors/executor-run';
 import { Worker } from '../workers/worker.entity';
 import { WorkersService } from '../workers/workers.service';
 import { Task } from './task.entity';
@@ -159,8 +155,8 @@ export class TaskQuestionAutoAnswerService {
         modelId: endpoint.modelId,
         variant: endpoint.variant,
       });
-      const raw = await runOpencodePrompt(
-        new OpencodeClient(endpoint.executor),
+      const raw = await runExecutorPrompt(
+        createExecutorClient(endpoint.executor),
         {
           title: `父任务答复 ${endpoint.parent.code} → ${child.code}`.slice(
             0,
@@ -216,7 +212,7 @@ export class TaskQuestionAutoAnswerService {
     } finally {
       this.active.delete(key);
       if (consultationSessionId) {
-        await new OpencodeClient(endpoint.executor)
+        await createExecutorClient(endpoint.executor)
           .deleteSession(consultationSessionId)
           .catch((e: Error) =>
             this.logger.warn(
@@ -250,7 +246,7 @@ export class TaskQuestionAutoAnswerService {
       where: { id: task.executorId },
     });
     if (!executor?.online) throw new Error('子任务执行器离线');
-    const client = new OpencodeClient(executor);
+    const client = createExecutorClient(executor);
     const sessionId = request.sessionID || task.opencodeSessionId;
     const remote = await client.listQuestions(sessionId);
     if (!remote.some((item) => item.id === request.id)) {
@@ -324,7 +320,7 @@ export class TaskQuestionAutoAnswerService {
       !worker ||
       !worker.enabled ||
       worker.role !== WorkerRole.WORKER ||
-      worker.runtime !== WorkerRuntime.OPENCODE ||
+      !isAgentRuntime(worker.runtime) ||
       !worker.executorId
     ) {
       return null;

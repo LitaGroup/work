@@ -6,8 +6,8 @@ import { releaseNotificationPrompt } from './task-release-notification.service';
 import { TaskReleaseNotificationService } from './task-release-notification.service';
 import type { TaskWorkerInbox } from './task-worker-inbox.entity';
 
-jest.mock('../executors/opencode-run', () => ({
-  runOpencodePrompt: jest.fn(),
+jest.mock('../executors/executor-run', () => ({
+  runExecutorPrompt: jest.fn(),
   planPromptModels: jest.fn(
     (
       _worker: unknown,
@@ -26,14 +26,17 @@ jest.mock('../executors/opencode-run', () => ({
 jest.mock('../executors/opencode-client', () => ({
   OpencodeClient: jest.fn().mockImplementation(() => ({
     shell: jest.fn().mockResolvedValue(undefined),
+    ensureDir: jest.fn().mockResolvedValue(undefined),
+    writeSecretFile: jest.fn().mockResolvedValue(undefined),
+    upsertEnvFile: jest.fn().mockResolvedValue(undefined),
     deleteSession: jest.fn().mockResolvedValue(undefined),
   })),
 }));
 
-import { runOpencodePrompt } from '../executors/opencode-run';
+import { runExecutorPrompt } from '../executors/executor-run';
 
 describe('TaskReleaseNotificationService 提测状态通知', () => {
-  const runPrompt = runOpencodePrompt as jest.Mock;
+  const runPrompt = runExecutorPrompt as jest.Mock;
   let tasksRepo: { findOne: jest.Mock };
   let executorsRepo: { findOne: jest.Mock };
   let workersRepo: { findOne: jest.Mock };

@@ -5,7 +5,7 @@ import {
   WorkerRuntime,
 } from '../common/enums';
 import { OpencodeClient } from '../executors/opencode-client';
-import * as opencodeRun from '../executors/opencode-run';
+import * as opencodeRun from '../executors/executor-run';
 import type { Worker } from '../workers/worker.entity';
 import { Task } from './task.entity';
 import type { TaskMessage } from './task-message.entity';
@@ -158,7 +158,7 @@ describe('TaskRequesterAnswerService 机器人需求方答问', () => {
 
   it('用需求方机器人一次性会话答问并携带问题与答复接口', async () => {
     const run = jest
-      .spyOn(opencodeRun, 'runOpencodePrompt')
+      .spyOn(opencodeRun, 'runExecutorPrompt')
       .mockImplementation((_client, input) => {
         input.onSessionCreated?.('answer-session');
         return Promise.resolve('已答复');
@@ -199,7 +199,7 @@ describe('TaskRequesterAnswerService 机器人需求方答问', () => {
 
   it('会话结束未调用答复接口时持续退避重试，不转人工', async () => {
     jest
-      .spyOn(opencodeRun, 'runOpencodePrompt')
+      .spyOn(opencodeRun, 'runExecutorPrompt')
       .mockResolvedValue('只输出了文字');
     jest.spyOn(OpencodeClient.prototype, 'shell').mockResolvedValue(undefined);
     jest
@@ -233,7 +233,7 @@ describe('TaskRequesterAnswerService 机器人需求方答问', () => {
   });
 
   it('没有待答提问时直接关闭事件', async () => {
-    const run = jest.spyOn(opencodeRun, 'runOpencodePrompt');
+    const run = jest.spyOn(opencodeRun, 'runExecutorPrompt');
     messages.find.mockResolvedValue([
       questionRow({
         question: { ...questionRow().question!, state: 'answered' },
@@ -247,7 +247,7 @@ describe('TaskRequesterAnswerService 机器人需求方答问', () => {
   });
 
   it('真人需求方不启动自动答问会话', async () => {
-    const run = jest.spyOn(opencodeRun, 'runOpencodePrompt');
+    const run = jest.spyOn(opencodeRun, 'runExecutorPrompt');
     workers.findOne.mockResolvedValue({
       ...requester,
       runtime: WorkerRuntime.HUMAN,
@@ -261,7 +261,7 @@ describe('TaskRequesterAnswerService 机器人需求方答问', () => {
   });
 
   it('需求方机器人执行器离线时退避并记录事件', async () => {
-    const run = jest.spyOn(opencodeRun, 'runOpencodePrompt');
+    const run = jest.spyOn(opencodeRun, 'runExecutorPrompt');
     executors.findOne.mockResolvedValue({
       id: 8,
       name: '默认执行器',

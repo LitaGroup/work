@@ -4,6 +4,7 @@ import { Cron } from '@nestjs/schedule';
 import { In, Repository } from 'typeorm';
 import { User } from '../auth/user.entity';
 import { TaskStatus, TaskSubStatus, WorkerRuntime } from '../common/enums';
+import { isAgentRuntime } from '../common/worker-runtime';
 import { Task } from '../tasks/task.entity';
 import { TaskDeliveryService } from '../tasks/task-delivery.service';
 import { SYSTEM_PROJECT_DELIVERY_TASK_TEMPLATE_ID } from '../tasks/system-task-templates';
@@ -217,7 +218,7 @@ export class FeishuBotTaskChatService {
     if (!agentWorker) return null;
 
     const isAiWorker = (worker: Worker): boolean =>
-      worker.runtime === WorkerRuntime.OPENCODE && !worker.personalAgentUserId;
+      isAgentRuntime(worker.runtime) && !worker.personalAgentUserId;
     const requesterHumanId =
       task.requesterType === 'user'
         ? task.requesterId

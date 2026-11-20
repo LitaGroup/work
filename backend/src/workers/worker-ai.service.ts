@@ -3,12 +3,12 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { WorkerRole } from '../common/enums';
 import { Executor } from '../executors/executor.entity';
-import { OpencodeClient } from '../executors/opencode-client';
+import { createExecutorClient } from '../executors/executor-client';
 import {
-  runOpencodePrompt,
+  runExecutorPrompt,
   planPromptModels,
   toOpencodeModelRef,
-} from '../executors/opencode-run';
+} from '../executors/executor-run';
 import { Worker } from './worker.entity';
 import { WorkersService } from './workers.service';
 import { isSystemWorkerId } from './system-workers';
@@ -91,7 +91,7 @@ export class WorkerAiService {
       : {
           model: toOpencodeModelRef({ providerId, modelId, variant }),
         };
-    const text = await runOpencodePrompt(new OpencodeClient(executor), {
+    const text = await runExecutorPrompt(createExecutorClient(executor), {
       title: '优化机器人 AGENTS.md',
       model: plan.model,
       fallback: plan.fallback,

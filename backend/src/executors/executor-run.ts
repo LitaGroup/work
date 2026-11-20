@@ -1,3 +1,7 @@
+/**
+ * 一次性执行器会话运行器：建会话 → 发提示词 → 轮询到终态 → 取最后一条 assistant 文本。
+ * 只依赖 ExecutorClient 接口（话题回帖、脚本描述、需求方答复/自动验收、提测通知等复用）。
+ */
 import { BadRequestException } from '@nestjs/common';
 import {
   isModelQuotaError,
@@ -5,21 +9,18 @@ import {
   resolveWorkerModel,
   type ModelErrorLike,
 } from './model-availability';
-import {
-  isFreshOutcome,
-  OpencodeClient,
-  OpencodeModelRef,
-} from './opencode-client';
+import { isFreshOutcome, type OpencodeModelRef } from './opencode-client';
+import type { ExecutorClient } from './executor-client';
 import type { Worker } from '../workers/worker.entity';
 
-export interface RunOpencodePromptFallback {
+export interface RunExecutorPromptFallback {
   /** 主模型限额时切到的备用模型 */
   model: OpencodeModelRef;
   /** 切换后在原会话续跑的指令 */
   continuePrompt?: string;
 }
 
-export interface RunOpencodePromptInput {
+export interface RunExecutorPromptInput {
   /** 会话标题（展示用） */
   title: string;
   model: OpencodeModelRef;
@@ -36,7 +37,7 @@ export interface RunOpencodePromptInput {
    * 主模型限额（限流/配额/余额/token 用尽）时的备用模型：
    * 命中后在同一会话切换模型并续跑一次，保留上下文。
    */
-  fallback?: RunOpencodePromptFallback;
+  fallback?: RunExecutorPromptFallback;
   /** 命中模型限额时回调（无论是否切换备用），调用方用于标记共享冷却 */
   onQuotaError?: (error: ModelErrorLike | null) => void;
 }
@@ -61,7 +62,7 @@ export function toOpencodeModelRef(model: {
 /** 一次性会话的模型计划 */
 export interface PromptModelPlan {
   model: OpencodeModelRef;
-  fallback?: RunOpencodePromptFallback;
+  fallback?: RunExecutorPromptFallback;
   onQuotaError?: (error: ModelErrorLike | null) => void;
 }
 
@@ -99,13 +100,13 @@ export function planPromptModels(
 type PromptOutcome = 'succeeded' | 'failed' | 'timeout';
 
 /** 建会话 → 发提示词 → 轮询到终态 → 取最后一条 assistant 文本 */
-export async function runOpencodePrompt(
-  client: OpencodeClient,
-  input: RunOpencodePromptInput,
+export async function runExecutorPrompt(
+  client: ExecutorClient,
+  input: RunExecutorPromptInput,
 ): Promise<string> {
   if (input.location?.directory) {
     // 工位/工作目录可能尚未创建；先幂等建目录再建会话
-    await client.shell(`mkdir -p '${input.location.directory}'`);
+    await client.ensureDir(input.location.directory);
   }
   const session = await client.createSession({
     title: input.title,
@@ -166,7 +167,7 @@ export async function runOpencodePrompt(
 
 /** 轮询会话到本轮终态（outcome 具有粘性，须晚于本轮用户消息） */
 async function waitOutcome(
-  client: OpencodeClient,
+  client: ExecutorClient,
   sessionId: string,
   afterMs: number,
   deadline: number,

@@ -5,7 +5,7 @@ import { dirname, extname } from 'path';
 import { Repository } from 'typeorm';
 import { fileWebroot } from '../common/paths';
 import type { User } from '../auth/user.entity';
-import { WorkerRuntime } from '../common/enums';
+import { isAgentRuntime } from '../common/worker-runtime';
 import { Worker } from '../workers/worker.entity';
 import {
   WorkerDebugService,
@@ -208,11 +208,7 @@ export class FeishuBotP2PService {
       const worker = await this.workers.findOne({
         where: { id: config.workerId ?? 0 },
       });
-      if (
-        !worker ||
-        !worker.enabled ||
-        worker.runtime !== WorkerRuntime.OPENCODE
-      ) {
+      if (!worker || !worker.enabled || !isAgentRuntime(worker.runtime)) {
         await this.client.sendText(
           config.id,
           secrets,

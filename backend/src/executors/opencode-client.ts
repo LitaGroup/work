@@ -8,6 +8,8 @@ import {
   extractOpencodeTodosFromMessage,
   type OpencodeTodo,
 } from './opencode-todos';
+import type { ExecutorCapabilities, ExecutorClient } from './executor-client';
+import { OPENCODE_CAPABILITIES } from './executor-capabilities';
 
 /** 执行器连接信息（Executor 实体的连接子集） */
 export interface OpencodeEndpoint {
@@ -286,7 +288,18 @@ export class OpencodeClientError extends Error {
   }
 }
 
-export class OpencodeClient {
+/** 单引号包裹 shell 参数（内部单引号按 shell 规则转义；ensureDir/writeSecretFile 等内部实现用） */
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/** 目录内相对路径拼接（绝对路径原样返回） */
+function joinExecutorPath(directory: string, path: string): string {
+  if (path.startsWith('/')) return path;
+  return `${directory.replace(/\/+$/, '')}/${path}`;
+}
+
+export class OpencodeClient implements ExecutorClient {
   private readonly baseUrl: string;
   private readonly headers: Record<string, string>;
 
@@ -346,6 +359,11 @@ export class OpencodeClient {
   /** 服务器信息（健康检查用） */
   async info(signal?: AbortSignal): Promise<OpencodeServerInfo> {
     return this.request<OpencodeServerInfo>('/api/info', { signal });
+  }
+
+  /** opencode 固定能力（协议原生支持提问/中断/切模型/主 Agent/shell） */
+  capabilities(): Promise<ExecutorCapabilities> {
+    return Promise.resolve(OPENCODE_CAPABILITIES);
   }
 
   /** server 默认工作目录 */
@@ -846,12 +864,55 @@ export class OpencodeClient {
     );
   }
 
-  /** 执行 shell 命令（建工位目录等；在 server 默认目录下用绝对路径操作） */
+  /** 执行 shell 命令（仅 opencode 保留；结构化文件写入见 ensureDir/writeSecretFile/upsertEnvFile） */
   async shell(command: string, timeoutMs = 15_000): Promise<unknown> {
     return this.request('/api/shell', {
       method: 'POST',
       body: JSON.stringify({ command, timeout: timeoutMs }),
     });
+  }
+
+  /** 幂等建目录（shell mkdir -p，单引号包裹防注入） */
+  async ensureDir(directory: string): Promise<void> {
+    await this.shell(`mkdir -p ${shellQuote(directory)}`);
+  }
+
+  /** 敏感文件写入（printf + chmod；内容只经服务端拼进命令，不进日志） */
+  async writeSecretFile(
+    directory: string,
+    path: string,
+    content: string,
+    mode = 0o600,
+  ): Promise<void> {
+    const target = shellQuote(joinExecutorPath(directory, path));
+    await this.shell(
+      `printf '%s' ${shellQuote(content)} > ${target} && ` +
+        `chmod ${mode.toString(8)} ${target}`,
+    );
+  }
+
+  /** 按 key 更新 env 文件（保留其他键，权限 600；文件不存在时创建） */
+  async upsertEnvFile(
+    directory: string,
+    path: string,
+    entries: Record<string, string>,
+  ): Promise<void> {
+    const keys = Object.keys(entries);
+    if (keys.length === 0) {
+      throw new OpencodeClientError('upsertEnvFile 至少需要一个键', 400);
+    }
+    const target = shellQuote(joinExecutorPath(directory, path));
+    const tmp = shellQuote(`${joinExecutorPath(directory, path)}.tmp`);
+    const filters = keys
+      .map((key) => `grep -v ${shellQuote(`^${key}=`)} ${target} 2>/dev/null`)
+      .join(' | ');
+    const lines = Object.entries(entries)
+      .map(([key, value]) => shellQuote(`${key}=${value}`))
+      .join(' ');
+    await this.shell(
+      `{ ${filters}; printf '%s\\n' ${lines}; } > ${tmp} && ` +
+        `chmod 600 ${tmp} && mv ${tmp} ${target}`,
+    );
   }
 
   /** 订阅事件流（GET /api/event SSE）。返回原始 Response，由调用方读流解析 */

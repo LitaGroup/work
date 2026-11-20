@@ -5,7 +5,7 @@ import {
   WorkerRuntime,
 } from '../common/enums';
 import { OpencodeClient } from '../executors/opencode-client';
-import * as opencodeRun from '../executors/opencode-run';
+import * as opencodeRun from '../executors/executor-run';
 import type { Worker } from '../workers/worker.entity';
 import { Task } from './task.entity';
 import { TaskQuestionAutoAnswerService } from './task-question-auto-answer.service';
@@ -170,7 +170,7 @@ describe('TaskQuestionAutoAnswerService 父机器人自动答复', () => {
 
   it('子任务提问由父任务机器人生成答案并自动回复', async () => {
     const run = jest
-      .spyOn(opencodeRun, 'runOpencodePrompt')
+      .spyOn(opencodeRun, 'runExecutorPrompt')
       .mockImplementation((_client, input) => {
         input.onSessionCreated?.('consult-session');
         return Promise.resolve('{"answers":[["测试"]]}');
@@ -212,7 +212,7 @@ describe('TaskQuestionAutoAnswerService 父机器人自动答复', () => {
 
   it('根任务或无父机器人时不自动答复', async () => {
     tasks.findOne.mockResolvedValue(child({ parentId: null }));
-    const run = jest.spyOn(opencodeRun, 'runOpencodePrompt');
+    const run = jest.spyOn(opencodeRun, 'runExecutorPrompt');
 
     await expect(service.start(2, request)).resolves.toBe(false);
 
@@ -222,7 +222,7 @@ describe('TaskQuestionAutoAnswerService 父机器人自动答复', () => {
 
   it('自动答复失败时保持待回答并回退通知需求方', async () => {
     jest
-      .spyOn(opencodeRun, 'runOpencodePrompt')
+      .spyOn(opencodeRun, 'runExecutorPrompt')
       .mockRejectedValue(new Error('父机器人执行失败'));
     jest
       .spyOn(OpencodeClient.prototype, 'listQuestions')
@@ -247,7 +247,7 @@ describe('TaskQuestionAutoAnswerService 父机器人自动答复', () => {
 
   it('人工已处理提问时不再自动答复', async () => {
     currentQuestion = { ...currentQuestion, state: 'answered' };
-    const run = jest.spyOn(opencodeRun, 'runOpencodePrompt');
+    const run = jest.spyOn(opencodeRun, 'runExecutorPrompt');
 
     await expect(service.start(2, request)).resolves.toBe(true);
 

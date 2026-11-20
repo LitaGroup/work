@@ -15,7 +15,7 @@ import {
   ExecutorProvider,
   ExecutorProviderModel,
 } from './executor.entity';
-import { OpencodeClient } from './opencode-client';
+import { createExecutorClient } from './executor-client';
 import { OpencodeEventHub } from './opencode-event-hub.service';
 
 export interface CreateExecutorInput {
@@ -121,9 +121,10 @@ export class ExecutorsService implements OnApplicationBootstrap {
    */
   async check(id: number): Promise<Executor> {
     const executor = await this.findOne(id);
-    const client = new OpencodeClient(executor);
     const wasOnline = executor.online;
     try {
+      // 工厂在 try 内：未接入的执行器类型（如 bridge 未落地的 kiro）优雅标记离线，不抛 500
+      const client = createExecutorClient(executor);
       const info = await client.info();
       executor.online = true;
       executor.version = info.version ?? null;
@@ -132,6 +133,11 @@ export class ExecutorsService implements OnApplicationBootstrap {
         executor.defaultLocation = location.directory ?? null;
       } catch {
         // 目录接口失败不影响在线判定
+      }
+      try {
+        executor.capabilitiesCache = await client.capabilities();
+      } catch {
+        // 能力上报失败不影响在线判定（保留上次缓存）
       }
     } catch (e) {
       executor.online = false;
@@ -179,7 +185,7 @@ export class ExecutorsService implements OnApplicationBootstrap {
    */
   async syncProviders(id: number): Promise<Executor> {
     const executor = await this.findOne(id);
-    const client = new OpencodeClient(executor);
+    const client = createExecutorClient(executor);
     const [providers, models] = await Promise.all([
       client.providers(),
       client.models(),

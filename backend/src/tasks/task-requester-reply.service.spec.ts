@@ -5,7 +5,7 @@ import {
   WorkerRuntime,
 } from '../common/enums';
 import { OpencodeClient } from '../executors/opencode-client';
-import * as opencodeRun from '../executors/opencode-run';
+import * as opencodeRun from '../executors/executor-run';
 import type { Worker } from '../workers/worker.entity';
 import { Task } from './task.entity';
 import { TaskRequesterReplyService } from './task-requester-reply.service';
@@ -128,7 +128,7 @@ describe('TaskRequesterReplyService 根任务机器人需求方回复', () => {
 
   it('用需求方机器人一次性会话回复并携带最近对话与回复接口', async () => {
     const run = jest
-      .spyOn(opencodeRun, 'runOpencodePrompt')
+      .spyOn(opencodeRun, 'runExecutorPrompt')
       .mockImplementation((_client, input) => {
         input.onSessionCreated?.('reply-session');
         return Promise.resolve('已回复');
@@ -167,7 +167,7 @@ describe('TaskRequesterReplyService 根任务机器人需求方回复', () => {
 
   it('会话结束未调用回复接口时持续退避重试，不转人工', async () => {
     jest
-      .spyOn(opencodeRun, 'runOpencodePrompt')
+      .spyOn(opencodeRun, 'runExecutorPrompt')
       .mockResolvedValue('只输出了文字');
     jest.spyOn(OpencodeClient.prototype, 'shell').mockResolvedValue(undefined);
     jest
@@ -199,7 +199,7 @@ describe('TaskRequesterReplyService 根任务机器人需求方回复', () => {
 
   it('子任务消息同样走需求方机器人一次性回复会话', async () => {
     const run = jest
-      .spyOn(opencodeRun, 'runOpencodePrompt')
+      .spyOn(opencodeRun, 'runExecutorPrompt')
       .mockImplementation((_client, input) => {
         input.onSessionCreated?.('reply-session');
         return Promise.resolve('已回复');
@@ -225,7 +225,7 @@ describe('TaskRequesterReplyService 根任务机器人需求方回复', () => {
   });
 
   it('真人需求方和已结束任务不启动回复会话', async () => {
-    const run = jest.spyOn(opencodeRun, 'runOpencodePrompt');
+    const run = jest.spyOn(opencodeRun, 'runExecutorPrompt');
 
     workers.findOne.mockResolvedValue({
       ...requester,

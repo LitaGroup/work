@@ -20,14 +20,18 @@ import {
   WorkerRole,
   WorkerRuntime,
 } from '../common/enums';
+import { isAgentRuntime } from '../common/worker-runtime';
 import { Executor } from '../executors/executor.entity';
 import {
-  OpencodeClient,
   OpencodeClientError,
   formEventToQuestionEvent,
   isFreshOutcome,
   type OpencodeQuestionRequest,
 } from '../executors/opencode-client';
+import {
+  createExecutorClient,
+  type ExecutorClient,
+} from '../executors/executor-client';
 import {
   OpencodeEvent,
   OpencodeEventHub,
@@ -42,12 +46,12 @@ import {
 import {
   FALLBACK_CONTINUE_PROMPT,
   toOpencodeModelRef,
-} from '../executors/opencode-run';
+} from '../executors/executor-run';
 import { Worker } from '../workers/worker.entity';
 import {
-  agentTokenShell,
-  mcpConfigShell,
-  workerEnvShell,
+  upsertWorkerEnv,
+  writeAgentTokenFile,
+  writeMcpConfigFile,
 } from '../workers/worker-env';
 import { WorkersService } from '../workers/workers.service';
 import { McpServersService } from '../mcp-servers/mcp-servers.service';
@@ -370,7 +374,7 @@ export class TaskDispatchService
       }
       return this.mustFind(task.id);
     }
-    if (worker.runtime !== WorkerRuntime.OPENCODE) {
+    if (!isAgentRuntime(worker.runtime)) {
       throw new NotFoundException('仅支持 runtime=opencode 的机器人派发');
     }
     if (!worker.executorId || !worker.providerId || !worker.modelId) {
@@ -398,20 +402,17 @@ export class TaskDispatchService
       workerToken,
       worker.mcps ?? [],
     );
-    const client = new OpencodeClient(executor);
+    const client = createExecutorClient(executor);
     this.dispatching.add(task.id);
     try {
-      // 1. 工位目录与机器人令牌（幂等；路径单引号包裹防注入）
-      await client.shell(
-        `mkdir -p '${workdir}' '${workdir}/.opencode' && ` +
-          `${agentTokenShell(workdir, workerToken)} && ` +
-          workerEnvShell(workdir, {
-            LITA_WORK_TOKEN: workerToken,
-            LITA_PROJECT_TOKEN: workerToken,
-          }) +
-          ' && ' +
-          mcpConfigShell(workdir, mcpServers),
-      );
+      // 1. 工位目录与机器人令牌（幂等；结构化文件写入，bridge 执行器同样适用）
+      await client.ensureDir(`${workdir}/.opencode`);
+      await writeAgentTokenFile(client, workdir, workerToken);
+      await upsertWorkerEnv(client, workdir, {
+        LITA_WORK_TOKEN: workerToken,
+        LITA_PROJECT_TOKEN: workerToken,
+      });
+      await writeMcpConfigFile(client, workdir, mcpServers);
 
       // 2. 固定绑定：一个任务只对应一个 opencode 会话。
       //    同一执行器上复用既有会话；执行器变更或会话已不存在时才新建。
@@ -446,7 +447,7 @@ export class TaskDispatchService
             where: { id: previousExecutorId },
           });
           if (oldExecutor) {
-            await new OpencodeClient(oldExecutor)
+            await createExecutorClient(oldExecutor)
               .interrupt(previousSessionId)
               .catch((e: Error) =>
                 this.logger.warn(
@@ -810,7 +811,7 @@ export class TaskDispatchService
         where: { id: task.executorId },
       });
       if (executor) {
-        await new OpencodeClient(executor)
+        await createExecutorClient(executor)
           .interrupt(task.opencodeSessionId)
           .catch((e: Error) =>
             this.logger.warn(
@@ -883,7 +884,7 @@ export class TaskDispatchService
       if (!executor) {
         failure = '执行器不存在';
       } else {
-        await new OpencodeClient(executor).deleteSession(sessionId);
+        await createExecutorClient(executor).deleteSession(sessionId);
         destroyed = true;
       }
     } catch (error) {
@@ -944,7 +945,7 @@ export class TaskDispatchService
       where: { id: task.executorId },
     });
     if (!executor) throw new NotFoundException('执行器不存在');
-    const client = new OpencodeClient(executor);
+    const client = createExecutorClient(executor);
     // 提问可能来自 opencode 子会话（task 工具），优先用提问自带的会话
     const sessionId = question.sessionId || task.opencodeSessionId;
 
@@ -1062,7 +1063,7 @@ export class TaskDispatchService
         where: { id: task.executorId },
       });
       if (!executor?.online) return;
-      const requests = await new OpencodeClient(executor).listQuestions(
+      const requests = await createExecutorClient(executor).listQuestions(
         task.opencodeSessionId,
       );
       const remote = new Set(requests.map((request) => request.id));
@@ -1462,7 +1463,7 @@ export class TaskDispatchService
       where: { id: task.executorId },
     });
     if (!executor) return null;
-    return new OpencodeClient(executor)
+    return createExecutorClient(executor)
       .lastAssistantText(task.opencodeSessionId)
       .catch((e: Error) => {
         this.logger.warn(
@@ -1672,7 +1673,7 @@ export class TaskDispatchService
       this.backupSwitched.delete(taskId);
       return false;
     }
-    const client = new OpencodeClient(executor);
+    const client = createExecutorClient(executor);
     const fallbackLabel = `${fallback.providerId}/${fallback.modelId}`;
     try {
       // 先结算失败的本轮消息，再切换模型续跑（同一会话保留上下文）
@@ -2097,7 +2098,7 @@ export class TaskDispatchService
       // 补齐漏收的提问（服务重启/断线期间 question.asked 可能丢失）
       await this.syncPendingQuestions(task.id);
       try {
-        const client = new OpencodeClient(executor);
+        const client = createExecutorClient(executor);
         const info = await client.session(task.opencodeSessionId);
         if (
           (info.outcome === 'succeeded' || info.outcome === 'failed') &&
@@ -2162,7 +2163,7 @@ export class TaskDispatchService
    * 本轮用户消息创建时间的终态；取不到基准时退回旧行为直接采信。
    */
   private async isCurrentRunOutcome(
-    client: OpencodeClient,
+    client: ExecutorClient,
     info: { outcome?: string | null; time?: { idle?: number | null } },
     sessionId: string,
   ): Promise<boolean> {

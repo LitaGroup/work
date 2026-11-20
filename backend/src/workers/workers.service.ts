@@ -18,6 +18,10 @@ import {
   WorkerRole,
   WorkerRuntime,
 } from '../common/enums';
+import {
+  isAgentRuntime,
+  runtimeFromExecutorType,
+} from '../common/worker-runtime';
 import { User } from '../auth/user.entity';
 import { Task } from '../tasks/task.entity';
 import { TaskTemplate } from '../tasks/task-template.entity';
@@ -460,8 +464,8 @@ export class WorkersService implements OnApplicationBootstrap {
         '调度机器人为系统机器人，只能通过代码内置，网页不能创建',
       );
     }
-    if (input.runtime && input.runtime !== WorkerRuntime.OPENCODE) {
-      throw new BadRequestException('机器人运行时统一为 opencode');
+    if (input.runtime && !isAgentRuntime(input.runtime)) {
+      throw new BadRequestException('机器人运行时由绑定的执行器类型决定');
     }
     const exists = await this.workers.findOne({ where: { name } });
     if (exists) throw new BadRequestException(`名称「${name}」已存在`);
@@ -470,12 +474,16 @@ export class WorkersService implements OnApplicationBootstrap {
     const standards =
       this.standardCatalog.normalizeStandards(input.standards) ?? null;
     const mcps = await this.mcpServers.normalizeWorkerIds(input.mcps ?? []);
+    // 运行时按绑定执行器类型派生（多执行器接入后自动扩展；执行器缺失由 assertConfig 兜底校验）
+    const executor = input.executorId
+      ? await this.executors.findOne({ where: { id: input.executorId } })
+      : null;
     const worker = this.workers.create({
       name,
       intro: input.intro?.trim() || null,
       avatarUrl: normalizeAvatarUrl(input.avatarUrl),
       role: WorkerRole.WORKER,
-      runtime: WorkerRuntime.OPENCODE,
+      runtime: runtimeFromExecutorType(executor?.type),
       executorId: input.executorId ?? null,
       providerId: input.providerId?.trim() || null,
       modelId: input.modelId?.trim() || null,
@@ -533,13 +541,18 @@ export class WorkersService implements OnApplicationBootstrap {
     if (
       !worker.humanUserId &&
       input.runtime !== undefined &&
-      input.runtime !== WorkerRuntime.OPENCODE
+      !isAgentRuntime(input.runtime)
     ) {
-      throw new BadRequestException('机器人运行时统一为 opencode');
+      throw new BadRequestException('机器人运行时由绑定的执行器类型决定');
     }
-    if (!worker.humanUserId) worker.runtime = WorkerRuntime.OPENCODE;
     if (!worker.humanUserId && input.executorId !== undefined) {
       worker.executorId = input.executorId ?? null;
+    }
+    if (!worker.humanUserId) {
+      const executor = worker.executorId
+        ? await this.executors.findOne({ where: { id: worker.executorId } })
+        : null;
+      worker.runtime = runtimeFromExecutorType(executor?.type);
     }
     if (
       worker.humanUserId &&
@@ -670,8 +683,8 @@ export class WorkersService implements OnApplicationBootstrap {
       }
       return;
     }
-    if (worker.runtime !== WorkerRuntime.OPENCODE) {
-      throw new BadRequestException('AI 机器人运行时统一为 opencode');
+    if (!isAgentRuntime(worker.runtime)) {
+      throw new BadRequestException('AI 机器人运行时无效');
     }
     if (worker.executorId) {
       const executor = await this.executors.findOne({

@@ -1,0 +1,17 @@
+{
+  "name": "executor-bridge",
+  "version": "0.1.0",
+  "description": "工位侧执行器桥：把 kiro / codex / claude-code 等执行内核包装为平台统一的 HTTP+SSE 服务（协议见 docs/EXECUTOR_PROTOCOL.md）",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node --env-file-if-exists=.env dist/main.js",
+    "dev": "tsc && node --env-file-if-exists=.env dist/main.js"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.7.3"
+  }
+}

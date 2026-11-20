@@ -2,15 +2,16 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { TopicStatus, WorkerRole, WorkerRuntime } from '../common/enums';
+import { TopicStatus, WorkerRole } from '../common/enums';
+import { isAgentRuntime } from '../common/worker-runtime';
 import { beijingTime } from '../common/frontmatter';
 import { Executor } from '../executors/executor.entity';
-import { OpencodeClient } from '../executors/opencode-client';
-import { planPromptModels, runOpencodePrompt } from '../executors/opencode-run';
+import { createExecutorClient } from '../executors/executor-client';
+import { planPromptModels, runExecutorPrompt } from '../executors/executor-run';
 import { nextInboxRetryDelay } from '../tasks/task-loop.rules';
 import { TaskRequesterSessionService } from '../tasks/task-requester-session.service';
 import { Worker } from '../workers/worker.entity';
-import { agentTokenShell } from '../workers/worker-env';
+import { writeAgentTokenFile } from '../workers/worker-env';
 import { WorkersService } from '../workers/workers.service';
 import { TopicPost } from './topic-post.entity';
 import { TopicWorkerInbox } from './topic-worker-inbox.entity';
@@ -91,7 +92,7 @@ export class TopicReplyService {
     }
     if (!this.sessions.tryAcquire(endpoint.worker.id)) return false;
 
-    const client = new OpencodeClient(endpoint.executor);
+    const client = createExecutorClient(endpoint.executor);
     let sessionId: string | null = null;
     try {
       await this.inbox.update(
@@ -106,16 +107,13 @@ export class TopicReplyService {
       const token = await this.workersService.ensureWorkToken(
         endpoint.worker.id,
       );
-      await client.shell(
-        `mkdir -p '${endpoint.workdir}' '${endpoint.workdir}/.opencode' && ` +
-          agentTokenShell(endpoint.workdir, token),
-      );
+      await writeAgentTokenFile(client, endpoint.workdir, token);
       const plan = planPromptModels(endpoint.worker, endpoint.executor.id, {
         providerId: endpoint.providerId,
         modelId: endpoint.modelId,
         variant: endpoint.variant,
       });
-      await runOpencodePrompt(client, {
+      await runExecutorPrompt(client, {
         title: `话题答复 ${topic.id}`.slice(0, 100),
         model: plan.model,
         fallback: plan.fallback,
@@ -157,7 +155,7 @@ export class TopicReplyService {
       !worker ||
       !worker.enabled ||
       worker.role !== WorkerRole.WORKER ||
-      worker.runtime !== WorkerRuntime.OPENCODE ||
+      !isAgentRuntime(worker.runtime) ||
       worker.personalAgentUserId
     ) {
       return null;

@@ -7,11 +7,12 @@ import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import type { MessageEvent } from '@nestjs/common';
 import { Observable, type Subscription } from 'rxjs';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import type { User } from '../auth/user.entity';
 import { WorkerRuntime, WorkerRole } from '../common/enums';
+import { AGENT_RUNTIMES, isAgentRuntime } from '../common/worker-runtime';
 import { Executor } from '../executors/executor.entity';
-import { OpencodeClient } from '../executors/opencode-client';
+import { createExecutorClient } from '../executors/executor-client';
 import { Worker } from './worker.entity';
 import { WorkerDebugService } from './worker-debug.service';
 import type {
@@ -29,10 +30,9 @@ import {
 } from './personal-agent';
 import { isDeprecatedSkill } from './worker-skill-deprecation';
 import {
-  agentTokenShell,
-  mcpConfigShell,
-  shellQuote,
-  workerEnvShell,
+  upsertWorkerEnv,
+  writeAgentTokenFile,
+  writeMcpConfigFile,
 } from './worker-env';
 import { McpServersService } from '../mcp-servers/mcp-servers.service';
 
@@ -393,11 +393,11 @@ export class PersonalAgentsService {
     if (!worker.enabled) {
       return { worker: view, available: false, reason: '个人 AGENT 已停用' };
     }
-    if (worker.runtime !== WorkerRuntime.OPENCODE) {
+    if (!isAgentRuntime(worker.runtime)) {
       return {
         worker: view,
         available: false,
-        reason: '个人 AGENT 不是 opencode 运行时',
+        reason: '个人 AGENT 不是执行器运行时',
       };
     }
     if (
@@ -465,7 +465,7 @@ export class PersonalAgentsService {
     backupVariant: string | null;
   } | null> {
     const workers = await this.workers.find({
-      where: { enabled: true, runtime: WorkerRuntime.OPENCODE },
+      where: { enabled: true, runtime: In(AGENT_RUNTIMES) },
       order: { id: 'ASC' },
     });
     const candidates = workers.filter(
@@ -556,19 +556,19 @@ export class PersonalAgentsService {
       token,
       worker.mcps ?? [],
     );
-    const client = new OpencodeClient(executor);
-    const dir = `${workdir}/.opencode`;
+    const client = createExecutorClient(executor);
     // 调试/聊天与任务执行共用工位根目录，AGENTS.md 与 .opencode 就是当前目录，
     // 无需再为独立调试目录创建符号链接。
     await withTimeout(
-      client.shell(
-        `mkdir -p ${shellQuote(dir)} && ` +
-          `${agentTokenShell(workdir, token)} && ` +
-          `${workerEnvShell(workdir, {
-            LITA_WORK_TOKEN: token,
-            LITA_PROJECT_TOKEN: token,
-          })} && ${mcpConfigShell(workdir, mcpServers)}`,
-      ),
+      (async () => {
+        await client.ensureDir(`${workdir}/.opencode`);
+        await writeAgentTokenFile(client, workdir, token);
+        await upsertWorkerEnv(client, workdir, {
+          LITA_WORK_TOKEN: token,
+          LITA_PROJECT_TOKEN: token,
+        });
+        await writeMcpConfigFile(client, workdir, mcpServers);
+      })(),
       PREPARE_TIMEOUT_MS,
       '准备个人 AGENT 工位超时',
     );

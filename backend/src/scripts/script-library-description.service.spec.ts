@@ -4,14 +4,14 @@ import { tmpdir } from 'os';
 import * as path from 'path';
 import { Repository } from 'typeorm';
 import { Executor } from '../executors/executor.entity';
-import { runOpencodePrompt, planPromptModels } from '../executors/opencode-run';
+import { runExecutorPrompt, planPromptModels } from '../executors/executor-run';
 import { ScriptLibraryDescription } from './script-library-description.entity';
 import { ScriptLibraryDescriptionService } from './script-library-description.service';
 import { Worker } from '../workers/worker.entity';
 import { WorkersService } from '../workers/workers.service';
 
-jest.mock('../executors/opencode-run', () => ({
-  runOpencodePrompt: jest.fn(),
+jest.mock('../executors/executor-run', () => ({
+  runExecutorPrompt: jest.fn(),
   planPromptModels: jest.fn(
     (
       _worker: unknown,
@@ -26,8 +26,8 @@ jest.mock('../executors/opencode-run', () => ({
     }),
   ),
 }));
-const runPromptMock = runOpencodePrompt as jest.MockedFunction<
-  typeof runOpencodePrompt
+const runPromptMock = runExecutorPrompt as jest.MockedFunction<
+  typeof runExecutorPrompt
 >;
 const planModelsMock = planPromptModels as jest.MockedFunction<
   typeof planPromptModels

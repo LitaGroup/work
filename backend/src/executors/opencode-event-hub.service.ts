@@ -1,7 +1,7 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { EventEmitter } from 'events';
 import { Executor } from './executor.entity';
-import { OpencodeClient } from './opencode-client';
+import { createExecutorClient } from './executor-client';
 
 /** 执行器事件（/api/event SSE 单条解析结果，附 executorId 供上层路由） */
 export interface OpencodeEvent {
@@ -118,7 +118,7 @@ export class OpencodeEventHub implements OnModuleDestroy {
     executor: Executor,
     abort: AbortController,
   ): Promise<void> {
-    const client = new OpencodeClient(executor);
+    const client = createExecutorClient(executor);
     try {
       const res = await client.eventStream(abort.signal);
       if (!res.ok || !res.body) {

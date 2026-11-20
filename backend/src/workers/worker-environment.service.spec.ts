@@ -180,10 +180,6 @@ describe('WorkerEnvironmentService.start / stream / snapshotOf', () => {
   // 端口 1 不可达：后台任务会快速失败转为 failed，测试不产生真实网络副作用
   const executor = { id: 8, ip: '127.0.0.1', port: 1, online: true } as never;
 
-  /** 取第 n 次 shell 调用的命令文本（jest.mock.calls 为 any，集中此处断言） */
-  const shellCommand = (shell: jest.Mock, index = 0): string =>
-    (shell.mock.calls as unknown as [string][])[index][0];
-
   const buildService = (
     workersFindOne: jest.Mock = jest.fn().mockResolvedValue(worker),
     executorsFindOne: jest.Mock = jest.fn().mockResolvedValue(executor),
@@ -230,9 +226,11 @@ describe('WorkerEnvironmentService.start / stream / snapshotOf', () => {
     expect(['running', 'failed']).toContain(service.snapshotOf(1001).status);
   });
 
-  it('初始化时把机器人独立令牌写入工位 agent-token 与 .env，并限制为 600 权限', async () => {
+  it('初始化时把机器人独立令牌写入工位 agent-token 与 .env', async () => {
     const ensureWorkToken = jest.fn().mockResolvedValue('worker-token-123');
-    const shell = jest.fn().mockResolvedValue(undefined);
+    const ensureDir = jest.fn().mockResolvedValue(undefined);
+    const writeSecretFile = jest.fn().mockResolvedValue(undefined);
+    const upsertEnvFile = jest.fn().mockResolvedValue(undefined);
     const service = new WorkerEnvironmentService(
       {} as never,
       {} as never,
@@ -243,34 +241,33 @@ describe('WorkerEnvironmentService.start / stream / snapshotOf', () => {
       { get: () => 'test-lita-token' } as never,
     );
     await service['writeAgentToken'](
-      { shell } as never,
+      { ensureDir, writeSecretFile, upsertEnvFile } as never,
       1001,
       '/tmp/runtime/worker/1001',
     );
     expect(ensureWorkToken).toHaveBeenCalledWith(1001);
-    expect(shell).toHaveBeenCalledTimes(1);
-    const command = shellCommand(shell);
-    // 机器人身份令牌文件（兼容旧协议）
-    expect(command).toContain(
-      "printf '%s' 'worker-token-123' > '/tmp/runtime/worker/1001/.opencode/agent-token' && " +
-        "chmod 600 '/tmp/runtime/worker/1001/.opencode/agent-token'",
+    // 机器人身份令牌文件（兼容旧协议），权限由 writeSecretFile 语义保证（600）
+    expect(ensureDir).toHaveBeenCalledWith(
+      '/tmp/runtime/worker/1001/.opencode',
+    );
+    expect(writeSecretFile).toHaveBeenCalledWith(
+      '/tmp/runtime/worker/1001',
+      '.opencode/agent-token',
+      'worker-token-123',
     );
     // .opencode/.env 同步注入新名与兼容旧名，供 SKILL 统一读取
-    expect(command).toContain(
-      "grep -v '^LITA_WORK_TOKEN=' '/tmp/runtime/worker/1001/.opencode/.env' 2>/dev/null",
-    );
-    expect(command).toContain(
-      "grep -v '^LITA_PROJECT_TOKEN=' '/tmp/runtime/worker/1001/.opencode/.env' 2>/dev/null",
-    );
-    expect(command).toContain("'LITA_WORK_TOKEN=worker-token-123'");
-    expect(command).toContain("'LITA_PROJECT_TOKEN=worker-token-123'");
-    expect(command).toContain(
-      "chmod 600 '/tmp/runtime/worker/1001/.opencode/.env.tmp' && " +
-        "mv '/tmp/runtime/worker/1001/.opencode/.env.tmp' '/tmp/runtime/worker/1001/.opencode/.env'",
+    expect(upsertEnvFile).toHaveBeenCalledWith(
+      '/tmp/runtime/worker/1001',
+      '.opencode/.env',
+      {
+        LITA_WORK_TOKEN: 'worker-token-123',
+        LITA_PROJECT_TOKEN: 'worker-token-123',
+      },
     );
   });
 
-  it('初始化时把 Lita 用户令牌写入工位 .env 并限制为 600 权限', async () => {
+  it('初始化时把 Lita 用户令牌写入工位 .env 并同步执行器宿主 ~/.env', async () => {
+    const upsertEnvFile = jest.fn().mockResolvedValue(undefined);
     const shell = jest.fn().mockResolvedValue(undefined);
     const config = {
       get: jest.fn((key: string) =>
@@ -287,29 +284,23 @@ describe('WorkerEnvironmentService.start / stream / snapshotOf', () => {
       config as never,
     );
     await service['writeLitaUserToken'](
-      { shell } as never,
+      { upsertEnvFile, shell } as never,
       '/tmp/runtime/worker/1001',
     );
-    expect(shell).toHaveBeenCalledTimes(2);
-    const command = shellCommand(shell);
-    // 合并写入：保留 LITA_PROJECT_TOKEN 等其他键
-    expect(command).toContain(
-      "grep -v '^LITA_USER_TOKEN=' '/tmp/runtime/worker/1001/.opencode/.env' 2>/dev/null",
+    // 合并写入：保留其他键
+    expect(upsertEnvFile).toHaveBeenCalledWith(
+      '/tmp/runtime/worker/1001',
+      '.opencode/.env',
+      { LITA_USER_TOKEN: 'lita-user-token-123' },
     );
-    expect(command).toContain(
-      "printf '%s\\n' 'LITA_USER_TOKEN=lita-user-token-123'",
-    );
-    expect(command).toContain(
-      "chmod 600 '/tmp/runtime/worker/1001/.opencode/.env.tmp' && " +
-        "mv '/tmp/runtime/worker/1001/.opencode/.env.tmp' '/tmp/runtime/worker/1001/.opencode/.env'",
-    );
-    expect(shell).toHaveBeenNthCalledWith(
-      2,
-      expect.stringContaining('$HOME/.env'),
-    );
+    // 宿主 ~/.env 同步保留 shell（bridge 执行器无 shell，失败降级告警）
+    expect(shell).toHaveBeenCalledTimes(1);
+    const hostSyncCommand = (shell.mock.calls as unknown as [string][])[0]?.[0];
+    expect(hostSyncCommand).toContain('$HOME/.env');
   });
 
   it('同时配置时优先使用 WORKER_LITA_USER_TOKEN 注入工位', async () => {
+    const upsertEnvFile = jest.fn().mockResolvedValue(undefined);
     const shell = jest.fn().mockResolvedValue(undefined);
     const service = new WorkerEnvironmentService(
       {} as never,
@@ -327,16 +318,18 @@ describe('WorkerEnvironmentService.start / stream / snapshotOf', () => {
       } as never,
     );
     await service['writeLitaUserToken'](
-      { shell } as never,
+      { upsertEnvFile, shell } as never,
       '/tmp/runtime/worker/1001',
     );
-    const command = shellCommand(shell);
-    expect(command).toContain("'LITA_USER_TOKEN=worker-user-token'");
-    expect(command).not.toContain('platform-user-token');
+    expect(upsertEnvFile).toHaveBeenCalledWith(
+      '/tmp/runtime/worker/1001',
+      '.opencode/.env',
+      { LITA_USER_TOKEN: 'worker-user-token' },
+    );
   });
 
   it('未配置专用令牌时回退 LITA_USER_TOKEN，都未配置则跳过', async () => {
-    const shell = jest.fn().mockResolvedValue(undefined);
+    const fallbackUpsert = jest.fn().mockResolvedValue(undefined);
     const fallback = new WorkerEnvironmentService(
       {} as never,
       {} as never,
@@ -351,13 +344,16 @@ describe('WorkerEnvironmentService.start / stream / snapshotOf', () => {
       } as never,
     );
     await fallback['writeLitaUserToken'](
-      { shell } as never,
+      { upsertEnvFile: fallbackUpsert, shell: jest.fn() } as never,
       '/tmp/runtime/worker/1001',
     );
-    expect(shellCommand(shell)).toContain(
-      "printf '%s\\n' 'LITA_USER_TOKEN=fallback-token'",
+    expect(fallbackUpsert).toHaveBeenCalledWith(
+      '/tmp/runtime/worker/1001',
+      '.opencode/.env',
+      { LITA_USER_TOKEN: 'fallback-token' },
     );
 
+    const emptyUpsert = jest.fn();
     const emptyShell = jest.fn();
     const empty = new WorkerEnvironmentService(
       {} as never,
@@ -369,9 +365,10 @@ describe('WorkerEnvironmentService.start / stream / snapshotOf', () => {
       { get: () => undefined } as never,
     );
     await empty['writeLitaUserToken'](
-      { shell: emptyShell } as never,
+      { upsertEnvFile: emptyUpsert, shell: emptyShell } as never,
       '/tmp/runtime/worker/1001',
     );
+    expect(emptyUpsert).not.toHaveBeenCalled();
     expect(emptyShell).not.toHaveBeenCalled();
   });
 

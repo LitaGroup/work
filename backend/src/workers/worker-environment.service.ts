@@ -14,20 +14,29 @@ import { Repository } from 'typeorm';
 import {
   WorkerGithubPermission,
   WorkerResourcePermission,
-  WorkerRuntime,
 } from '../common/enums';
+import { isAgentRuntime } from '../common/worker-runtime';
 import { Executor } from '../executors/executor.entity';
 import { OpencodeEventHub } from '../executors/opencode-event-hub.service';
 import type { OpencodeEvent } from '../executors/opencode-event-hub.service';
-import { isFreshOutcome, OpencodeClient } from '../executors/opencode-client';
+import { isFreshOutcome } from '../executors/opencode-client';
+import {
+  createExecutorClient,
+  type ExecutorClient,
+} from '../executors/executor-client';
 import {
   isModelQuotaError,
   markModelExhausted,
   resolveWorkerModel,
 } from '../executors/model-availability';
-import { toOpencodeModelRef } from '../executors/opencode-run';
+import { toOpencodeModelRef } from '../executors/executor-run';
 import { Worker } from './worker.entity';
-import { agentTokenShell, mcpConfigShell, workerEnvShell } from './worker-env';
+import {
+  ensureWorkerSkeleton,
+  upsertWorkerEnv,
+  writeAgentTokenFile,
+  writeMcpConfigFile,
+} from './worker-env';
 import { WorkersService } from './workers.service';
 import { McpServersService } from '../mcp-servers/mcp-servers.service';
 import { GithubPermissionCredentialService } from './github-permission-credential.service';
@@ -212,7 +221,7 @@ export class WorkerEnvironmentService implements OnModuleDestroy {
   async start(id: number): Promise<WorkerInitializeSnapshot> {
     const worker = await this.workers.findOne({ where: { id } });
     if (!worker) throw new BadRequestException('机器人不存在');
-    if (worker.runtime !== WorkerRuntime.OPENCODE) {
+    if (!isAgentRuntime(worker.runtime)) {
       throw new BadRequestException('仅支持 opencode 机器人初始化');
     }
     if (
@@ -337,16 +346,14 @@ export class WorkerEnvironmentService implements OnModuleDestroy {
     executor: Executor,
     workdir: string,
   ): Promise<void> {
-    const client = new OpencodeClient(executor);
+    const client = createExecutorClient(executor);
     // 执行期间占用执行器事件流，结束后释放（引用归零延迟断开）
     this.eventHub.retain(executor);
     try {
       this.pushLine(job, `▶ 开始初始化工位 ${workdir}`);
       // 幂等建立工位骨架，初始化会话内仍会按需补齐
       this.pushLine(job, '· 创建工位目录…');
-      await client.shell(
-        `mkdir -p '${workdir}' '${workdir}/.opencode/skills' '${workdir}/.opencode/rules' '${workdir}/.opencode/docs'`,
-      );
+      await ensureWorkerSkeleton(client, workdir);
       this.pushLine(job, '· 写入机器人身份令牌（agent-token / .env）…');
       await this.writeAgentToken(client, worker.id, workdir);
       this.pushLine(job, '· 注入 MCP 配置（lita-work + 已选服务）…');
@@ -458,18 +465,16 @@ export class WorkerEnvironmentService implements OnModuleDestroy {
    * 令牌只经服务端落盘，不进入初始化 Prompt、SSE 进度或日志。
    */
   private async writeAgentToken(
-    client: OpencodeClient,
+    client: ExecutorClient,
     workerId: number,
     workdir: string,
   ): Promise<void> {
     const token = await this.workersService.ensureWorkToken(workerId);
-    await client.shell(
-      `${agentTokenShell(workdir, token)} && ` +
-        workerEnvShell(workdir, {
-          LITA_WORK_TOKEN: token,
-          LITA_PROJECT_TOKEN: token,
-        }),
-    );
+    await writeAgentTokenFile(client, workdir, token);
+    await upsertWorkerEnv(client, workdir, {
+      LITA_WORK_TOKEN: token,
+      LITA_PROJECT_TOKEN: token,
+    });
   }
 
   /**
@@ -478,7 +483,7 @@ export class WorkerEnvironmentService implements OnModuleDestroy {
    * 令牌只经服务端落盘，不进入 Prompt、SSE 进度或日志。
    */
   private async writeWorkMcpConfig(
-    client: OpencodeClient,
+    client: ExecutorClient,
     worker: Worker,
     workdir: string,
   ): Promise<void> {
@@ -491,7 +496,7 @@ export class WorkerEnvironmentService implements OnModuleDestroy {
       token,
       worker.mcps ?? [],
     );
-    await client.shell(mcpConfigShell(workdir, servers));
+    await writeMcpConfigFile(client, workdir, servers);
   }
 
   /**
@@ -502,7 +507,7 @@ export class WorkerEnvironmentService implements OnModuleDestroy {
    * 令牌只经服务端落盘，不进入初始化 Prompt、SSE 进度或日志。
    */
   private async writeLitaUserToken(
-    client: OpencodeClient,
+    client: ExecutorClient,
     workdir: string,
   ): Promise<void> {
     const token =
@@ -514,7 +519,7 @@ export class WorkerEnvironmentService implements OnModuleDestroy {
       );
       return;
     }
-    await client.shell(workerEnvShell(workdir, { LITA_USER_TOKEN: token }));
+    await upsertWorkerEnv(client, workdir, { LITA_USER_TOKEN: token });
     // 兼容按 ~/.env 读取令牌的技能（如 lita-api）：同步到执行器宿主，保留其他变量
     try {
       await client.shell(

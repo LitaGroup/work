@@ -3,11 +3,12 @@ import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { TaskStatus, WorkerRole, WorkerRuntime } from '../common/enums';
+import { isAgentRuntime } from '../common/worker-runtime';
 import { Executor } from '../executors/executor.entity';
-import { OpencodeClient } from '../executors/opencode-client';
-import { runOpencodePrompt, planPromptModels } from '../executors/opencode-run';
+import { createExecutorClient } from '../executors/executor-client';
+import { runExecutorPrompt, planPromptModels } from '../executors/executor-run';
 import { Worker } from '../workers/worker.entity';
-import { agentTokenShell } from '../workers/worker-env';
+import { writeAgentTokenFile } from '../workers/worker-env';
 import { WorkersService } from '../workers/workers.service';
 import { nextInboxRetryDelay } from './task-loop.rules';
 import { TaskMessage } from './task-message.entity';
@@ -138,24 +139,21 @@ export class TaskRequesterReplyService {
     if (!this.requesterSessions.tryAcquire(endpoint.worker.id)) return false;
 
     this.activeTasks.add(task.id);
-    const client = new OpencodeClient(endpoint.executor);
+    const client = createExecutorClient(endpoint.executor);
     let sessionId: string | null = null;
     try {
       await this.workerInbox.markEventDelivered(entry.id);
       const token = await this.workersService.ensureWorkToken(
         endpoint.worker.id,
       );
-      await client.shell(
-        `mkdir -p '${endpoint.workdir}' '${endpoint.workdir}/.opencode' && ` +
-          agentTokenShell(endpoint.workdir, token),
-      );
+      await writeAgentTokenFile(client, endpoint.workdir, token);
       const conversation = await this.loadConversation(task.id);
       const plan = planPromptModels(endpoint.worker, endpoint.executor.id, {
         providerId: endpoint.providerId,
         modelId: endpoint.modelId,
         variant: endpoint.variant,
       });
-      await runOpencodePrompt(client, {
+      await runExecutorPrompt(client, {
         title: `需求方回复 ${task.code}`.slice(0, 100),
         model: plan.model,
         fallback: plan.fallback,
@@ -217,7 +215,7 @@ export class TaskRequesterReplyService {
       !worker ||
       !worker.enabled ||
       worker.role !== WorkerRole.WORKER ||
-      worker.runtime !== WorkerRuntime.OPENCODE ||
+      !isAgentRuntime(worker.runtime) ||
       worker.personalAgentUserId
     ) {
       return null;

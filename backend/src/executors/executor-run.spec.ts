@@ -1,7 +1,7 @@
 import type { OpencodeClient } from './opencode-client';
-import { runOpencodePrompt } from './opencode-run';
+import { runExecutorPrompt } from './executor-run';
 
-describe('runOpencodePrompt 主模型限额切换备用模型', () => {
+describe('runExecutorPrompt 主模型限额切换备用模型', () => {
   const buildClient = () => {
     const client = {
       shell: jest.fn().mockResolvedValue(undefined),
@@ -35,7 +35,7 @@ describe('runOpencodePrompt 主模型限额切换备用模型', () => {
     const mocks = buildClient();
     const onQuotaError = jest.fn();
 
-    const text = await runOpencodePrompt(mocks.client, {
+    const text = await runExecutorPrompt(mocks.client, {
       title: '一次性会话',
       model: { id: 'gpt-5', providerID: 'openai' },
       prompt: '开始',
@@ -67,7 +67,7 @@ describe('runOpencodePrompt 主模型限额切换备用模型', () => {
     });
 
     await expect(
-      runOpencodePrompt(mocks.client, {
+      runExecutorPrompt(mocks.client, {
         title: '一次性会话',
         model: { id: 'gpt-5', providerID: 'openai' },
         prompt: '开始',
@@ -87,7 +87,7 @@ describe('runOpencodePrompt 主模型限额切换备用模型', () => {
     const onQuotaError = jest.fn();
 
     await expect(
-      runOpencodePrompt(mocks.client, {
+      runExecutorPrompt(mocks.client, {
         title: '一次性会话',
         model: { id: 'gpt-5', providerID: 'openai' },
         prompt: '开始',

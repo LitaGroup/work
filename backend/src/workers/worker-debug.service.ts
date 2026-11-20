@@ -16,7 +16,7 @@ import { readFile } from 'fs/promises';
 import { basename, join } from 'path';
 import { In, LessThan, MoreThanOrEqual, Repository } from 'typeorm';
 import { Observable } from 'rxjs';
-import { WorkerRuntime } from '../common/enums';
+import { isAgentRuntime } from '../common/worker-runtime';
 import { normalizeQuestionOptions } from '../common/question-option';
 import { fileWebroot } from '../common/paths';
 import { variantLabel } from '../common/variants';
@@ -32,13 +32,16 @@ import {
 } from '../executors/opencode-todos';
 import { parseOpencodeToolEvent } from '../executors/opencode-tools';
 import {
-  OpencodeClient,
   OpencodeClientError,
   formEventToQuestionEvent,
   isFreshOutcome,
   type OpencodeModelInfo,
   type OpencodeQuestionRequest,
 } from '../executors/opencode-client';
+import {
+  createExecutorClient,
+  type ExecutorClient,
+} from '../executors/executor-client';
 import {
   isModelExhausted,
   isModelQuotaError,
@@ -49,7 +52,7 @@ import {
 import {
   FALLBACK_CONTINUE_PROMPT,
   toOpencodeModelRef,
-} from '../executors/opencode-run';
+} from '../executors/executor-run';
 import { Worker } from './worker.entity';
 import { WorkerDebugSession } from './worker-debug-session.entity';
 import type {
@@ -396,7 +399,7 @@ interface DebugSession {
   /** worker_debug_sessions.id（首条消息后落库） */
   rowId: number | null;
   context: DebugContext;
-  client: OpencodeClient;
+  client: ExecutorClient;
   sessionId: string | null;
   /** 建 opencode 会话时绑定的执行器/供应商/模型；配置变更后须重置 */
   bound: DebugBinding | null;
@@ -513,7 +516,7 @@ export class WorkerDebugService implements OnModuleInit, OnModuleDestroy {
           executorRows[0].workerId,
         ).catch(() => null);
         if (!context || context.executor.id !== executorId) continue;
-        const client = new OpencodeClient(context.executor);
+        const client = createExecutorClient(context.executor);
         let activeSessions: Record<string, { type?: string }>;
         try {
           activeSessions = await client.activeSessions();
@@ -640,7 +643,7 @@ export class WorkerDebugService implements OnModuleInit, OnModuleDestroy {
     const options: WorkerDebugOption[] = [];
     for (const worker of workers) {
       if (
-        worker.runtime !== WorkerRuntime.OPENCODE ||
+        !isAgentRuntime(worker.runtime) ||
         !worker.executorId ||
         !worker.providerId?.trim() ||
         !worker.modelId?.trim() ||
@@ -683,7 +686,7 @@ export class WorkerDebugService implements OnModuleInit, OnModuleDestroy {
   ): Promise<WorkerDebugModelCatalog> {
     const context = await this.resolveContext(workerId);
     const session = await this.findSession(userId, workerId, context, scope);
-    const client = new OpencodeClient(context.executor);
+    const client = createExecutorClient(context.executor);
     const [providers, models] = await Promise.all([
       client.providers().catch(() => []),
       client.models(),
@@ -737,7 +740,7 @@ export class WorkerDebugService implements OnModuleInit, OnModuleDestroy {
       throw new BadRequestException('providerId 与 modelId 不能为空');
     }
     const context = await this.resolveContext(workerId);
-    const client = new OpencodeClient(context.executor);
+    const client = createExecutorClient(context.executor);
     const models = await client.models();
     const model = models.find(
       (item) =>
@@ -845,7 +848,7 @@ export class WorkerDebugService implements OnModuleInit, OnModuleDestroy {
       this.sessions.set(key, session);
     } else {
       session.context = context;
-      session.client = new OpencodeClient(context.executor);
+      session.client = createExecutorClient(context.executor);
     }
 
     const now = new Date().toISOString();
@@ -1290,7 +1293,7 @@ export class WorkerDebugService implements OnModuleInit, OnModuleDestroy {
         }
       }
       if (!session.sessionId) {
-        await session.client.shell(`mkdir -p '${session.context.workdir}'`);
+        await session.client.ensureDir(session.context.workdir);
         const created = await session.client.createSession({
           title: `机器人调试 ${session.context.worker.name}`,
           model: {
@@ -1715,7 +1718,7 @@ export class WorkerDebugService implements OnModuleInit, OnModuleDestroy {
       throw new NotFoundException('机器人不存在');
     }
     if (!worker.enabled) throw new BadRequestException('机器人已停用');
-    if (worker.runtime !== WorkerRuntime.OPENCODE) {
+    if (!isAgentRuntime(worker.runtime)) {
       throw new BadRequestException('仅支持 opencode 机器人调试');
     }
     if (
@@ -1774,7 +1777,7 @@ export class WorkerDebugService implements OnModuleInit, OnModuleDestroy {
       contextKey: scope,
       rowId: null,
       context,
-      client: new OpencodeClient(context.executor),
+      client: createExecutorClient(context.executor),
       sessionId: null,
       bound: null,
       activeModel: activeModel
@@ -1945,7 +1948,9 @@ export class WorkerDebugService implements OnModuleInit, OnModuleDestroy {
     };
     const models =
       catalog ??
-      (await new OpencodeClient(context.executor).models().catch(() => null));
+      (await createExecutorClient(context.executor)
+        .models()
+        .catch(() => null));
     if (!models) return null;
     const model = models.find(
       (item) =>

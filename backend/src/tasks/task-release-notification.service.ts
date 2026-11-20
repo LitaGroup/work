@@ -3,11 +3,12 @@ import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { WorkerRole, WorkerRuntime } from '../common/enums';
+import { isAgentRuntime } from '../common/worker-runtime';
 import { Executor } from '../executors/executor.entity';
-import { OpencodeClient } from '../executors/opencode-client';
-import { runOpencodePrompt, planPromptModels } from '../executors/opencode-run';
+import { createExecutorClient } from '../executors/executor-client';
+import { runExecutorPrompt, planPromptModels } from '../executors/executor-run';
 import { Worker } from '../workers/worker.entity';
-import { agentTokenShell } from '../workers/worker-env';
+import { writeAgentTokenFile } from '../workers/worker-env';
 import { WorkersService } from '../workers/workers.service';
 import { nextInboxRetryDelay } from './task-loop.rules';
 import { Task } from './task.entity';
@@ -178,23 +179,20 @@ export class TaskReleaseNotificationService {
 
     const task = await this.loadSourceTask(entry);
     this.activeWorkers.add(entry.workerId);
-    const client = new OpencodeClient(endpoint.executor);
+    const client = createExecutorClient(endpoint.executor);
     let sessionId: string | null = null;
     try {
       await this.workerInbox.markEventDelivered(entry.id);
       const token = await this.workersService.ensureWorkToken(
         endpoint.worker.id,
       );
-      await client.shell(
-        `mkdir -p '${endpoint.workdir}' '${endpoint.workdir}/.opencode' && ` +
-          agentTokenShell(endpoint.workdir, token),
-      );
+      await writeAgentTokenFile(client, endpoint.workdir, token);
       const plan = planPromptModels(endpoint.worker, endpoint.executor.id, {
         providerId: endpoint.providerId,
         modelId: endpoint.modelId,
         variant: endpoint.variant,
       });
-      await runOpencodePrompt(client, {
+      await runExecutorPrompt(client, {
         title: `提测状态通知 ${projectLabel(entry)}`.slice(0, 100),
         model: plan.model,
         fallback: plan.fallback,
@@ -252,7 +250,7 @@ export class TaskReleaseNotificationService {
   private async resolveEndpoint(
     worker: Worker,
   ): Promise<ReleaseNotifyEndpoint | null> {
-    if (worker.runtime !== WorkerRuntime.OPENCODE || !worker.executorId) {
+    if (!isAgentRuntime(worker.runtime) || !worker.executorId) {
       return null;
     }
     const executor = await this.executors.findOne({

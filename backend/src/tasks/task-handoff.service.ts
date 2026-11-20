@@ -9,12 +9,12 @@ import { Repository } from 'typeorm';
 import { TaskStatus, TaskSubStatus, WorkerRuntime } from '../common/enums';
 import { beijingTime } from '../common/frontmatter';
 import { Executor } from '../executors/executor.entity';
-import { OpencodeClient } from '../executors/opencode-client';
+import { createExecutorClient } from '../executors/executor-client';
 import {
-  runOpencodePrompt,
+  runExecutorPrompt,
   planPromptModels,
   toOpencodeModelRef,
-} from '../executors/opencode-run';
+} from '../executors/executor-run';
 import { Worker } from '../workers/worker.entity';
 import { WorkersService } from '../workers/workers.service';
 import { Task } from './task.entity';
@@ -249,8 +249,8 @@ export class TaskHandoffService {
               variant: endpoint.variant,
             }),
           };
-      const raw = await runOpencodePrompt(
-        new OpencodeClient(endpoint.executor),
+      const raw = await runExecutorPrompt(
+        createExecutorClient(endpoint.executor),
         {
           title: `任务复盘 ${task.code}`.slice(0, 100),
           model: plan.model,

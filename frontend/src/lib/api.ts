@@ -1399,7 +1399,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 // ===== 任务处理中心（FEATURE-02）=====
 
-export const EXECUTOR_TYPES = ['opencode', 'codex', 'claude-code'] as const
+export const EXECUTOR_TYPES = ['opencode', 'codex', 'claude-code', 'kiro'] as const
 export type ExecutorType = (typeof EXECUTOR_TYPES)[number]
 
 export const WORKER_ROLES = ['工作者', '调度器'] as const
@@ -1632,10 +1632,30 @@ export interface Executor {
   /** server 默认工作目录 */
   defaultLocation: string | null
   providersCache: ExecutorProvider[] | null
+  /** 能力上报缓存（健康检查时刷新；按能力降级渲染） */
+  capabilitiesCache: ExecutorCapabilities | null
   providersSyncedAt: string | null
   lastCheckedAt: string | null
   createdAt: string
   updatedAt: string
+}
+
+/** 执行器能力（与后端 executors/executor-capabilities.ts 同步） */
+export interface ExecutorCapabilities {
+  /** 执行中提问并等待答复 */
+  questions: boolean
+  /** 中断正在执行的会话 */
+  interrupt: boolean
+  /** 运行中切换模型/思考等级 */
+  switchModel: boolean
+  /** 主 Agent 切换（build/plan） */
+  agents: boolean
+  /** shell 命令（仅 opencode） */
+  exec: boolean
+  /** 最大并发会话数；null = 未提供上限 */
+  maxSessions: number | null
+  /** 协议版本 */
+  protocol: number
 }
 
 /** 技能库目录条目 */

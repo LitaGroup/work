@@ -7,7 +7,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
-import { WorkerRuntime } from '../common/enums';
+import { isAgentRuntime } from '../common/worker-runtime';
 import { Worker } from '../workers/worker.entity';
 import { SYSTEM_FEEDBACK_HANDLER_WORKER_KEY } from '../workers/system-workers';
 import type {
@@ -127,7 +127,7 @@ export class FeishuBotConfigService {
   ): Promise<FeishuBotConfigView> {
     const worker = await this.workers.findOne({ where: { id: workerId } });
     if (!worker) throw new NotFoundException(`机器人 ${workerId} 不存在`);
-    if (worker.runtime !== WorkerRuntime.OPENCODE) {
+    if (!isAgentRuntime(worker.runtime)) {
       throw new BadRequestException('真人机器人不支持绑定飞书应用');
     }
     if (worker.id < 1000) {

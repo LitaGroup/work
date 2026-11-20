@@ -5,7 +5,7 @@ import {
   WorkerRuntime,
 } from '../common/enums';
 import { OpencodeClient } from '../executors/opencode-client';
-import * as opencodeRun from '../executors/opencode-run';
+import * as opencodeRun from '../executors/executor-run';
 import type { Worker } from '../workers/worker.entity';
 import { Task } from './task.entity';
 import { TaskRequesterSessionService } from './task-requester-session.service';
@@ -89,7 +89,7 @@ describe('TaskRequesterVerifyService 根任务机器人需求方自动验收', (
 
   it('用需求方机器人一次性会话验收，任务推进后清理会话且不重试', async () => {
     const run = jest
-      .spyOn(opencodeRun, 'runOpencodePrompt')
+      .spyOn(opencodeRun, 'runExecutorPrompt')
       .mockImplementation((_client, input) => {
         input.onSessionCreated?.('verify-session');
         return Promise.resolve('已验收通过');
@@ -132,7 +132,7 @@ describe('TaskRequesterVerifyService 根任务机器人需求方自动验收', (
 
   it('会话结束仍未推进验收时持续重试，不转人工', async () => {
     jest
-      .spyOn(opencodeRun, 'runOpencodePrompt')
+      .spyOn(opencodeRun, 'runExecutorPrompt')
       .mockResolvedValue('我认为可以验收');
     jest.spyOn(OpencodeClient.prototype, 'shell').mockResolvedValue(undefined);
     jest
@@ -154,7 +154,7 @@ describe('TaskRequesterVerifyService 根任务机器人需求方自动验收', (
   });
 
   it('父任务仍可唤醒的子任务、非待验收状态和真人需求方不自动验收', async () => {
-    const run = jest.spyOn(opencodeRun, 'runOpencodePrompt');
+    const run = jest.spyOn(opencodeRun, 'runExecutorPrompt');
 
     tasks.findOne.mockImplementation(({ where }: { where: { id: number } }) =>
       Promise.resolve(
@@ -184,7 +184,7 @@ describe('TaskRequesterVerifyService 根任务机器人需求方自动验收', (
 
   it('父任务已结束的子任务使用需求方机器人一次性会话验收', async () => {
     jest
-      .spyOn(opencodeRun, 'runOpencodePrompt')
+      .spyOn(opencodeRun, 'runExecutorPrompt')
       .mockImplementation((_client, input) => {
         input.onSessionCreated?.('verify-session');
         return Promise.resolve('已验收通过');
@@ -221,7 +221,7 @@ describe('TaskRequesterVerifyService 根任务机器人需求方自动验收', (
       online: false,
       providersCache: null,
     });
-    const run = jest.spyOn(opencodeRun, 'runOpencodePrompt');
+    const run = jest.spyOn(opencodeRun, 'runExecutorPrompt');
 
     await expect(service.verify(task())).resolves.toBe(false);
 

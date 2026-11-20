@@ -2,6 +2,7 @@ packages:
   - frontend
   - backend
   - appium-agent
+  - executor-bridge
 allowBuilds:
   '@google/genai': false
   protobufjs: false

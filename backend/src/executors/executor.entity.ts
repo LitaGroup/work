@@ -6,6 +6,7 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 import { ExecutorType } from '../common/enums';
+import type { ExecutorCapabilities } from './executor-capabilities';
 
 /** 模型可选思考等级（opencode variant） */
 export interface ExecutorProviderModelVariant {
@@ -73,6 +74,10 @@ export class Executor {
   /** 供应商与模型清单缓存（手动同步 + 每日刷新） */
   @Column({ type: 'simple-json', nullable: true })
   providersCache: ExecutorProvider[] | null;
+
+  /** 能力上报缓存（健康检查时刷新；opencode 固定值，bridge 经 /health 上报） */
+  @Column({ type: 'simple-json', nullable: true })
+  capabilitiesCache: ExecutorCapabilities | null;
 
   @Column({ type: 'timestamptz', nullable: true })
   providersSyncedAt: Date | null;

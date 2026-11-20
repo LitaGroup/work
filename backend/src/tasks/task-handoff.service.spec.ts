@@ -1,7 +1,7 @@
 import type { Repository } from 'typeorm';
 import { TaskStatus, TaskSubStatus } from '../common/enums';
 import type { Executor } from '../executors/executor.entity';
-import { runOpencodePrompt } from '../executors/opencode-run';
+import { runExecutorPrompt } from '../executors/executor-run';
 import type { Worker } from '../workers/worker.entity';
 import type { WorkersService } from '../workers/workers.service';
 import { Task } from './task.entity';
@@ -12,8 +12,8 @@ import type { TaskDocumentService } from './task-document.service';
 import { splitHandoffSummary } from './task-delivery-report';
 import { TaskHandoffService } from './task-handoff.service';
 
-jest.mock('../executors/opencode-run', () => ({
-  runOpencodePrompt: jest.fn(),
+jest.mock('../executors/executor-run', () => ({
+  runExecutorPrompt: jest.fn(),
   planPromptModels: jest.fn(
     (
       _worker: unknown,
@@ -40,8 +40,8 @@ jest.mock('../executors/opencode-run', () => ({
   ),
 }));
 
-const runPrompt = runOpencodePrompt as jest.MockedFunction<
-  typeof runOpencodePrompt
+const runPrompt = runExecutorPrompt as jest.MockedFunction<
+  typeof runExecutorPrompt
 >;
 
 const SUMMARY = `## 交付内容
