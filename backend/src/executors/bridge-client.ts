@@ -1,6 +1,6 @@
 /**
  * executor-bridge 客户端：经 docs/EXECUTOR_PROTOCOL.md（HTTP + SSE，protocol 1）
- * 连接工位侧 bridge，服务 codex / claude-code / kiro 执行器。
+ * 连接工位侧 bridge，服务 codex / claude-code / kiro / devin / droid 执行器。
  * DTO 形态与 OpencodeClient 一致（协议对齐平台 ExecutorClient 接口）；
  * 错误统一抛 OpencodeClientError（保留状态码，调用方 404 降级逻辑不变）。
  */

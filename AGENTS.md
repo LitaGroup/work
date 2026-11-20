@@ -9,7 +9,7 @@
 - `frontend/`：Vite + React 19 + Appica UI（`@appica/ui-react`）+ Tailwind CSS v4。
 - `backend/`：NestJS（strict TS）+ TypeORM + PostgreSQL；知识检索使用 PGVector。
 - `appium-agent/`：独立 Appium Agent。
-- `executor-bridge/`：工位侧执行器桥（kiro / codex / claude-code 内核统一为 HTTP+SSE 协议，见 `docs/EXECUTOR_PROTOCOL.md`）。
+- `executor-bridge/`：工位侧执行器桥（kiro / devin / droid / codex / claude-code 内核统一为 HTTP+SSE 协议，见 `docs/EXECUTOR_PROTOCOL.md`）。
 - 包管理：pnpm workspace，成员为 `frontend`、`backend`、`appium-agent`、`executor-bridge`。
 - 集成：飞书、GitHub、opencode、APIPOST、Appium。
 

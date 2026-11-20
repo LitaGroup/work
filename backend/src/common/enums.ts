@@ -232,12 +232,14 @@ export enum RepoStatus {
  * 任务处理中心（FEATURE-02）领域枚举。
  */
 
-/** 执行器类型：opencode 为已接入实现；codex / claude-code / kiro 经 executor-bridge 接入（见 docs/EXECUTOR_PROTOCOL.md） */
+/** 执行器类型：opencode 为已接入实现；codex / claude-code / kiro / devin / droid 经 executor-bridge 接入（见 docs/EXECUTOR_PROTOCOL.md） */
 export enum ExecutorType {
   OPENCODE = 'opencode',
   CODEX = 'codex',
   CLAUDE_CODE = 'claude-code',
   KIRO = 'kiro',
+  DEVIN = 'devin',
+  DROID = 'droid',
 }
 
 /** 机器人角色：工作者（干活）/ 调度器（任务识别、拆解、分配建议；当前为系统内置机器人） */
@@ -257,6 +259,8 @@ export enum WorkerRuntime {
   CODEX = 'codex',
   CLAUDE_CODE = 'claude-code',
   KIRO = 'kiro',
+  DEVIN = 'devin',
+  DROID = 'droid',
   /** @deprecated 平台进程内 PI Agent 已移除（调度并入机器人，统一走执行器） */
   PI = 'pi',
 }

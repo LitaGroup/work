@@ -1,7 +1,7 @@
 /**
  * 执行器客户端抽象：平台与执行器实例（opencode server / executor-bridge）之间的统一接口。
  *
- * - opencode 是第一个实现（OpencodeClient）；codex / claude-code / kiro 等经工位侧
+ * - opencode 是第一个实现（OpencodeClient）；codex / claude-code / kiro / devin / droid 等经工位侧
  *   executor-bridge 接入（协议见 docs/EXECUTOR_PROTOCOL.md，DTO 形态对齐本接口）。
  * - 本阶段为零行为变更抽象：接口成员与 OpencodeClient 公开方法一一对应，DTO 暂沿用
  *   opencode 命名，随 bridge 协议落地再逐步中立化。
@@ -203,12 +203,14 @@ export type ExecutorClientEndpoint = OpencodeEndpoint & {
 
 type ExecutorClientCtor = (endpoint: ExecutorClientEndpoint) => ExecutorClient;
 
-/** 已接入的执行器类型 → 客户端构造：opencode 直连；codex / claude-code / kiro 经 executor-bridge（协议见 docs/EXECUTOR_PROTOCOL.md） */
+/** 已接入的执行器类型 → 客户端构造：opencode 直连；codex / claude-code / kiro / devin / droid 经 executor-bridge（协议见 docs/EXECUTOR_PROTOCOL.md） */
 const CLIENT_FACTORIES: Partial<Record<ExecutorType, ExecutorClientCtor>> = {
   [ExecutorType.OPENCODE]: (endpoint) => new OpencodeClient(endpoint),
   [ExecutorType.CODEX]: (endpoint) => new BridgeClient(endpoint),
   [ExecutorType.CLAUDE_CODE]: (endpoint) => new BridgeClient(endpoint),
   [ExecutorType.KIRO]: (endpoint) => new BridgeClient(endpoint),
+  [ExecutorType.DEVIN]: (endpoint) => new BridgeClient(endpoint),
+  [ExecutorType.DROID]: (endpoint) => new BridgeClient(endpoint),
 };
 
 /** 按执行器类型创建客户端；未接入的类型直接抛错，避免误用 opencode 协议 */

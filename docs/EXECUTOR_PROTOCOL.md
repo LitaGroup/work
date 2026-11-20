@@ -1,12 +1,12 @@
 ---
 description: "> AI 助手提示：本文件定义平台与工位侧 executor-bridge 之间的执行器桥接协议（HTTP + SSE，protocol 1）。实现 bridge、新增执行内核或调用 bridge 端点前，必须先阅读本协议。"
-version: 1.1.0
+version: 1.2.0
 type: docs
 ---
 
 # 执行器桥接协议（Executor Bridge Protocol）
 
-> AI 助手提示：平台（`backend/src/executors/bridge-client.ts`）经本协议连接工位侧 `executor-bridge/`；bridge 把执行内核（kiro-cli / codex app-server / Claude Agent SDK）统一为本协议。DTO 形态与平台 `ExecutorClient` 接口（`backend/src/executors/executor-client.ts`）一一对应。
+> AI 助手提示：平台（`backend/src/executors/bridge-client.ts`）经本协议连接工位侧 `executor-bridge/`；bridge 把执行内核（kiro-cli / devin acp / droid exec / codex app-server / Claude Agent SDK）统一为本协议。DTO 形态与平台 `ExecutorClient` 接口（`backend/src/executors/executor-client.ts`）一一对应。
 
 ---
 
@@ -18,6 +18,8 @@ type: docs
 │ BridgeClient ──────┼── HTTP+SSE ──▶ executor-bridge（本协议）
 └────────────────────┘                 └─ kernels/
                                        ├─ kiro  （kiro-cli ACP，spawn per turn + --resume-id）
+                                       ├─ devin （devin acp，JSON-RPC over stdio，spawn per turn + session/load）
+                                       ├─ droid （droid exec -o stream-json，spawn per turn + -s 续聊）
                                        ├─ codex （codex app-server JSON-RPC，规划中）
                                        └─ claude（Claude Agent SDK，规划中）
 ```
@@ -35,8 +37,21 @@ type: docs
 - SSE：`GET /events`，**全执行器单连接**推送全部会话事件；每 15 秒发送 `: heartbeat` 注释行保活。事件信封与 opencode 对齐：
 
   ```
-  data: {"id":"evt_1","type":"message.updated","data":{...}}
+  data: {"id":"evt_1","type":"session.text.delta","data":{...}}
   ```
+
+### 端口规范
+
+executor-bridge 统一占用 **16000-17000** 段，一执行器一实例一端口；`BRIDGE_PORT` 显式设置时覆盖下表缺省值。
+
+| 内核 | 缺省端口 | 说明 |
+|:---|:---|:---|
+| kiro | 16010 | |
+| devin | 16020 | |
+| droid | 16030 | |
+| 其它（未分配） | 16000 | 段内兜底 |
+
+opencode 执行器不经 bridge，端口不受本规范约束（当前本机 4096）。
 
 ---
 
@@ -82,13 +97,24 @@ bridge 不提供 shell（`capabilities.exec=false`）；令牌与 MCP 配置写�
 
 ---
 
-## 五、事件词汇表（v1）
+## 五、事件词汇表（v1.2）
+
+事件类型与 opencode 原生（`/api/event`）一致，平台任务会话与机器人调试对话直接消费，bridge 无需额外的后端适配：
 
 | type | data | 说明 |
 |:---|:---|:---|
-| `message.updated` | `{sessionID, messageID, role, part:{type:"text",text}}` | assistant 增量文本（chunk 为累积片段） |
+| `session.reasoning.started` | `{sessionID, assistantMessageID}` | 思考块开始（如 kiro / devin `agent_thought_chunk`） |
+| `session.reasoning.delta` | `{sessionID, assistantMessageID, delta}` | 思考增量（delta） |
+| `session.reasoning.ended` | `{sessionID, assistantMessageID}` | 思考块结束 |
+| `session.text.started` | `{sessionID, assistantMessageID}` | 正文块开始 |
+| `session.text.delta` | `{sessionID, assistantMessageID, delta}` | 正文增量（delta） |
+| `session.text.ended` | `{sessionID, assistantMessageID}` | 正文块结束 |
 | `question.asked` / `question.replied` / `question.rejected` | 同平台 `OpencodeQuestionRequest` 形态 | v1 未触发（questions=false），预留 |
 | `session.deleted` | `{sessionID}` | 会话删除 |
+
+同一回合内思考与正文可能多次交错：每次切换先补发旧块 `ended`、再发新块 `started`；回合终态关闭未闭合的块。最终产出语义不变，仍取 `runFinished` 的 `finalText`（缺省回退 bridge 消息日志的 `turnBuffer`）。
+
+> v1.1 及更早版本的 `message.updated`（`part:{type:"text",text}`）已下线：平台全链路无消费方，由上述 `session.text.*` 取代。
 
 ---
 
@@ -96,7 +122,7 @@ bridge 不提供 shell（`capabilities.exec=false`）；令牌与 MCP 配置写�
 
 `/health` 返回 `protocol`（当前 1）与 `capabilities`（字段与 `backend/src/executors/executor-capabilities.ts` 一致）。平台按能力降级：`questions=false` 时提问回路整体不启用（飞书审批卡片不渲染按钮）；`switchModel=false` 时调试页提示「重置会话后生效」；`maxSessions` 限制并发会话上限（null = 未提供）。
 
-kiro 内核 v1 上报：`questions=false, interrupt=true, switchModel=true（下一回合生效）, agents=false, exec=false, maxSessions=null`。
+kiro / devin / droid 内核 v1 均上报：`questions=false, interrupt=true, switchModel=true（下一回合生效）, agents=false, exec=false, maxSessions=null`。
 
 ---
 
@@ -104,10 +130,18 @@ kiro 内核 v1 上报：`questions=false, interrupt=true, switchModel=true（下
 
 | 内核 | 通道 | 状态 |
 |:---|:---|:---|
-| kiro | `kiro-cli chat --no-interactive --output-format stream-json`（ACP 事件流）+ `--resume-id` 续聊 | v1 已实现 |
+| kiro | `kiro-cli chat --no-interactive --output-format stream-json`（ACP 事件流：正文 `agent_message_chunk` + 思考 `agent_thought_chunk`）+ `--resume-id` 续聊 | v1 已实现 |
 | kiro（优化） | `kiro-cli serve`（KAS，ACP over WebSocket，默认 8082） | 待研：WS 握手含 acp-callback 鉴权，未探明 |
+| devin | `devin acp --process-model in-process`（ACP JSON-RPC over stdio，每回合 spawn）：`initialize` → `session/load`（续聊）/ `session/new` → `session/set_config_option`（`mode`/`model`/`thought_level`）→ `session/prompt`；正文 `agent_message_chunk`、思考 `agent_thought_chunk`；无 cancel 方法，中断即杀进程。**方言**：`mcpServers` 传数组、`prompt` 传内容块数组、响应无 finalText（正文由 bridge turnBuffer 兜底） | v1 已实现 |
+| droid | `droid exec --cwd <工位目录> -o stream-json`（JSONL：`system/init` 带 `session_id` → `message`/`tool_call`/`error` → 终态 `result`）；`-s <sessionId>` 续聊、`-m` 模型、`-r` 思考等级；模型清单解析 `droid exec --help`（Available Models / Model details）。**自治**：默认 `--skip-permissions-unsafe`，`DROID_PERMISSION_MODE=low\|medium\|high` 改走 `--auto` | v1 已实现 |
 | codex | `codex app-server` JSON-RPC（stdio） | 规划 |
 | claude-code | Claude Agent SDK（进程内 `query()` + streaming input） | 规划 |
+
+内核环境变量：
+
+- `KIRO_CLI_PATH`（默认 `kiro-cli`）
+- `DEVIN_CLI_PATH`（默认 `devin`）、`DEVIN_SESSION_MODE`（默认 `bypass`，无人值守工位全自治）
+- `DROID_CLI_PATH`（默认 `droid`）、`DROID_PERMISSION_MODE`（默认 `unsafe`；`low`/`medium`/`high` 走 `--auto`）
 
 ---
 
@@ -118,8 +152,10 @@ kiro 内核 v1 上报：`questions=false, interrupt=true, switchModel=true（下
 | `package.json` | `./executor-bridge/package.json` | bridge 独立包（零运行时依赖，Node 标准库） | 配置 |
 | `main.ts` | `./executor-bridge/src/main.ts` | 入口：环境变量、内核选择、HTTP/SSE 启动 | 脚本 |
 | `http.ts` | `./executor-bridge/src/server/http.ts` | 协议端点路由与鉴权 | 脚本 |
-| `sessions.ts` | `./executor-bridge/src/core/sessions.ts` | 会话状态机：队列、终态、消息日志 | 脚本 |
+| `sessions.ts` | `./executor-bridge/src/core/sessions.ts` | 会话状态机：队列、终态、消息日志、事件翻译（session.text.* / session.reasoning.*） | 脚本 |
 | `kiro.kernel.ts` | `./executor-bridge/src/kernels/kiro/kiro.kernel.ts` | kiro ACP 内核（spawn per turn） | 脚本 |
+| `devin.kernel.ts` | `./executor-bridge/src/kernels/devin/devin.kernel.ts` | devin ACP 内核（spawn per turn + session/load 续聊） | 脚本 |
+| `droid.kernel.ts` | `./executor-bridge/src/kernels/droid/droid.kernel.ts` | droid exec 内核（spawn per turn + -s 续聊） | 脚本 |
 
 ---
 

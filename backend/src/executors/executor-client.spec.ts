@@ -21,7 +21,7 @@ describe('createExecutorClient', () => {
     expect(client).toBeInstanceOf(OpencodeClient);
   });
 
-  it('bridge 执行器类型（codex / claude-code / kiro）统一创建 BridgeClient', () => {
+  it('bridge 执行器类型（codex / claude-code / kiro / devin / droid）统一创建 BridgeClient', () => {
     expect(
       createExecutorClient({
         ip: '127.0.0.1',
@@ -41,6 +41,20 @@ describe('createExecutorClient', () => {
         ip: '127.0.0.1',
         port: 8082,
         type: ExecutorType.KIRO,
+      }),
+    ).toBeInstanceOf(BridgeClient);
+    expect(
+      createExecutorClient({
+        ip: '127.0.0.1',
+        port: 4591,
+        type: ExecutorType.DEVIN,
+      }),
+    ).toBeInstanceOf(BridgeClient);
+    expect(
+      createExecutorClient({
+        ip: '127.0.0.1',
+        port: 4592,
+        type: ExecutorType.DROID,
       }),
     ).toBeInstanceOf(BridgeClient);
   });

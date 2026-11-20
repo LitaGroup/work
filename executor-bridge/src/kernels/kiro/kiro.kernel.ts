@@ -1,6 +1,8 @@
 /**
  * kiro 内核（v1）：每回合 spawn `kiro-cli chat --no-interactive
  * --output-format stream-json`（ACP 事件流，stdout JSONL），续聊用 --resume-id。
+ * 正文（agent_message_chunk）与思考（agent_thought_chunk）分别回调，
+ * 由 sessionManager 翻译为 opencode 事件方言（session.text.* / session.reasoning.*）。
  * 会话由 kiro 本地 session store 持久化，bridge 重启后 externalId 仍可 resume。
  */
 import { execFile } from 'child_process';
@@ -34,24 +36,33 @@ interface KiroListModel {
   context_window_tokens?: number;
 }
 
+interface AcpContentBlock {
+  type?: string;
+  text?: string;
+}
+
+/** 会话更新（kiro-cli 3.5.0 嵌在 `data.update` 下） */
+interface AcpSessionUpdate {
+  sessionUpdate?: string;
+  content?: AcpContentBlock;
+  configOptions?: Array<{
+    id?: string;
+    options?: Array<{
+      value?: string;
+      _meta?: { kiro?: { hasEffort?: boolean; effortLevels?: string[] } };
+    }>;
+  }>;
+}
+
 interface AcpEvent {
   type?: string;
   data?: {
+    /** 会话标识（runStarted 不带，sessionUpdate 每条都带） */
     sessionId?: string;
     status?: string;
     stopReason?: string;
     finalText?: string;
-  };
-  update?: {
-    sessionUpdate?: string;
-    content?: { type?: string; text?: string };
-    configOptions?: Array<{
-      id?: string;
-      options?: Array<{
-        value?: string;
-        _meta?: { kiro?: { hasEffort?: boolean; effortLevels?: string[] } };
-      }>;
-    }>;
+    update?: AcpSessionUpdate;
   };
 }
 
@@ -203,8 +214,9 @@ export class KiroKernel implements Kernel {
 
   /** 从 config_option_update 抓取各模型 effort 等级；抓到返回 true */
   private captureEffortLevels(event: AcpEvent): boolean {
-    if (event.update?.sessionUpdate !== 'config_option_update') return false;
-    const options = event.update.configOptions ?? [];
+    const update = event.data?.update;
+    if (update?.sessionUpdate !== 'config_option_update') return false;
+    const options = update.configOptions ?? [];
     const modelOptions = options.find((option) => option.id === 'model');
     if (!modelOptions?.options?.length) return false;
     for (const option of modelOptions.options) {
@@ -275,22 +287,29 @@ export class KiroKernel implements Kernel {
           } catch {
             continue;
           }
-          if (event.type === 'runStarted' && event.data?.sessionId) {
-            externalId = event.data.sessionId;
+          const data = event.data;
+          const update = data?.update;
+          // 会话标识：runStarted 不带 sessionId，sessionUpdate 每行都带
+          if (data?.sessionId && data.sessionId !== externalId) {
+            externalId = data.sessionId;
             input.events.onExternalSession(externalId);
-          } else if (
-            event.type === 'sessionUpdate' &&
-            event.update?.sessionUpdate === 'config_option_update'
-          ) {
+          }
+          if (update?.sessionUpdate === 'config_option_update') {
             // 会话开场携带全部模型 effort 等级，持续刷新思考等级清单
             this.captureEffortLevels(event);
           } else if (
-            event.type === 'sessionUpdate' &&
-            event.update?.sessionUpdate === 'agent_message_chunk' &&
-            event.update.content?.type === 'text' &&
-            event.update.content.text
+            update?.sessionUpdate === 'agent_thought_chunk' &&
+            update.content?.type === 'text' &&
+            update.content.text
           ) {
-            input.events.onChunk(event.update.content.text);
+            // 思考流（kiro-cli 3.5.0 ACP：agent_thought_chunk + content.text）
+            input.events.onThoughtChunk(update.content.text);
+          } else if (
+            update?.sessionUpdate === 'agent_message_chunk' &&
+            update.content?.type === 'text' &&
+            update.content.text
+          ) {
+            input.events.onChunk(update.content.text);
           } else if (event.type === 'runFinished') {
             finalText = event.data?.finalText ?? null;
             const ok = event.data?.status === 'success';

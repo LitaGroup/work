@@ -1,5 +1,7 @@
 /**
  * 会话状态机：per-session prompt 排队（协议强制语义）、回合终态、消息日志。
+ * - 事件出口：内核增量翻译为 opencode 事件方言（session.text.* / session.reasoning.*），
+ *   与平台任务会话、机器人调试对话的消费侧一致；思考/正文交错时按块开闭。
  * - prompt 忙时入队，回合终态后按序投递下一条（平台不维护发送队列）。
  * - outcome 具有粘性；每回合终态刷新 idleAt（bridge 时钟，毫秒）。
  * - 消息日志在内存（user/assistant 文本），支撑 lastAssistantText / 对账查询。
@@ -212,6 +214,43 @@ export class SessionManager {
     const assistantId = KiroKernel.messageId();
 
     let result: import('../kernels/kernel.js').KernelTurnResult;
+    /** 当前流式块：思考/正文交错时先关旧块再开新块 */
+    let block: 'reasoning' | 'text' | null = null;
+    const endBlock = () => {
+      if (block === 'reasoning') {
+        this.emit('session.reasoning.ended', {
+          sessionID: session.id,
+          assistantMessageID: assistantId,
+        });
+      } else if (block === 'text') {
+        this.emit('session.text.ended', {
+          sessionID: session.id,
+          assistantMessageID: assistantId,
+        });
+      }
+      block = null;
+    };
+    const emitChunk = (kind: 'reasoning' | 'text', delta: string) => {
+      if (!delta) return;
+      if (block !== kind) {
+        endBlock();
+        block = kind;
+        this.emit(
+          kind === 'reasoning'
+            ? 'session.reasoning.started'
+            : 'session.text.started',
+          { sessionID: session.id, assistantMessageID: assistantId },
+        );
+      }
+      this.emit(
+        kind === 'reasoning' ? 'session.reasoning.delta' : 'session.text.delta',
+        {
+          sessionID: session.id,
+          assistantMessageID: assistantId,
+          delta,
+        },
+      );
+    };
     try {
       result = await this.kernel.runTurn({
         externalId: session.externalId,
@@ -222,12 +261,10 @@ export class SessionManager {
         events: {
           onChunk: (text) => {
             session.turnBuffer += text;
-            this.emit('message.updated', {
-              sessionID: session.id,
-              messageID: assistantId,
-              role: 'assistant',
-              part: { type: 'text', text },
-            });
+            emitChunk('text', text);
+          },
+          onThoughtChunk: (text) => {
+            emitChunk('reasoning', text);
           },
           onExternalSession: (externalId) => {
             session.externalId = externalId;
@@ -242,6 +279,8 @@ export class SessionManager {
         error: (error as Error).message,
       };
     }
+    // 回合终态：关闭未闭合的思考/正文块（消费侧据此收尾气泡与实时行）
+    endBlock();
 
     const text = result.finalText ?? session.turnBuffer;
     session.messages.push({

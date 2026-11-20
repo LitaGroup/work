@@ -12,6 +12,8 @@ import type {
 export interface KernelTurnEvents {
   /** assistant 增量文本（delta） */
   onChunk(text: string): void;
+  /** assistant 思考增量（delta；如 kiro 的 agent_thought_chunk） */
+  onThoughtChunk(text: string): void;
   /** 内核侧会话标识确定时回调（如 kiro 的 sess_*，用于 --resume-id 续聊） */
   onExternalSession(externalId: string): void;
 }

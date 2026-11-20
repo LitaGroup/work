@@ -11,6 +11,8 @@ describe('worker-runtime', () => {
     expect(isAgentRuntime(WorkerRuntime.CODEX)).toBe(true);
     expect(isAgentRuntime(WorkerRuntime.CLAUDE_CODE)).toBe(true);
     expect(isAgentRuntime(WorkerRuntime.KIRO)).toBe(true);
+    expect(isAgentRuntime(WorkerRuntime.DEVIN)).toBe(true);
+    expect(isAgentRuntime(WorkerRuntime.DROID)).toBe(true);
     expect(isAgentRuntime(WorkerRuntime.HUMAN)).toBe(false);
     expect(isAgentRuntime(WorkerRuntime.PI)).toBe(false);
     expect(isAgentRuntime(null)).toBe(false);
@@ -23,6 +25,8 @@ describe('worker-runtime', () => {
       WorkerRuntime.CODEX,
       WorkerRuntime.CLAUDE_CODE,
       WorkerRuntime.KIRO,
+      WorkerRuntime.DEVIN,
+      WorkerRuntime.DROID,
     ]);
   });
 
@@ -37,6 +41,12 @@ describe('worker-runtime', () => {
       WorkerRuntime.CLAUDE_CODE,
     );
     expect(runtimeFromExecutorType(ExecutorType.KIRO)).toBe(WorkerRuntime.KIRO);
+    expect(runtimeFromExecutorType(ExecutorType.DEVIN)).toBe(
+      WorkerRuntime.DEVIN,
+    );
+    expect(runtimeFromExecutorType(ExecutorType.DROID)).toBe(
+      WorkerRuntime.DROID,
+    );
     expect(runtimeFromExecutorType(null)).toBe(WorkerRuntime.OPENCODE);
     expect(runtimeFromExecutorType(undefined)).toBe(WorkerRuntime.OPENCODE);
   });

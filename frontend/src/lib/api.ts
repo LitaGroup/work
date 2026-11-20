@@ -1399,7 +1399,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 // ===== 任务处理中心（FEATURE-02）=====
 
-export const EXECUTOR_TYPES = ['opencode', 'codex', 'claude-code', 'kiro'] as const
+export const EXECUTOR_TYPES = ['opencode', 'codex', 'claude-code', 'kiro', 'devin', 'droid'] as const
 export type ExecutorType = (typeof EXECUTOR_TYPES)[number]
 
 export const WORKER_ROLES = ['工作者', '调度器'] as const

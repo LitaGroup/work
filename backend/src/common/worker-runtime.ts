@@ -1,6 +1,6 @@
 /**
  * 机器人运行时辅助：执行器驱动的 Agent 运行时判定与 executor.type → runtime 派生。
- * 真人机器人（human）与 PI 历史值不是 Agent 运行时；codex / claude-code / kiro 等
+ * 真人机器人（human）与 PI 历史值不是 Agent 运行时；codex / claude-code / kiro / devin / droid 等
  * 随执行器接入扩展（运行时跟随绑定执行器的类型，写入时机见 workers.service）。
  */
 import { ExecutorType, WorkerRuntime } from './enums';
@@ -11,6 +11,8 @@ export const AGENT_RUNTIMES: readonly WorkerRuntime[] = [
   WorkerRuntime.CODEX,
   WorkerRuntime.CLAUDE_CODE,
   WorkerRuntime.KIRO,
+  WorkerRuntime.DEVIN,
+  WorkerRuntime.DROID,
 ];
 
 /** 是否为执行器驱动的 AI Agent 机器人（真人 / PI 历史值除外） */
@@ -31,6 +33,10 @@ export function runtimeFromExecutorType(
       return WorkerRuntime.CLAUDE_CODE;
     case ExecutorType.KIRO:
       return WorkerRuntime.KIRO;
+    case ExecutorType.DEVIN:
+      return WorkerRuntime.DEVIN;
+    case ExecutorType.DROID:
+      return WorkerRuntime.DROID;
     default:
       return WorkerRuntime.OPENCODE;
   }
