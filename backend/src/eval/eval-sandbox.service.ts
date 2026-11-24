@@ -1,6 +1,7 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { ConflictException, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { createHash } from 'crypto';
+import { dirname } from 'path';
 import { Repository } from 'typeorm';
 import { ExecutorType, EvalSnapshotSource } from '../common/enums';
 import type { ExecutorClient } from '../executors/executor-client';
@@ -109,6 +110,12 @@ export class EvalSandboxService {
     denyExternalDirectory: boolean,
   ): Promise<void> {
     this.logger.log(`构建评估沙箱 ${sandbox}（源 ${workdir}）`);
+    await this.assertSandboxInsideExecutorRoot(
+      client,
+      sandbox,
+      executorType,
+      workdir,
+    );
     // 1. 复制真实工位（含 AGENTS.md / .agents/skills / .agents/rules / 文档等），
     //    同时剔除 docs/ 与真实凭据（.env / mcp.json / 内核 MCP 配置由下面重新生成）
     await client.copyDir({
@@ -133,6 +140,29 @@ export class EvalSandboxService {
       { denyExternalDirectory },
     );
     await client.ensureDir(`${sandbox}/home`);
+  }
+
+  /**
+   * 评估沙箱必须落在执行器工作区内：bridge 的 `/fs/*` 端点以 BRIDGE_ROOT 做越界校验，
+   * 若 bridge 只把单个工位目录设为根，`{WORKER_BASE_DIR}/{worker|worker-dev}/eval/**`
+   * 会被 403 拒绝。这里提前给出可操作的提示，避免评估项只显示「路径越界」。
+   */
+  private async assertSandboxInsideExecutorRoot(
+    client: ExecutorClient,
+    sandbox: string,
+    executorType: ExecutorType | null | undefined,
+    workdir: string,
+  ): Promise<void> {
+    if (!executorType || executorType === ExecutorType.OPENCODE) return;
+    const location = await client.location().catch(() => null);
+    const root = location?.directory?.replace(/\/+$/, '');
+    if (!root) return;
+    if (sandbox === root || sandbox.startsWith(`${root}/`)) return;
+    throw new ConflictException(
+      `评估沙箱 ${sandbox} 不在执行器工作区 ${root} 内：` +
+        `请把 executor-bridge 的 BRIDGE_ROOT 指向工位根段（如 ${dirname(workdir)}），` +
+        '不要指向单个工位目录，否则沙箱复制与销毁会被路径校验拒绝',
+    );
   }
 
   /** 销毁沙箱（评估项结束/取消/异常时调用） */

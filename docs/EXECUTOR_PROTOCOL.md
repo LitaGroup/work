@@ -89,6 +89,8 @@ bridge 不提供 shell（`capabilities.exec=false`）；令牌与 MCP 配置写�
 
 `/fs/copy-dir` 与 `/fs/rm-dir` 供评估沙箱构建/销毁使用（复制真实工位时用 `exclude` 剔除 `docs/`、`.agents/.env`、`.agents/mcp.json` 与各内核 MCP 配置，真实令牌不进入沙箱），平台侧对应 `ExecutorClient.copyDir/removeDir`；opencode 适配器内部以 shell 实现同一语义。
 
+评估沙箱位于 `{WORKER_BASE_DIR}/{worker|worker-dev}/eval/**`（与工位目录平级），因此 bridge 的 `BRIDGE_ROOT` 必须指向工位根段（`{WORKER_BASE_DIR}/worker` 或 `{WORKER_BASE_DIR}/worker-dev`），不能指向单个工位目录；否则 `/fs/*` 会因越界返回 403「路径越界」，评估项直接失败。升级顺序：先升级工位侧 bridge（新增两个 `/fs` 端点），再升级平台后端；bridge 未升级时平台复制沙箱会得到 404 `not found: POST /fs/copy-dir`。
+
 ---
 
 ## 四、语义约定（实现必须满足）

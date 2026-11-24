@@ -3,7 +3,7 @@ import type { ExecutorClient } from '../executors/executor-client';
 import { EvalSandboxService } from './eval-sandbox.service';
 
 /** 结构化文件能力桩：记录调用，shell 一律视为失败（bridge 内核无 shell） */
-function createClient() {
+function createClient(location = '/home/ecs-user/runtime/worker') {
   const calls: Array<{ method: string; args: unknown[] }> = [];
   const record =
     (method: string) =>
@@ -17,6 +17,7 @@ function createClient() {
     writeSecretFile: jest.fn(record('writeSecretFile')),
     upsertEnvFile: jest.fn(record('upsertEnvFile')),
     removeDir: jest.fn(record('removeDir')),
+    location: jest.fn(() => Promise.resolve({ directory: location })),
     shell: jest.fn(() => {
       throw new Error('评估沙箱不应依赖 shell');
     }),
@@ -138,6 +139,26 @@ describe('EvalSandboxService 沙箱构建', () => {
       expect.stringContaining('lita-work'),
     );
     expect(clientMock.shell).not.toHaveBeenCalled();
+  });
+
+  it('bridge 根目录只含单个工位时给出 BRIDGE_ROOT 提示', async () => {
+    const { client, clientMock } = createClient(
+      '/home/ecs-user/runtime/worker/1017',
+    );
+
+    await expect(
+      createService().buildSandbox(
+        client,
+        workdir,
+        sandbox,
+        ExecutorType.KIRO,
+        mcpServers,
+        'eval-token',
+        'http://work.example.com',
+        true,
+      ),
+    ).rejects.toThrow(/BRIDGE_ROOT/);
+    expect(clientMock.copyDir).not.toHaveBeenCalled();
   });
 });
 
