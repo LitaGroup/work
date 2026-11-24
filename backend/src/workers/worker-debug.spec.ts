@@ -556,3 +556,195 @@ describe('WorkerDebugService 模型选择记忆', () => {
     service.onModuleDestroy();
   });
 });
+
+describe('WorkerDebugService 发送前模型校验', () => {
+  const worker = {
+    id: 1041,
+    name: '系统-任务机器人设计',
+    executorId: 5,
+    providerId: 'droid',
+    modelId: 'claude-opus-5-5',
+    variant: null,
+    backupProviderId: null,
+    backupModelId: null,
+    backupVariant: null,
+  };
+  const context = { worker, executor: { id: 5 }, workdir: '/tmp/w' };
+  const catalog = [
+    {
+      providerID: 'droid',
+      modelID: 'claude-opus-5-5',
+      id: 'claude-opus-5-5',
+      enabled: true,
+      capabilities: { tools: true },
+      variants: [{ id: 'high' }],
+    },
+  ];
+
+  const makeService = () =>
+    new WorkerDebugService(
+      {} as never,
+      {} as never,
+      { find: jest.fn().mockResolvedValue([]), findOne: jest.fn() } as never,
+      {} as never,
+      { onEvent: () => () => undefined } as never,
+    );
+
+  interface FakeSession {
+    key: string;
+    context: unknown;
+    client: { models: () => Promise<unknown> };
+    activeModel: Record<string, unknown>;
+    appliedModelKey: string | null;
+    messages: Array<{ content: string }>;
+    updatedAt: Date;
+  }
+
+  const sessionOf = (models: unknown): FakeSession => ({
+    key: '7:1041:debug',
+    context,
+    client: {
+      models: () =>
+        models instanceof Error
+          ? Promise.reject(models)
+          : Promise.resolve(models),
+    },
+    activeModel: {
+      providerId: 'deepseek',
+      modelId: 'deepseek-flash',
+      variant: 'max',
+    },
+    appliedModelKey: 'deepseek/deepseek-flash/max',
+    messages: [],
+    updatedAt: new Date(),
+  });
+
+  const ensure = (service: WorkerDebugService, session: FakeSession) =>
+    (
+      service as unknown as {
+        ensureModelAvailable: (session: unknown) => Promise<boolean>;
+      }
+    ).ensureModelAvailable(session);
+
+  beforeEach(() => resetModelAvailability());
+
+  it('模型仍在执行器目录内时不切换', async () => {
+    const service = makeService();
+    const session = sessionOf(catalog);
+    session.activeModel = {
+      providerId: 'droid',
+      modelId: 'claude-opus-5-5',
+      variant: 'high',
+    };
+    await expect(ensure(service, session)).resolves.toBe(false);
+    expect(session.messages).toHaveLength(0);
+    expect(session.activeModel).toEqual({
+      providerId: 'droid',
+      modelId: 'claude-opus-5-5',
+      variant: 'high',
+    });
+    service.onModuleDestroy();
+  });
+
+  it('模型已不在目录时回退机器人默认并追加提示', async () => {
+    const service = makeService();
+    const session = sessionOf(catalog);
+    await expect(ensure(service, session)).resolves.toBe(true);
+    expect(session.activeModel).toEqual({
+      providerId: 'droid',
+      modelId: 'claude-opus-5-5',
+      variant: null,
+    });
+    expect(session.appliedModelKey).toBeNull();
+    expect(session.messages).toHaveLength(1);
+    expect(session.messages[0].content).toContain('deepseek/deepseek-flash');
+    expect(session.messages[0].content).toContain('droid/claude-opus-5-5');
+    service.onModuleDestroy();
+  });
+
+  it('思考等级不在模型变体里时保留模型、只清空等级', async () => {
+    const service = makeService();
+    const session = sessionOf(catalog);
+    session.activeModel = {
+      providerId: 'droid',
+      modelId: 'claude-opus-5-5',
+      variant: 'max',
+    };
+    await expect(ensure(service, session)).resolves.toBe(true);
+    expect(session.activeModel).toEqual({
+      providerId: 'droid',
+      modelId: 'claude-opus-5-5',
+      variant: null,
+    });
+    expect(session.messages).toHaveLength(0);
+    service.onModuleDestroy();
+  });
+
+  it('模型目录拉取失败时放行，不改动会话', async () => {
+    const service = makeService();
+    const session = sessionOf(new Error('executor offline'));
+    await expect(ensure(service, session)).resolves.toBe(false);
+    expect(session.activeModel).toEqual({
+      providerId: 'deepseek',
+      modelId: 'deepseek-flash',
+      variant: 'max',
+    });
+    expect(session.messages).toHaveLength(0);
+    service.onModuleDestroy();
+  });
+});
+
+describe('WorkerDebugService 执行配置变更失效会话', () => {
+  it('丢弃该机器人未运行的内存会话并清空库内绑定与模型选择', async () => {
+    const update = jest.fn().mockResolvedValue({ affected: 2 });
+    const service = new WorkerDebugService(
+      {} as never,
+      {} as never,
+      {
+        update,
+        find: jest.fn().mockResolvedValue([]),
+        findOne: jest.fn(),
+      } as never,
+      {} as never,
+      { onEvent: () => () => undefined } as never,
+    );
+    const sessions = (service as unknown as { sessions: Map<string, unknown> })
+      .sessions;
+    sessions.set('7:1041:debug', {
+      key: '7:1041:debug',
+      workerId: 1041,
+      running: false,
+    });
+    sessions.set('7:1041:agent:global', {
+      key: '7:1041:agent:global',
+      workerId: 1041,
+      running: true,
+    });
+    sessions.set('8:1002:debug', {
+      key: '8:1002:debug',
+      workerId: 1002,
+      running: false,
+    });
+
+    await service.invalidateWorkerConfig(1041);
+
+    expect([...sessions.keys()]).toEqual([
+      '7:1041:agent:global',
+      '8:1002:debug',
+    ]);
+    expect(update).toHaveBeenCalledWith(
+      { workerId: 1041 },
+      expect.objectContaining({
+        executorId: null,
+        providerId: null,
+        modelId: null,
+        activeProviderId: null,
+        activeModelId: null,
+        activeVariant: null,
+        sessionId: null,
+        error: null,
+      }),
+    );
+    service.onModuleDestroy();
+  });
+});

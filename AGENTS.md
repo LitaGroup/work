@@ -227,7 +227,7 @@
 - 工位 MCP 配置由平台初始化/派发时按执行器类型注入：opencode 为 `.opencode/opencode.json`、kiro 为 `.kiro/settings/mcp.json`、devin 为 `.devin/mcp_config.json`、droid 为 `.factory/mcp.json`，并始终写内核无关声明 `.agents/mcp.json`；固定 `lita-work`（`{APP_URL}/api/mcp/work` + 机器人令牌）与机器人勾选的自定义 MCP（管理区「MCP 配置」，`workers.mcps`），权限 600，纳入受管文件，机器人不得读取展示、改写或删除；令牌只经服务端落盘。MCP 鉴权支持固定令牌（明文落盘）、环境变量（`{env:NAME}` 占位，凭据不落盘）与机器人自身 `LITA_WORK_TOKEN`。
 - **工作区边界（平台强制，仅 opencode）**：opencode 工位 `.opencode/opencode.json` 同时注入 `permissions`（deny `external_directory`），机器人会话（任务、调试、我的 AI、一次性会话）禁止读写工位目录之外的任何路径，含其他机器人工位与执行器宿主 `~/.env`；read/edit/write/patch 直接拦截，shell 由扫描器尽力推断拦截，deny 不会被「允许」答复覆盖。每次派发/初始化重写自愈；环境变量 `WORKER_DENY_EXTERNAL_DIRECTORY=false` 可止血关闭。bridge 内核（kiro/devin/droid）暂无强制拦截，仅靠 AGENTS.md 协议约束；平台自身经 `/api/shell` 的工位文件管理不受该限制约束。
 - opencode 集成位于 `executors/`：HTTP Basic 鉴权、会话/prompt/interrupt、SSE 事件和提问。会话终态必须匹配当前 session，不能只凭进程或连接状态判断任务完成。
-- 调试会话落 `worker_debug_sessions`，按 `userId + workerId + contextKey` 唯一绑定；机器人对话（管理区列表「对话」跳顶部 `/robots/{id}`）、通用我的 AI、每个任务会话相互隔离，7 天不活跃重置。模型与思考等级随会话落库（`activeProviderId/activeModelId/activeVariant`），新会话（新的任务/页面会话、重置后）沿用该用户在同一机器人下最近一次选择；记忆中的模型已下线时回退机器人默认配置，思考等级不可用时只清空等级。
+- 调试会话落 `worker_debug_sessions`，按 `userId + workerId + contextKey` 唯一绑定；机器人对话（管理区列表「对话」跳顶部 `/robots/{id}`）、通用我的 AI、每个任务会话相互隔离，7 天不活跃重置。模型与思考等级随会话落库（`activeProviderId/activeModelId/activeVariant`），新会话（新的任务/页面会话、重置后）沿用该用户在同一机器人下最近一次选择；记忆中的模型已下线时回退机器人默认配置，思考等级不可用时只清空等级。**存量会话每次发送前同样校验模型仍在执行器目录内**（不在则回退机器人默认配置并追加一条提示）；机器人执行器/供应商/模型/运行时变更时，平台清空该机器人全部调试会话的绑定与模型选择（消息历史保留），避免旧选择继续下发导致执行器秒失败。执行器失败原因经 bridge `GET /sessions/:id` 的 `error` 字段透传，页面展示真实原因。
 
 ### 任务处理中心
 

@@ -297,6 +297,8 @@ export class BridgeClient implements ExecutorClient {
   async session(sessionId: string): Promise<{
     id: string;
     outcome?: string | null;
+    /** 最近一回合失败的真实原因（bridge 新增字段，旧版本不返回） */
+    error?: string | null;
     time?: { idle?: number | null };
     location?: { directory: string } | null;
   }> {

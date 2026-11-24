@@ -458,6 +458,7 @@ export class WorkerDebugService implements OnModuleInit, OnModuleDestroy {
   private readonly cleanupTimer: NodeJS.Timeout;
   private sequence = 0;
   private offEvent: (() => void) | null = null;
+  private offExecutionConfig: (() => void) | null = null;
 
   constructor(
     @InjectRepository(Worker)
@@ -483,8 +484,46 @@ export class WorkerDebugService implements OnModuleInit, OnModuleDestroy {
         // 待办/流式采集失败不影响调试主流程
       }
     });
+    // 机器人执行器/供应商/模型变更后，旧调试会话的绑定与模型选择全部失效
+    this.offExecutionConfig = this.workersService.onExecutionConfigChanged(
+      (workerId) => {
+        void this.invalidateWorkerConfig(workerId).catch((error: Error) =>
+          this.logger.warn(
+            `机器人 #${workerId} 执行配置变更后重置调试会话失败: ${error.message}`,
+          ),
+        );
+      },
+    );
     // 平台重启后恢复未完成的调试会话：正在运行的继续接管，等待提问的补建卡片后继续监控
     void this.reconnectRunningSessions();
+  }
+
+  /**
+   * 机器人执行器/供应商/模型/运行时变更后失效旧会话：内存态丢弃未运行会话
+   * （下一条消息从库恢复后按新配置重建），库内清空绑定与模型选择、保留消息历史。
+   * 运行中的会话本轮结束后由发送前的绑定校验（409）收敛，不在此处打断。
+   */
+  async invalidateWorkerConfig(workerId: number): Promise<void> {
+    for (const [key, session] of this.sessions) {
+      if (session.workerId !== workerId || session.running) continue;
+      this.sessions.delete(key);
+      this.clearPersistTimer(key);
+      this.persistQueues.delete(key);
+    }
+    await this.debugSessions.update(
+      { workerId },
+      {
+        executorId: null,
+        providerId: null,
+        modelId: null,
+        activeProviderId: null,
+        activeModelId: null,
+        activeVariant: null,
+        sessionId: null,
+        error: null,
+      },
+    );
+    this.logger.log(`机器人 #${workerId} 执行配置变更，已重置调试会话绑定`);
   }
 
   /**
@@ -849,6 +888,11 @@ export class WorkerDebugService implements OnModuleInit, OnModuleDestroy {
     } else {
       session.context = context;
       session.client = createExecutorClient(context.executor);
+    }
+    // 执行器/模型配置变更后，会话记住的模型可能已不在当前执行器目录内：
+    // 发送前校验并自动回退机器人默认配置，避免把不存在的模型下发导致秒失败。
+    if (await this.ensureModelAvailable(session)) {
+      await this.persist(session);
     }
 
     const now = new Date().toISOString();
@@ -1410,7 +1454,9 @@ export class WorkerDebugService implements OnModuleInit, OnModuleDestroy {
             runAfterMsRef.value = switchedTo;
             continue;
           }
-          throw new Error('opencode 会话执行失败');
+          // 文案层：带上执行器返回的真实失败原因（bridge 缺失时退回通用文案）
+          const detail = info.error?.trim();
+          throw new Error(`执行器会话执行失败${detail ? `：${detail}` : ''}`);
         }
         await sleep(POLL_MS);
       }
@@ -1902,6 +1948,55 @@ export class WorkerDebugService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
+   * 发送前校验会话模型仍在当前执行器目录内：机器人执行器/供应商/模型变更后，
+   * 旧会话记住的模型选择可能已不存在（执行器会秒失败且原因被内核丢弃）。
+   * 不可用时回退机器人默认配置并追加一条系统提示；目录拉取失败放行，
+   * 不因清单接口抖动阻断对话。
+   */
+  private async ensureModelAvailable(session: DebugSession): Promise<boolean> {
+    const models = await session.client.models().catch(() => null);
+    if (!models) return false;
+    const active = session.activeModel;
+    const model = models.find(
+      (item) =>
+        item.providerID === active.providerId &&
+        (item.modelID ?? item.id) === active.modelId,
+    );
+    if (
+      !model ||
+      model.enabled === false ||
+      model.capabilities?.tools === false
+    ) {
+      const fallback = this.defaultModelOf(session.context);
+      this.logger.warn(
+        `调试会话 ${session.key} 模型 ${active.providerId}/${active.modelId} 不在执行器目录，回退 ${fallback.providerId}/${fallback.modelId}`,
+      );
+      session.activeModel = { ...fallback };
+      session.appliedModelKey = null;
+      session.messages.push({
+        id: this.nextId('assistant'),
+        role: 'assistant',
+        content: `机器人执行配置已变更：原模型 ${active.providerId}/${active.modelId} 在当前执行器不可用，已切换为 ${fallback.providerId}/${fallback.modelId}。`,
+        status: 'complete',
+        createdAt: new Date().toISOString(),
+      });
+      session.updatedAt = new Date();
+      return true;
+    }
+    if (
+      active.variant &&
+      !(model.variants ?? []).some((item) => item.id === active.variant)
+    ) {
+      // 思考等级已不可用：保留模型，回到模型默认等级
+      session.activeModel = { ...active, variant: null };
+      session.appliedModelKey = null;
+      session.updatedAt = new Date();
+      return true;
+    }
+    return false;
+  }
+
+  /**
    * 新会话的初始模型/思考等级：优先沿用该用户在同一机器人下最近一次显式选择。
    * 「我的 AI」按任务/页面隔离会话，没有这条记忆的话每个新会话都要重新选。
    */
@@ -2134,6 +2229,7 @@ export class WorkerDebugService implements OnModuleInit, OnModuleDestroy {
 
   onModuleDestroy(): void {
     this.offEvent?.();
+    this.offExecutionConfig?.();
     this.updates.removeAllListeners();
     clearInterval(this.cleanupTimer);
     for (const session of this.sessions.values()) {

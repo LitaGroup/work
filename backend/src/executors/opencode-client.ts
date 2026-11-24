@@ -636,12 +636,15 @@ export class OpencodeClient implements ExecutorClient {
   async session(sessionId: string): Promise<{
     id: string;
     outcome?: string | null;
+    /** 最近一回合失败的真实原因（bridge 新增；opencode 不提供） */
+    error?: string | null;
     time?: { idle?: number | null };
     location?: { directory: string } | null;
   }> {
     const json = await this.request<{
       id: string;
       outcome?: string | null;
+      error?: string | null;
       time?: { idle?: number | null };
       location?: { directory: string } | null;
     }>(`/api/session/${sessionId}`);

@@ -39,6 +39,8 @@ interface Session {
   running: boolean;
   abort: AbortController | null;
   outcome: 'succeeded' | 'failed' | null;
+  /** 最近一回合失败的真实原因（内核 result.error；成功回合清空） */
+  lastError: string | null;
   idleAt: number;
   messages: Message[];
   turnBuffer: string;
@@ -68,6 +70,7 @@ export class SessionManager {
       running: false,
       abort: null,
       outcome: null,
+      lastError: null,
       idleAt: 0,
       messages: [],
       turnBuffer: '',
@@ -123,6 +126,8 @@ export class SessionManager {
   state(sessionId: string): {
     id: string;
     outcome?: string | null;
+    /** 最近一回合失败的真实原因（成功或未运行时为 null，兼容旧平台忽略） */
+    error?: string | null;
     time?: { idle?: number | null };
     location?: { directory: string } | null;
   } {
@@ -130,6 +135,7 @@ export class SessionManager {
     return {
       id: session.id,
       outcome: session.outcome,
+      error: session.lastError,
       time: { idle: session.idleAt },
       location: { directory: session.directory },
     };
@@ -286,10 +292,18 @@ export class SessionManager {
     session.messages.push({
       id: assistantId,
       role: 'assistant',
-      text,
+      // 失败回合没有正文时把真实原因落成消息，便于会话日志定位
+      text:
+        text ||
+        (result.outcome === 'failed' && result.error
+          ? `执行失败：${result.error}`
+          : ''),
       createdAt: Date.now(),
     });
     session.outcome = result.outcome;
+    // 失败原因随会话返回（GET /sessions/:id 的 error 字段），成功回合清空
+    session.lastError =
+      result.outcome === 'failed' ? (result.error ?? null) : null;
     session.idleAt = Date.now();
     session.running = false;
     session.abort = null;

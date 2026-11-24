@@ -65,7 +65,7 @@ opencode 执行器不经 bridge，端口不受本规范约束（当前本机 409
 | GET | `/models` | 模型清单（含 `providerID/modelID/variants`） |
 | POST | `/sessions` | 建会话，body 同 `OpencodeCreateSessionInput`，返回 `{id,title,location}` |
 | GET | `/sessions/active` | `{ "<sessionId>": {type:"running"} }` |
-| GET | `/sessions/:id` | `{id, outcome?, time:{idle?}, location?}`（**幂等**，断线对账用） |
+| GET | `/sessions/:id` | `{id, outcome?, error?, time:{idle?}, location?}`（**幂等**，断线对账用；`error` 为最近一回合失败的真实原因，成功/未运行时为 `null`） |
 | DELETE | `/sessions/:id` | 删除会话并终止当前回合 |
 | POST | `/sessions/:id/prompt` | 投递消息，body `{text}`；**忙时由 bridge 排队**，立即返回 `{id,sessionID,time:{created}}` |
 | POST | `/sessions/:id/interrupt` | 中断当前回合（outcome=failed，队列保留） |
@@ -94,7 +94,7 @@ bridge 不提供 shell（`capabilities.exec=false`）；令牌与 MCP 配置写�
 ## 四、语义约定（实现必须满足）
 
 1. **promptQueueing（强制）**：会话回合运行中新 prompt 不拒绝、不并发，入 per-session 队列；当前回合到达终态后按序投递下一条。平台不维护发送队列，全部依赖本语义。
-2. **outcome 粘性与新鲜度基准**：`GET /sessions/:id` 的 `outcome` 保留最近一次回合结果；调用方以「本轮用户消息创建时间」为基准，仅采信 `time.idle >= 本轮消息时间` 的终态（与 opencode `isFreshOutcome` 同构）。bridge 在每回合终态时刷新 `time.idle`（执行器时钟）。
+2. **outcome 粘性与新鲜度基准**：`GET /sessions/:id` 的 `outcome` 保留最近一次回合结果；调用方以「本轮用户消息创建时间」为基准，仅采信 `time.idle >= 本轮消息时间` 的终态（与 opencode `isFreshOutcome` 同构）。bridge 在每回合终态时刷新 `time.idle`（执行器时钟）。失败回合同时返回 `error`（内核失败原因），平台据此展示真实失败信息；成功回合清空。
 3. **幂等查询**：`/sessions/:id`、`/sessions/:id/questions` 可重复调用且无副作用，供平台断线重连后对账。
 4. **中断**：interrupt 终止当前回合（outcome=failed），会话与队列保留，可继续投递。
 5. **消息时间**：`prompt` 返回的 `time.created` 与消息列表时间同源（bridge 时钟，毫秒）。

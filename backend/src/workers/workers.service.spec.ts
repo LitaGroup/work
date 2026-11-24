@@ -325,3 +325,76 @@ describe('WorkersService 工位目录', () => {
     expect(service.evalSandboxWorkdir('433/12')).toBeNull();
   });
 });
+
+describe('WorkersService 执行配置变更通知', () => {
+  interface ExecutionConfig {
+    executorId: number | null;
+    providerId: string | null;
+    modelId: string | null;
+    runtime: WorkerRuntime;
+  }
+  const base: ExecutionConfig = {
+    executorId: 1,
+    providerId: 'opencode',
+    modelId: 'deepseek-flash',
+    runtime: WorkerRuntime.OPENCODE,
+  };
+  const notify = (
+    service: WorkersService,
+    workerId: number,
+    before: ExecutionConfig,
+    after: ExecutionConfig,
+  ) =>
+    (
+      service as unknown as {
+        notifyExecutionConfigChanged: (
+          workerId: number,
+          before: ExecutionConfig,
+          after: ExecutionConfig,
+        ) => void;
+      }
+    ).notifyExecutionConfigChanged(workerId, before, after);
+
+  it('执行器/供应商/模型/运行时变更时通知监听方', () => {
+    const { service } = createHarness();
+    const notified: number[] = [];
+    service.onExecutionConfigChanged((workerId) => notified.push(workerId));
+
+    notify(service, 1041, base, { ...base });
+    expect(notified).toEqual([]);
+
+    notify(service, 1041, base, { ...base, modelId: 'claude-opus-5-5' });
+    expect(notified).toEqual([1041]);
+
+    notify(service, 1041, base, {
+      ...base,
+      executorId: 5,
+      runtime: WorkerRuntime.DROID,
+    });
+    expect(notified).toEqual([1041, 1041]);
+  });
+
+  it('取消注册后不再通知', () => {
+    const { service } = createHarness();
+    const notified: number[] = [];
+    const off = service.onExecutionConfigChanged((workerId) =>
+      notified.push(workerId),
+    );
+    off();
+    notify(service, 1041, base, { ...base, providerId: 'droid' });
+    expect(notified).toEqual([]);
+  });
+
+  it('单个监听方异常不影响其它监听方', () => {
+    const { service } = createHarness();
+    const notified: number[] = [];
+    service.onExecutionConfigChanged(() => {
+      throw new Error('boom');
+    });
+    service.onExecutionConfigChanged((workerId) => notified.push(workerId));
+    expect(() =>
+      notify(service, 1041, base, { ...base, providerId: 'droid' }),
+    ).not.toThrow();
+    expect(notified).toEqual([1041]);
+  });
+});

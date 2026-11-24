@@ -197,6 +197,19 @@ export class WorkersService implements OnApplicationBootstrap {
   /** 自定义机器人 ID 起点是否已校正（只调整一次序列） */
   private idFloorEnsured = false;
 
+  /** 执行配置（执行器/供应商/模型/运行时）变更监听：调试会话服务据此失效旧绑定 */
+  private readonly executionConfigListeners = new Set<
+    (workerId: number) => void
+  >();
+
+  /** 注册机器人执行配置变更监听，返回取消注册函数 */
+  onExecutionConfigChanged(listener: (workerId: number) => void): () => void {
+    this.executionConfigListeners.add(listener);
+    return () => {
+      this.executionConfigListeners.delete(listener);
+    };
+  }
+
   constructor(
     @InjectRepository(Worker)
     private readonly workers: Repository<Worker>,
@@ -548,6 +561,16 @@ export class WorkersService implements OnApplicationBootstrap {
 
   async update(id: number, input: UpdateWorkerInput): Promise<WorkerView> {
     const worker = await this.findOne(id);
+    // 执行配置快照：执行器/供应商/模型/运行时任一变化都要失效旧调试会话
+    const beforeExecution: Pick<
+      Worker,
+      'executorId' | 'providerId' | 'modelId' | 'runtime'
+    > = {
+      executorId: worker.executorId,
+      providerId: worker.providerId,
+      modelId: worker.modelId,
+      runtime: worker.runtime,
+    };
     if (input.name !== undefined && input.name.trim() !== worker.name) {
       const name = input.name.trim();
       if (!name) throw new BadRequestException('名称不能为空');
@@ -653,7 +676,33 @@ export class WorkersService implements OnApplicationBootstrap {
       await this.resolveOwner(worker, input.ownerUserId ?? null);
     }
     await this.workers.save(worker);
+    this.notifyExecutionConfigChanged(id, beforeExecution, worker);
     return this.findOneView(id);
+  }
+
+  /** 执行配置变更后通知监听方（调试会话据此失效旧绑定）；未变更不通知 */
+  private notifyExecutionConfigChanged(
+    workerId: number,
+    before: Pick<Worker, 'executorId' | 'providerId' | 'modelId' | 'runtime'>,
+    after: Pick<Worker, 'executorId' | 'providerId' | 'modelId' | 'runtime'>,
+  ): void {
+    if (
+      before.executorId === after.executorId &&
+      before.providerId === after.providerId &&
+      before.modelId === after.modelId &&
+      before.runtime === after.runtime
+    ) {
+      return;
+    }
+    for (const listener of this.executionConfigListeners) {
+      try {
+        listener(workerId);
+      } catch (error) {
+        this.logger.warn(
+          `机器人 #${workerId} 执行配置变更通知失败: ${(error as Error).message}`,
+        );
+      }
+    }
   }
 
   /** 删除机器人（系统/真人机器人不可删除；已分配未完结任务时会拒绝） */
