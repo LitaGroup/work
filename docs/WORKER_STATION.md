@@ -46,6 +46,14 @@ worker/{id}/
 | `.agents/rules/` | 初始化时按规范清单同步，`.standards-manifest.json` 记录受管文件 |
 | `docs/` | 机器人自行维护的知识文档 |
 
+### 保留目录：评估沙箱
+
+`{WORKER_BASE_DIR}/worker/eval/`（开发 `worker-dev/eval/`）是评估（检测机器人）沙箱的保留目录，与各工位目录 `worker/{id}` 平级，不属于任何机器人：
+
+- 机器人 ID 为数字，`eval` 不会与 `worker/{id}` 冲突，不得把它登记为工位；
+- 沙箱必须位于执行器**工作区根段之内**：opencode 工位注入的 `external_directory` 边界以 `{WORKER_BASE_DIR}/worker` 判定，与 `worker` 平级的旧目录会被判越界，导致沙箱构建（mkdir/cp/env 写入）与评估会话全部被拒；
+- 沙箱结构：`worker/eval/{runId}/{itemId}`（被测方）与 `worker/eval/judge/{itemId}/{round}`（判定方），由评估引擎创建、销毁并清理孤儿目录。
+
 ---
 
 ## 二、内核适配物

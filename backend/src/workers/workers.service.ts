@@ -249,14 +249,15 @@ export class WorkersService implements OnApplicationBootstrap {
   }
 
   /**
-   * 评估沙箱根目录：生产 {WORKER_BASE_DIR}/worker-eval、开发 {WORKER_BASE_DIR}/worker-dev-eval。
-   * 沙箱位于执行器宿主的独立目录，不在被测机器人的真实工位内（TECH_DESIGN 9.2）。
+   * 评估沙箱根目录：生产 {WORKER_BASE_DIR}/worker/eval、开发 {WORKER_BASE_DIR}/worker-dev/eval。
+   * 沙箱不在任何被测机器人的真实工位内（TECH_DESIGN 9.2），但必须落在执行器工作区边界内：
+   * opencode 工位注入的 external_directory 边界以执行器工作区根（{WORKER_BASE_DIR}/worker）判定，
+   * 与工位根段平级的旧目录（{WORKER_BASE_DIR}/worker-eval）会被判越界，导致沙箱构建与评估会话全部被拒。
+   * `eval` 为保留目录名（机器人 ID 为数字，不会与 worker/{id} 冲突）。
    */
   evalSandboxRoot(): string | null {
     if (!this.workerBaseDir) return null;
-    return `${this.workerBaseDir.replace(/\/+$/, '')}/${
-      this.workerDirSegment === 'worker' ? 'worker-eval' : 'worker-dev-eval'
-    }`;
+    return `${this.workerBaseDir.replace(/\/+$/, '')}/${this.workerDirSegment}/eval`;
   }
 
   /** 评估沙箱工位路径：{root}/{sandboxId}，sandboxId 形如 {runId}/{itemId}；未配置或格式非法返回 null */

@@ -266,4 +266,62 @@ describe('WorkersService 工位目录', () => {
 
     expect(service.workdirOf(1001)).toBeNull();
   });
+
+  it('生产环境评估沙箱位于工位根段内的 eval 保留目录', () => {
+    const { service } = createHarness([], {
+      NODE_ENV: 'production',
+      WORKER_BASE_DIR: '/data/opencode-workers',
+    });
+
+    expect(service.evalSandboxRoot()).toBe(
+      '/data/opencode-workers/worker/eval',
+    );
+    expect(service.evalSandboxWorkdir('433/12')).toBe(
+      '/data/opencode-workers/worker/eval/433/12',
+    );
+  });
+
+  it('开发环境评估沙箱位于 worker-dev 段内的 eval 保留目录', () => {
+    const { service } = createHarness([], {
+      WORKER_BASE_DIR: '/data/opencode-workers/',
+    });
+
+    expect(service.evalSandboxRoot()).toBe(
+      '/data/opencode-workers/worker-dev/eval',
+    );
+    expect(service.evalSandboxWorkdir('7/3')).toBe(
+      '/data/opencode-workers/worker-dev/eval/7/3',
+    );
+  });
+
+  it('评估沙箱路径必须位于执行器工作区根段内', () => {
+    const { service } = createHarness([], {
+      NODE_ENV: 'production',
+      WORKER_BASE_DIR: '/data/opencode-workers',
+    });
+    const root = service.evalSandboxRoot();
+    const workdir = service.workdirOf(1001);
+
+    // opencode external_directory 边界以 {WORKER_BASE_DIR}/worker 判定
+    expect(root?.startsWith('/data/opencode-workers/worker/')).toBe(true);
+    expect(workdir?.startsWith('/data/opencode-workers/worker/')).toBe(true);
+  });
+
+  it('评估沙箱 id 格式非法时返回 null', () => {
+    const { service } = createHarness([], {
+      NODE_ENV: 'production',
+      WORKER_BASE_DIR: '/data/opencode-workers',
+    });
+
+    expect(service.evalSandboxWorkdir(null)).toBeNull();
+    expect(service.evalSandboxWorkdir('433')).toBeNull();
+    expect(service.evalSandboxWorkdir('../433/1')).toBeNull();
+  });
+
+  it('未配置 WORKER_BASE_DIR 时无评估沙箱根目录', () => {
+    const { service } = createHarness();
+
+    expect(service.evalSandboxRoot()).toBeNull();
+    expect(service.evalSandboxWorkdir('433/12')).toBeNull();
+  });
 });

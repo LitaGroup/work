@@ -224,7 +224,7 @@ export class TaskDispatchService
 
   /**
    * 评估任务的沙箱工位路径：读取评估项登记的 sandboxId（{runId}/{itemId}）并落到
-   * 执行器宿主的 worker-eval 根目录。评估沙箱由评估引擎预建。
+   * 执行器工作区根段内的 eval 沙箱根目录（{WORKER_BASE_DIR}/worker/eval）。评估沙箱由评估引擎预建。
    */
   private async evalWorkdirOf(task: Task): Promise<string | null> {
     if (!task.evalItemId) return null;
