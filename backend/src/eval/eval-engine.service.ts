@@ -44,11 +44,14 @@ import { EvalProgressService } from './eval-progress.service';
 export const EVAL_GLOBAL_CONCURRENCY = 5;
 /** 判定失败最大重试次数（新判定会话） */
 const JUDGE_MAX_ATTEMPTS = 3;
+/** 同一提问答复失败上限（超过后评估项转异常，避免每 2 秒空转） */
+const ANSWER_MAX_ATTEMPTS = 3;
 /** 单个批次评估项数量上限（15.3） */
 const RUN_ITEM_LIMIT = 200;
 
-const RULE_ANSWER_MORE = '补充信息已全部提供，请按你的理解继续完成并交付。';
-const RULE_ANSWER_STOP = '不再答复提问，请基于已有信息直接完成并交付。';
+export const RULE_ANSWER_MORE =
+  '补充信息已全部提供，请按你的理解继续完成并交付。';
+export const RULE_ANSWER_STOP = '不再答复提问，请基于已有信息直接完成并交付。';
 
 /** 发起评估入参（14.1 POST /api/eval/runs） */
 export interface CreateEvalRunInput {
@@ -406,17 +409,29 @@ export class EvalEngineService implements OnModuleInit {
           await this.addEvent(item.id, EvalEventType.ACCEPTED, {});
         }
         return;
-      case TaskSubStatus.PENDING_FEEDBACK:
+      case TaskSubStatus.PENDING_FEEDBACK: {
+        // 提问可能发生在刚接受（引擎还没观察到执行中）或返工中，都要按规则答复
+        if (item.status === EvalItemStatus.INVITED) {
+          await this.updateItem(item.id, {
+            status: EvalItemStatus.RUNNING,
+            acceptedAt: new Date(),
+          });
+          await this.addEvent(item.id, EvalEventType.ACCEPTED, {});
+        }
         if (
           item.status === EvalItemStatus.RUNNING ||
-          item.status === EvalItemStatus.WAITING_ANSWER
+          item.status === EvalItemStatus.WAITING_ANSWER ||
+          item.status === EvalItemStatus.INVITED ||
+          item.status === EvalItemStatus.REWORKING
         ) {
+          const previous = item.status;
           await this.updateItem(item.id, {
             status: EvalItemStatus.WAITING_ANSWER,
           });
-          await this.answerQuestion(item, task);
+          await this.answerQuestion(item, task, previous);
         }
         return;
+      }
       case TaskSubStatus.PENDING_RESUME:
       case TaskSubStatus.PENDING_APPLY:
         // 待继续：LOOP 会恢复执行；待申请验收：LOOP 会重新唤醒。引擎等待。
@@ -457,8 +472,18 @@ export class EvalEngineService implements OnModuleInit {
     await this.markItemError(item.id, `评估任务异常终态（${task.subStatus}）`);
   }
 
-  /** 规则答复提问（7.3） */
-  private async answerQuestion(item: EvalRunItem, task: Task): Promise<void> {
+  /**
+   * 规则答复提问（7.3 / 12.7）：
+   * - 只能从选项中选择的提问（custom=false）不代答，整轮跳过（答复接口的跳过以整条提问为单位）；
+   *   跳过次数超过测试集「提问上限」后直接判定评估项失败（提问超限），不空转到超时。
+   * - 其余提问按问题个数逐条答复（第一次提问使用用例 clarify）。
+   * - 答复失败不推进状态机，时间线记异常事件；同一提问连续失败 ANSWER_MAX_ATTEMPTS 次转异常项。
+   */
+  private async answerQuestion(
+    item: EvalRunItem,
+    task: Task,
+    previous: EvalItemStatus,
+  ): Promise<void> {
     const run = await this.runs.findOne({ where: { id: item.runId } });
     if (!run) return;
     const evaluator = await this.workers.findOne({
@@ -475,35 +500,162 @@ export class EvalEngineService implements OnModuleInit {
       })
       .orderBy('m.id', 'DESC')
       .getOne();
-    const questionId = row?.question?.id;
-    if (!questionId || row.question?.state !== 'pending') return;
+    const question = row?.question;
+    if (!question || question.state !== 'pending') return;
+    const questionId = question.id;
     const questionCount = await this.messages.count({
       where: { taskId: task.id, kind: 'question' },
     });
     await this.updateItem(item.id, { questionCount });
 
+    // 「提问」事件按 questionId 幂等：答复失败重试时不重复写时间线
+    if (
+      !(await this.hasEvent(item.id, EvalEventType.QUESTION_ASKED, questionId))
+    ) {
+      await this.addEvent(item.id, EvalEventType.QUESTION_ASKED, {
+        questionId,
+        questionCount,
+      });
+    }
+
+    const maxQuestions = Math.max(1, run.suiteSnapshot?.maxQuestions ?? 3);
     const caseFrozen = this.frozenCase(run, item.caseId);
-    const reply =
-      questionCount === 1 && caseFrozen?.clarify
-        ? caseFrozen.clarify
-        : questionCount <= Math.max(1, run.suiteSnapshot?.maxQuestions ?? 3)
-          ? RULE_ANSWER_MORE
-          : RULE_ANSWER_STOP;
-    await this.addEvent(item.id, EvalEventType.QUESTION_ASKED, {
-      questionId,
-      questionCount,
+    const actor = workerRequesterActor(evaluator);
+    try {
+      // 只能从选项中选择（明确不接受自由输入）时规则答复无法作答，整轮跳过
+      if (question.questions.some((one) => one.custom === false)) {
+        const skipped =
+          (await this.events.count({
+            where: { itemId: item.id, type: EvalEventType.QUESTION_SKIPPED },
+          })) + 1;
+        if (skipped > maxQuestions) {
+          await this.failByQuestionLimit(
+            item,
+            task,
+            evaluator,
+            questionId,
+            maxQuestions,
+          );
+          return;
+        }
+        await this.collaboration.answer(task.id, questionId, actor, {
+          reject: true,
+        });
+        await this.addEvent(item.id, EvalEventType.QUESTION_SKIPPED, {
+          questionId,
+          skipped,
+          maxQuestions,
+        });
+      } else {
+        const reply =
+          questionCount === 1 && caseFrozen?.clarify
+            ? caseFrozen.clarify
+            : questionCount <= maxQuestions
+              ? RULE_ANSWER_MORE
+              : RULE_ANSWER_STOP;
+        // 一次提问可包含多个问题，答案必须按问题顺序逐条给出
+        const answers = question.questions.map(() => [reply]);
+        await this.collaboration.answer(task.id, questionId, actor, {
+          answers,
+        });
+        await this.addEvent(item.id, EvalEventType.QUESTION_ANSWERED, {
+          questionId,
+          questionCount,
+          reply,
+        });
+      }
+    } catch (error) {
+      await this.recordAnswerFailure(item, questionId, error);
+      return;
+    }
+    // 答复成功后恢复原状态（返工中的提问回到返工中）
+    await this.updateItem(item.id, {
+      status:
+        previous === EvalItemStatus.REWORKING
+          ? EvalItemStatus.REWORKING
+          : EvalItemStatus.RUNNING,
     });
-    await this.collaboration.answer(
-      task.id,
-      questionId,
-      workerRequesterActor(evaluator),
-      { answers: [[reply]] },
+  }
+
+  /** 同一评估项是否已记录过该 questionId 的提问事件 */
+  private async hasEvent(
+    itemId: number,
+    type: EvalEventType,
+    questionId: string,
+  ): Promise<boolean> {
+    const rows = await this.events.find({
+      where: { itemId, type },
+      select: { id: true, payload: true },
+    });
+    return rows.some(
+      (row) =>
+        (row.payload as { questionId?: string } | null)?.questionId ===
+        questionId,
     );
-    await this.addEvent(item.id, EvalEventType.QUESTION_ANSWERED, {
+  }
+
+  /** 答复提问失败：记异常事件并等待下一轮重试，同一提问失败达上限转异常项 */
+  private async recordAnswerFailure(
+    item: EvalRunItem,
+    questionId: string,
+    error: unknown,
+  ): Promise<void> {
+    const message = error instanceof Error ? error.message : String(error);
+    await this.addEvent(item.id, EvalEventType.ERROR, {
+      stage: 'answer',
       questionId,
-      reply,
+      message,
     });
-    await this.updateItem(item.id, { status: EvalItemStatus.RUNNING });
+    const rows = await this.events.find({
+      where: { itemId: item.id, type: EvalEventType.ERROR },
+      select: { id: true, payload: true },
+    });
+    const failures = rows.filter((row) => {
+      const payload = row.payload as {
+        stage?: string;
+        questionId?: string;
+      } | null;
+      return payload?.stage === 'answer' && payload.questionId === questionId;
+    }).length;
+    if (failures >= ANSWER_MAX_ATTEMPTS) {
+      await this.markItemError(
+        item.id,
+        `提问答复失败（已重试 ${failures} 次）：${message}`,
+      );
+    }
+  }
+
+  /**
+   * 选项题跳过次数超过「提问上限」：直接判定评估项失败（提问超限）并结束评估任务。
+   * 平台没有「待反馈」下的判失败入口，这里先置终态再取消任务，避免留下悬挂任务。
+   */
+  private async failByQuestionLimit(
+    item: EvalRunItem,
+    task: Task,
+    evaluator: Worker,
+    questionId: string,
+    maxQuestions: number,
+  ): Promise<void> {
+    this.logger.warn(
+      `评估项 #${item.id} 选项题跳过超过上限（${maxQuestions} 次），直接判失败`,
+    );
+    await this.addEvent(item.id, EvalEventType.QUESTION_LIMIT, {
+      questionId,
+      maxQuestions,
+    });
+    await this.finishItem(item, {
+      status: EvalItemStatus.DONE,
+      result: EvalItemResult.QUESTION_LIMIT,
+    });
+    await this.interruptTaskSession(task).catch(() => {});
+    await this.tasksService
+      .cancel(task.id, evaluator.name)
+      .catch((error: Error) =>
+        this.logger.warn(
+          `评估项 #${item.id} 结束评估任务失败: ${error.message}`,
+        ),
+      );
+    await this.destroyItemSandbox(item);
   }
 
   /** 启动判定：判定沙箱 + 评估机器人一次性判定会话（11.2/11.5） */
@@ -875,28 +1027,7 @@ export class EvalEngineService implements OnModuleInit {
 
   /** 等待答复总时长（10.1 wait_answer_ms） */
   private async totalWaitAnswerMs(itemId: number): Promise<number> {
-    const rows = await this.events.find({
-      where: {
-        itemId,
-        type: In([
-          EvalEventType.QUESTION_ASKED,
-          EvalEventType.QUESTION_ANSWERED,
-        ]),
-      },
-      order: { id: 'ASC' },
-    });
-    let total = 0;
-    for (let i = 0; i + 1 < rows.length; i += 2) {
-      const asked = rows[i];
-      const answered = rows[i + 1];
-      if (
-        asked.type === EvalEventType.QUESTION_ASKED &&
-        answered.type === EvalEventType.QUESTION_ANSWERED
-      ) {
-        total += Math.max(0, answered.at.getTime() - asked.at.getTime());
-      }
-    }
-    return total;
+    return this.sumAnswerWaits(itemId, null);
   }
 
   /** 第一次交付前的等待答复时长 */
@@ -904,27 +1035,43 @@ export class EvalEngineService implements OnModuleInit {
     itemId: number,
     before: Date,
   ): Promise<number> {
+    return this.sumAnswerWaits(itemId, before);
+  }
+
+  /**
+   * 累计「提问 → 已答复/已跳过」的等待时长。
+   * 跳过提问也算结束（耗时接近 0），不能只按 ANSWERED 配对，否则后续问答会错位。
+   */
+  private async sumAnswerWaits(
+    itemId: number,
+    before: Date | null,
+  ): Promise<number> {
     const rows = await this.events.find({
       where: {
         itemId,
         type: In([
           EvalEventType.QUESTION_ASKED,
           EvalEventType.QUESTION_ANSWERED,
+          EvalEventType.QUESTION_SKIPPED,
         ]),
       },
       order: { id: 'ASC' },
     });
     let total = 0;
-    for (let i = 0; i + 1 < rows.length; i += 2) {
-      const asked = rows[i];
-      const answered = rows[i + 1];
-      if (
-        asked.type === EvalEventType.QUESTION_ASKED &&
-        answered.type === EvalEventType.QUESTION_ANSWERED &&
-        answered.at <= before
-      ) {
-        total += Math.max(0, answered.at.getTime() - asked.at.getTime());
+    let openedAt: Date | null = null;
+    for (const row of rows) {
+      if (row.type === EvalEventType.QUESTION_ASKED) {
+        openedAt = row.at;
+        continue;
       }
+      const closed =
+        row.type === EvalEventType.QUESTION_ANSWERED ||
+        row.type === EvalEventType.QUESTION_SKIPPED;
+      if (!closed) continue;
+      if (openedAt && (!before || row.at <= before)) {
+        total += Math.max(0, row.at.getTime() - openedAt.getTime());
+      }
+      openedAt = null;
     }
     return total;
   }
@@ -992,6 +1139,11 @@ export class EvalEngineService implements OnModuleInit {
         (r) =>
           r.status === EvalItemStatus.DONE &&
           r.result === EvalItemResult.FAILED,
+      ).length,
+      questionLimit: rows.filter(
+        (r) =>
+          r.status === EvalItemStatus.DONE &&
+          r.result === EvalItemResult.QUESTION_LIMIT,
       ).length,
       refused: rows.filter((r) => r.status === EvalItemStatus.REFUSED).length,
       timeout: rows.filter((r) => r.status === EvalItemStatus.TIMEOUT).length,
@@ -1181,17 +1333,25 @@ export class EvalEngineService implements OnModuleInit {
       const task = await this.tasks.findOne({ where: { id: item.taskId } });
       if (task) {
         await this.interruptTaskSession(task).catch(() => {});
+        const run = await this.runs.findOne({ where: { id: item.runId } });
+        const evaluator = run
+          ? await this.requireEvaluator(run).catch(() => null)
+          : null;
         if (task.subStatus === TaskSubStatus.PENDING_ACCEPT) {
-          const run = await this.runs.findOne({ where: { id: item.runId } });
-          if (run) {
+          if (evaluator) {
             await this.collaboration
-              .fail(
-                task.id,
-                workerRequesterActor(await this.requireEvaluator(run)),
-                '评估已取消',
-              )
+              .fail(task.id, workerRequesterActor(evaluator), '评估已取消')
               .catch(() => {});
           }
+        } else if (task.status !== TaskStatus.FINISHED) {
+          // 待反馈等其余等待态没有判失败入口，用平台取消收尾，避免悬挂任务
+          await this.tasksService
+            .cancel(task.id, evaluator?.name ?? null)
+            .catch((error: Error) =>
+              this.logger.warn(
+                `评估项 #${item.id} 结束任务失败: ${error.message}`,
+              ),
+            );
         }
       }
     }
@@ -1313,20 +1473,28 @@ export class EvalEngineService implements OnModuleInit {
       const task = await this.tasks.findOne({ where: { id: item.taskId } });
       if (task) {
         await this.interruptTaskSession(task).catch(() => {});
+        const run = await this.runs.findOne({ where: { id: item.runId } });
+        const evaluator = run
+          ? await this.requireEvaluator(run).catch(() => null)
+          : null;
         if (
           task.status === TaskStatus.WAITING &&
           task.subStatus === TaskSubStatus.PENDING_ACCEPT
         ) {
-          const run = await this.runs.findOne({ where: { id: item.runId } });
-          if (run) {
+          if (evaluator) {
             await this.collaboration
-              .fail(
-                task.id,
-                workerRequesterActor(await this.requireEvaluator(run)),
-                '评估超时',
-              )
+              .fail(task.id, workerRequesterActor(evaluator), '评估超时')
               .catch(() => {});
           }
+        } else if (task.status !== TaskStatus.FINISHED) {
+          // 待反馈/待继续等状态没有判失败入口，用平台取消收尾，避免悬挂任务
+          await this.tasksService
+            .cancel(task.id, evaluator?.name ?? null)
+            .catch((error: Error) =>
+              this.logger.warn(
+                `评估项 #${item.id} 结束任务失败: ${error.message}`,
+              ),
+            );
         }
       }
     }

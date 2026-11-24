@@ -545,11 +545,16 @@ export enum EvalItemStatus {
   CANCELED = '已取消',
 }
 
-/** 评估项结果分档（仅 status=已完成）：一次通过 / 返工后通过 / 未通过 */
+/**
+ * 评估项结果分档（仅 status=已完成）：一次通过 / 返工后通过 / 未通过 / 提问超限。
+ * 提问超限：被测机器人反复提出只能从选项中选择的提问（规则答复不代答），
+ * 跳过次数超过测试集「提问上限」后直接判失败，与「交付不达标」区分统计。
+ */
 export enum EvalItemResult {
   FIRST_PASS = '一次通过',
   PASS_AFTER_REWORK = '返工后通过',
   FAILED = '未通过',
+  QUESTION_LIMIT = '提问超限',
 }
 
 /** 评估项事件类型（引擎语义事件，英文标识，界面映射中文展示） */
@@ -560,6 +565,10 @@ export enum EvalEventType {
   REFUSED = 'refused',
   QUESTION_ASKED = 'question_asked',
   QUESTION_ANSWERED = 'question_answered',
+  /** 选项题整轮跳过（规则答复不代答） */
+  QUESTION_SKIPPED = 'question_skipped',
+  /** 选项题跳过次数超过「提问上限」，评估项直接判失败 */
+  QUESTION_LIMIT = 'question_limit',
   HANDOFF_APPLIED = 'handoff_applied',
   JUDGE_STARTED = 'judge_started',
   JUDGE_DONE = 'judge_done',

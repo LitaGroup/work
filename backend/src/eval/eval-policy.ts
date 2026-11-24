@@ -215,6 +215,8 @@ export function classifyEvalMdRequest(
     if (sub.includes('/subtasks/create')) {
       return { decision: 'block', kind: 'subtask', reason: EVAL_MODE_ERROR };
     }
+    // 执行方提问（ask）属于评估任务本身的协同动作，须先于「需求方动作」放行
+    if (sub.includes('/questions/ask')) return { decision: 'allow' };
     if (
       sub.includes('/handoff/accept') ||
       sub.includes('/handoff/refuse') ||
@@ -226,7 +228,6 @@ export function classifyEvalMdRequest(
     if (
       sub.includes('/accept-task') ||
       sub.includes('/refuse') ||
-      sub.includes('/questions/ask') ||
       sub.includes('/handoff/update') ||
       sub.includes('/handoff/apply') ||
       sub.includes('/deliver/apply') ||

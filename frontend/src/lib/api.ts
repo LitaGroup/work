@@ -2762,7 +2762,12 @@ export const EVAL_ITEM_STATUSES = [
 ] as const
 export type EvalItemStatus = (typeof EVAL_ITEM_STATUSES)[number]
 
-export const EVAL_ITEM_RESULTS = ['一次通过', '返工后通过', '未通过'] as const
+export const EVAL_ITEM_RESULTS = [
+  '一次通过',
+  '返工后通过',
+  '未通过',
+  '提问超限',
+] as const
 export type EvalItemResult = (typeof EVAL_ITEM_RESULTS)[number]
 
 export interface EvalSuite {
@@ -2842,6 +2847,7 @@ export interface EvalRunSummary {
   firstPass: number
   passAfterRework: number
   failed: number
+  questionLimit: number
   refused: number
   timeout: number
   error: number

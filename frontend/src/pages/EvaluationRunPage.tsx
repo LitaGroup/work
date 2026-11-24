@@ -198,7 +198,7 @@ export function EvaluationRunPage() {
         <SummaryCard
           label="最终通过率"
           value={summary?.passRate != null ? `${summary.passRate}%` : '-'}
-          hint={`一次通过 ${summary?.firstPass ?? 0}｜返工后 ${summary?.passAfterRework ?? 0}｜未通过 ${summary?.failed ?? 0}`}
+          hint={`一次通过 ${summary?.firstPass ?? 0}｜返工后 ${summary?.passAfterRework ?? 0}｜未通过 ${summary?.failed ?? 0}｜提问超限 ${summary?.questionLimit ?? 0}`}
         />
         <SummaryCard
           label="平均得分"
@@ -468,6 +468,8 @@ function eventLabel(type: string): string {
     refused: '拒绝任务',
     question_asked: '提问',
     question_answered: '规则答复',
+    question_skipped: '跳过提问',
+    question_limit: '提问超限',
     handoff_applied: '申请验收',
     judge_started: '判定开始',
     judge_done: '判定完成',

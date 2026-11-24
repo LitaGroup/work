@@ -54,6 +54,18 @@ describe('评估模式权限策略（TECH_DESIGN 9.4）', () => {
       classifyEvalMdRequest('POST', '/api/tasks/42/accept-task.md', ctx)
         .decision,
     ).toBe('allow');
+    // 执行方提问放行（派发提示词用 .md 入口），需求方答复仍拦截
+    expect(
+      classifyEvalMdRequest('POST', '/api/tasks/42/questions/ask.md', ctx)
+        .decision,
+    ).toBe('allow');
+    expect(
+      classifyEvalMdRequest(
+        'POST',
+        '/api/tasks/42/questions/project-q1/answer.md',
+        ctx,
+      ).decision,
+    ).toBe('block');
     expect(
       classifyEvalMdRequest('POST', '/api/tasks/42/subtasks/create.md', ctx)
         .decision,
