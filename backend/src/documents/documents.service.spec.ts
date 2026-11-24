@@ -1,33 +1,42 @@
 import { BadRequestException } from '@nestjs/common';
-import { DocumentType } from '../common/enums';
+import { DocumentSource, DocumentType } from '../common/enums';
 import { DocumentsService } from './documents.service';
 
 function buildService() {
   const documents = {
-    create: jest.fn().mockImplementation((value: unknown) => value),
+    create: jest.fn().mockImplementation((value?: unknown) => value ?? {}),
     save: jest
       .fn()
-      .mockImplementation((value: unknown) => Promise.resolve(value)),
+      .mockImplementation((value: unknown) =>
+        Promise.resolve({ id: 99, ...(value as object) }),
+      ),
     find: jest.fn().mockResolvedValue([]),
     findOne: jest.fn(),
     remove: jest.fn().mockResolvedValue(undefined),
+    manager: { query: jest.fn().mockResolvedValue(undefined) },
   };
   const backlogDocuments = { delete: jest.fn().mockResolvedValue(undefined) };
+  const feishu = { readByUrl: jest.fn() };
+  const apipost = { readByUrl: jest.fn() };
   const knowledge = {
     isEnabled: false,
+    isProjectDocumentUnchanged: jest.fn().mockResolvedValue(false),
     removeProjectDocument: jest.fn(),
-    upsertProjectDocument: jest.fn(),
+    upsertProjectDocument: jest.fn().mockResolvedValue(true),
+    getProjectDocument: jest.fn(),
   };
+  const projectSummary = { maybeGenerateSummary: jest.fn() };
+  const projectDescription = { maybeGenerateDescription: jest.fn() };
   const service = new DocumentsService(
     documents as never,
     backlogDocuments as never,
-    {} as never,
-    {} as never,
+    feishu as never,
+    apipost,
     knowledge as never,
-    {} as never,
-    {} as never,
+    projectSummary as never,
+    projectDescription as never,
   );
-  return { service, documents, knowledge };
+  return { service, documents, knowledge, feishu, apipost };
 }
 
 describe('DocumentsService 链接型文档', () => {
@@ -115,5 +124,164 @@ describe('DocumentsService 链接型文档', () => {
     expect(removeSpy).toHaveBeenCalledTimes(1);
     expect(removeSpy).toHaveBeenCalledWith(1);
     expect(documents.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('DocumentsService 飞书文档同步', () => {
+  const existingDoc = {
+    id: 11,
+    projectId: 7,
+    title: '需求文档',
+    type: DocumentType.REQUIREMENT,
+    source: DocumentSource.FEISHU,
+    content: null,
+    knowledgeId: 'node-1',
+    feishuUrl: 'https://lita-group.feishu.cn/docx/A',
+    feishuToken: 'docx:A',
+    description: null,
+  };
+
+  it('内容未变化时跳过知识库重切片，正文仍按本次拉取结果返回', async () => {
+    const { service, documents, knowledge, feishu } = buildService();
+    documents.findOne.mockResolvedValue({ ...existingDoc });
+    feishu.readByUrl.mockResolvedValue({
+      type: 'docx',
+      feishuKey: 'docx:A',
+      title: '需求文档',
+      content: '# 需求正文',
+    });
+    knowledge.isEnabled = true;
+    knowledge.isProjectDocumentUnchanged.mockResolvedValue(true);
+
+    const doc = await service.syncFromFeishu({
+      projectId: 7,
+      type: DocumentType.REQUIREMENT,
+      url: existingDoc.feishuUrl,
+    });
+
+    expect(knowledge.isProjectDocumentUnchanged).toHaveBeenCalledWith(
+      11,
+      '需求文档',
+      '# 需求正文',
+    );
+    expect(knowledge.upsertProjectDocument).not.toHaveBeenCalled();
+    // 保留知识库托管时的 null 正文，不把全文写回业务库
+    expect(documents.save).toHaveBeenCalledWith(
+      expect.objectContaining({ content: null }),
+    );
+    expect(doc.content).toBe('# 需求正文');
+  });
+
+  it('内容变化时重写知识库切片', async () => {
+    const { service, documents, knowledge, feishu } = buildService();
+    documents.findOne.mockResolvedValue({ ...existingDoc });
+    feishu.readByUrl.mockResolvedValue({
+      type: 'docx',
+      feishuKey: 'docx:A',
+      title: '需求文档',
+      content: '# 新正文',
+    });
+    knowledge.isEnabled = true;
+    knowledge.isProjectDocumentUnchanged.mockResolvedValue(false);
+    knowledge.upsertProjectDocument.mockResolvedValue(true);
+    knowledge.getProjectDocument.mockResolvedValue({ id: 'node-1' });
+
+    const doc = await service.syncFromFeishu({
+      projectId: 7,
+      type: DocumentType.REQUIREMENT,
+      url: existingDoc.feishuUrl,
+    });
+
+    expect(knowledge.upsertProjectDocument).toHaveBeenCalledWith({
+      projectId: 7,
+      documentId: 11,
+      title: '需求文档',
+      content: '# 新正文',
+    });
+    expect(doc.content).toBe('# 新正文');
+  });
+
+  it('新建文档不走未变化短路', async () => {
+    const { service, documents, knowledge, feishu } = buildService();
+    documents.findOne.mockResolvedValue(null);
+    feishu.readByUrl.mockResolvedValue({
+      type: 'docx',
+      feishuKey: 'docx:B',
+      title: '新需求文档',
+      content: '# 正文',
+    });
+    knowledge.isEnabled = true;
+    knowledge.upsertProjectDocument.mockResolvedValue(true);
+    knowledge.getProjectDocument.mockResolvedValue({ id: 'node-9' });
+
+    await service.syncFromFeishu({
+      projectId: 7,
+      type: DocumentType.REQUIREMENT,
+      url: 'https://lita-group.feishu.cn/docx/B',
+    });
+
+    expect(knowledge.isProjectDocumentUnchanged).not.toHaveBeenCalled();
+    expect(knowledge.upsertProjectDocument).toHaveBeenCalled();
+  });
+});
+
+describe('DocumentsService APIPOST 同步', () => {
+  it('原文未变化时跳过知识库重切片', async () => {
+    const { service, documents, knowledge, apipost } = buildService();
+    documents.findOne.mockResolvedValue({
+      id: 21,
+      projectId: 7,
+      title: '接口文档',
+      type: DocumentType.API,
+      source: DocumentSource.APIPOST,
+      content: '{"openapi":"3.0.0"}',
+      apipostUrl: 'https://docs.apipost.net/docs/detail/1',
+      description: null,
+    });
+    apipost.readByUrl.mockResolvedValue({
+      title: '接口文档',
+      rawJson: '{"openapi":"3.0.0"}',
+      docsUrl: 'https://docs.apipost.net/docs/detail/1',
+    });
+    knowledge.isEnabled = true;
+
+    const doc = await service.syncFromApipost({
+      projectId: 7,
+      url: 'https://docs.apipost.net/docs/detail/1',
+    });
+
+    expect(knowledge.upsertProjectDocument).not.toHaveBeenCalled();
+    expect(doc.content).toBe('{"openapi":"3.0.0"}');
+  });
+
+  it('原文变化时重写知识库切片', async () => {
+    const { service, documents, knowledge, apipost } = buildService();
+    documents.findOne.mockResolvedValue({
+      id: 21,
+      projectId: 7,
+      title: '接口文档',
+      type: DocumentType.API,
+      source: DocumentSource.APIPOST,
+      content: '{"openapi":"3.0.0"}',
+      apipostUrl: 'https://docs.apipost.net/docs/detail/1',
+      description: null,
+    });
+    apipost.readByUrl.mockResolvedValue({
+      title: '接口文档',
+      rawJson: '{"openapi":"3.1.0"}',
+      docsUrl: 'https://docs.apipost.net/docs/detail/1',
+    });
+    knowledge.isEnabled = true;
+    knowledge.upsertProjectDocument.mockResolvedValue(true);
+    knowledge.getProjectDocument.mockResolvedValue({ id: 'node-1' });
+
+    await service.syncFromApipost({
+      projectId: 7,
+      url: 'https://docs.apipost.net/docs/detail/1',
+    });
+
+    expect(knowledge.upsertProjectDocument).toHaveBeenCalledWith(
+      expect.objectContaining({ documentId: 21, title: '接口文档' }),
+    );
   });
 });

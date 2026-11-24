@@ -4,6 +4,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { DocumentType, ProjectType } from '../common/enums';
+import { runWithConcurrency } from '../common/concurrency';
 import { DocumentsService } from '../documents/documents.service';
 import { BitableRecord, FeishuService } from '../feishu/feishu.service';
 import { Project } from './project.entity';
@@ -20,6 +21,10 @@ const MANUAL_SYNC_WINDOW_DAYS = 15;
 /** 增量同步窗口缓冲：上次同步时间往前多取 1 小时，防时钟偏差漏单 */
 const SYNC_BUFFER_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
+/** 单次同步并发处理的记录数：每条含多次飞书请求，3 路兼顾吞吐与频控 */
+const RECORD_SYNC_CONCURRENCY = 3;
+/** 同一需求下多个文档链接的并发导入数 */
+const DOCUMENT_SYNC_CONCURRENCY = 2;
 
 /** 默认项目源：研发项目管理多维表格（可用 FEISHU_PROJECT_SOURCE_URL 覆盖）。
  *  导出供 settings 模块展示解析后的源地址，避免默认值漂移。 */
@@ -228,10 +233,7 @@ export class ProjectSyncService {
     if (this.syncing) return;
     this.syncing = true;
     try {
-      const result = await this.syncFromFeishu(false);
-      this.logger.log(
-        `定时同步完成：窗口 ${result.since} 起，同步 ${result.synced}/${result.scanned} 条`,
-      );
+      await this.syncFromFeishu(false);
     } catch (e) {
       this.logger.warn(`定时同步失败: ${(e as Error).message}`);
     } finally {
@@ -244,6 +246,7 @@ export class ProjectSyncService {
     full = false,
     manual = false,
   ): Promise<SyncProjectsResult> {
+    const startedAt = Date.now();
     const sourceUrl =
       this.config.get<string>('FEISHU_PROJECT_SOURCE_URL') ??
       DEFAULT_PROJECT_SOURCE_URL;
@@ -270,19 +273,34 @@ export class ProjectSyncService {
       (r) => toLastModifiedMs(r.last_modified_time) >= since,
     );
 
-    for (const record of fresh) {
-      await this.upsert(record);
-    }
+    // 单条记录失败只告警，不阻塞其余记录（个别字段/文档问题不应中断整轮同步）
+    await runWithConcurrency(fresh, RECORD_SYNC_CONCURRENCY, async (record) => {
+      try {
+        await this.upsert(record);
+      } catch (e) {
+        this.logger.warn(
+          `项目同步失败 ${record.record_id}: ${(e as Error).message}`,
+        );
+      }
+    });
 
     const now = new Date();
     await this.syncStates.save({ key: SYNC_KEY, lastSyncAt: now });
 
-    return {
+    const result: SyncProjectsResult = {
       since: new Date(since).toISOString(),
       firstSync: !state,
       scanned: records.length,
       synced: fresh.length,
     };
+    this.logger.log(
+      `需求池同步完成（${manual ? '手动' : '定时'}）：窗口 ${result.since} 起，` +
+        `同步 ${result.synced}/${result.scanned} 条，耗时 ${(
+          (Date.now() - startedAt) /
+          1000
+        ).toFixed(1)}s`,
+    );
+    return result;
   }
 
   // ---- 内部 ----
@@ -348,19 +366,23 @@ export class ProjectSyncService {
   ): Promise<void> {
     const links = extractDocLinks(fieldValue);
     if (links.length > 0) {
-      for (const url of links) {
-        try {
-          await this.documents.syncFromFeishu({
-            projectId,
-            url,
-            type: DocumentType.REQUIREMENT,
-          });
-        } catch (e) {
-          this.logger.warn(
-            `项目需求文档链接导入失败 ${url}: ${(e as Error).message}`,
-          );
-        }
-      }
+      await runWithConcurrency(
+        links,
+        DOCUMENT_SYNC_CONCURRENCY,
+        async (url) => {
+          try {
+            await this.documents.syncFromFeishu({
+              projectId,
+              url,
+              type: DocumentType.REQUIREMENT,
+            });
+          } catch (e) {
+            this.logger.warn(
+              `项目需求文档链接导入失败 ${url}: ${(e as Error).message}`,
+            );
+          }
+        },
+      );
       return;
     }
     try {

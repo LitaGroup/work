@@ -358,12 +358,23 @@ export class DocumentsService implements OnApplicationBootstrap {
     const existing = await this.documents.findOne({
       where: { projectId: input.projectId, feishuToken: result.feishuKey },
     });
+    // 内容未变化时不重写知识库切片（需求池同步会反复拉同一批文档）
+    const contentUnchanged = existing
+      ? await this.knowledge.isProjectDocumentUnchanged(
+          existing.id,
+          result.title,
+          result.content,
+        )
+      : false;
     const entity = existing ?? this.documents.create();
     entity.projectId = input.projectId;
     entity.title = result.title;
     entity.type = input.type;
     entity.source = DocumentSource.FEISHU;
-    entity.content = result.content;
+    // 未变化时保留原正文（知识库启用时本就是 null，避免把全文再写回业务库）
+    entity.content = contentUnchanged
+      ? (existing?.content ?? null)
+      : result.content;
     entity.feishuUrl = input.url;
     entity.feishuToken = result.feishuKey;
     // 描述由用户填写：提供了才更新，避免"更新同步"清空已有描述
@@ -372,9 +383,10 @@ export class DocumentsService implements OnApplicationBootstrap {
     }
     const saved = await this.documents.save(entity);
     await this.linkToBacklogs(saved.id, saved.projectId);
-    const doc = await this.hydrate(await this.syncKnowledge(saved));
+    const doc = contentUnchanged ? saved : await this.syncKnowledge(saved);
     this.maybeTriggerSummary(doc);
-    return doc;
+    // 正文直接使用本次拉取结果，避免再从知识库回读整篇
+    return { ...doc, content: result.content };
   }
 
   /**
@@ -392,6 +404,11 @@ export class DocumentsService implements OnApplicationBootstrap {
     const existing = await this.documents.findOne({
       where: { projectId: input.projectId, apipostUrl: result.docsUrl },
     });
+    // 原文与标题都没变时知识库转换结果也不变，跳过重复重切片
+    const contentUnchanged =
+      !!existing &&
+      existing.content === result.rawJson &&
+      existing.title === result.title;
     const entity = existing ?? this.documents.create();
     entity.projectId = input.projectId;
     entity.title = result.title;
@@ -404,7 +421,7 @@ export class DocumentsService implements OnApplicationBootstrap {
     }
     const saved = await this.documents.save(entity);
     await this.linkToBacklogs(saved.id, saved.projectId);
-    const doc = await this.hydrate(await this.syncKnowledge(saved));
+    const doc = contentUnchanged ? saved : await this.syncKnowledge(saved);
     this.maybeTriggerSummary(doc);
     return doc;
   }

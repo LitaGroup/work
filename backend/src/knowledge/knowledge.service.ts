@@ -299,6 +299,16 @@ export class KnowledgeService {
     await this.store.deleteDocumentNode(documentId);
   }
 
+  /** 项目文档是否与知识库现有内容一致（跳过重复重切片；知识库未启用时恒为 false） */
+  async isProjectDocumentUnchanged(
+    documentId: number,
+    title: string,
+    content: string,
+  ): Promise<boolean> {
+    if (!this.store.isEnabled) return false;
+    return this.store.isProjectDocumentUnchanged(documentId, title, content);
+  }
+
   async removeProject(projectId: number): Promise<void> {
     if (!this.store.isEnabled) return;
     await this.store.deleteProject(projectId);

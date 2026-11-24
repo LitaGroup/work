@@ -552,6 +552,25 @@ export class KnowledgeStore implements OnApplicationBootstrap, OnModuleDestroy {
     });
   }
 
+  /**
+   * 项目文档内容是否与知识库现有切片一致（标题 + 正文哈希）。
+   * 供重复同步时跳过无意义的重切片；节点不存在或哈希不同返回 false。
+   */
+  async isProjectDocumentUnchanged(
+    documentId: number,
+    title: string,
+    content: string,
+  ): Promise<boolean> {
+    const result = await this.db().query<{ content_hash: string | null }>(
+      `SELECT content_hash FROM knowledge_nodes
+       WHERE source_document_id = $1
+       LIMIT 1`,
+      [documentId],
+    );
+    const current = result.rows[0]?.content_hash;
+    return !!current && current === hashContent(title, content);
+  }
+
   private async replaceChunks(
     client: PoolClient,
     node: NodeRow,

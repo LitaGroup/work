@@ -8,8 +8,7 @@ import {
 } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import axios, { AxiosInstance } from 'axios';
-import { promises as fs } from 'fs';
-import * as path from 'path';
+import { runWithConcurrency } from '../common/concurrency';
 import { mdFrontmatter } from '../common/frontmatter';
 import { imageWebroot } from '../common/paths';
 import { FeishuBotClientService } from '../feishu-bot/feishu-bot-client.service';
@@ -23,6 +22,10 @@ import {
   type FeishuComment,
   type FeishuCommentReply,
 } from './feishu-markdown';
+import { FeishuImageCache } from './feishu-image-cache';
+
+/** 单次同步内并发下载图片数：过高易触发飞书频控（99991400），失败重试已兜底 */
+const IMAGE_DOWNLOAD_CONCURRENCY = 4;
 
 /** 飞书资源类型，从 URL 解析得出 */
 export type FeishuResourceType = 'docx' | 'sheets' | 'bitable';
@@ -143,6 +146,8 @@ export class FeishuService implements OnModuleInit {
   private readonly logger = new Logger(FeishuService.name);
   private readonly http: AxiosInstance;
   private tokenCache: TenantTokenCache | null = null;
+  /** 飞书图片 token → 本地缓存链接：命中即跳过下载（含历史按日期目录落盘的素材） */
+  private readonly imageCache = new FeishuImageCache(imageWebroot);
 
   constructor(
     @Inject(forwardRef(() => FeishuBotConfigService))
@@ -390,7 +395,7 @@ export class FeishuService implements OnModuleInit {
       pending.map(async (id, index) => {
         try {
           // 错峰请求，避免通讯录接口频控
-          await new Promise((resolve) => setTimeout(resolve, index * 100));
+          await new Promise((resolve) => setTimeout(resolve, index * 50));
           const user = await this.getContactUser(id);
           if (user.name) this.commentUserNameCache.set(id, user.name);
         } catch {
@@ -428,9 +433,10 @@ export class FeishuService implements OnModuleInit {
   }
 
   /**
-   * 下载文档内图片素材（block_type=27 的 image.token）到本地图片目录
-   * （imageWebroot()/feishu/{YYYYMMDD}/{token}.{ext}，经 /images/... 对外访问），
-   * 返回 token → 链接映射；单张失败仅记录告警并跳过（转换时降级为占位文本）。
+   * 下载文档内图片素材（block_type=27 的 image.token）并返回 token → 链接映射。
+   * token 内容寻址：命中磁盘缓存（含历史按日期落盘的素材）直接复用、不重复下载；
+   * 未命中才下载，落到稳定路径 feishu/{前两位}/{token}.{ext}（临时文件 + rename 原子写入）。
+   * 单张失败仅记录告警并跳过（转换时降级为占位文本），下次同步可恢复。
    */
   private async downloadDocxImages(
     blocks: unknown[],
@@ -443,43 +449,32 @@ export class FeishuService implements OnModuleInit {
       ),
     ];
     if (tokens.length === 0) return new Map();
-    const results = await Promise.all(
-      tokens.map(async (token, index) => {
+    await this.imageCache.load();
+    const resolved = new Map<string, string>();
+    await runWithConcurrency(
+      tokens,
+      IMAGE_DOWNLOAD_CONCURRENCY,
+      async (token) => {
+        const cached = this.imageCache.get(token);
+        if (cached) {
+          resolved.set(token, cached);
+          return;
+        }
         try {
-          // 错峰启动，避免并发触发飞书接口频控（99991400）
-          await new Promise((resolve) => setTimeout(resolve, index * 200));
-          return [token, await this.downloadMediaWithRetry(token)] as const;
+          const media = await this.downloadMediaWithRetry(token);
+          const ext = extFromMagic(media.buffer, media.contentType);
+          resolved.set(
+            token,
+            await this.imageCache.save(token, ext, media.buffer),
+          );
         } catch (e) {
           this.logger.warn(
             `飞书图片下载失败 ${token}: ${(e as Error).message}`,
           );
-          return null;
         }
-      }),
+      },
     );
-    const date = new Intl.DateTimeFormat('en-CA', {
-      timeZone: 'Asia/Shanghai',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    })
-      .format(new Date())
-      .replace(/-/g, '');
-    const map = new Map<string, string>();
-    for (const result of results) {
-      if (!result) continue;
-      const [token, media] = result;
-      const relPath = path.posix.join(
-        'feishu',
-        date,
-        `${token}${extFromMagic(media.buffer, media.contentType)}`,
-      );
-      const absPath = path.join(imageWebroot(), relPath);
-      await fs.mkdir(path.dirname(absPath), { recursive: true });
-      await fs.writeFile(absPath, media.buffer);
-      map.set(token, `/images/${relPath}`);
-    }
-    return map;
+    return resolved;
   }
 
   /**
