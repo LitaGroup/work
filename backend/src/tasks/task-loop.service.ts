@@ -132,6 +132,8 @@ export class TaskLoopService implements OnApplicationBootstrap {
       where: {
         status: TaskStatus.WAITING,
         subStatus: TaskSubStatus.PENDING_ASSIGNMENT,
+        // 评估任务由评估引擎直接指定机器人并推进到待接受，不经 LOOP 分配
+        isEval: false,
       },
       order: { id: 'ASC' },
       take: 20,
@@ -381,6 +383,8 @@ export class TaskLoopService implements OnApplicationBootstrap {
    * 不通知负责人/需求方，也不自动接受或改派。
    */
   private async warnOfferStalled(task: Task): Promise<void> {
+    // 评估任务由评估引擎管理接受超时，不参与待接受卡住提醒
+    if (task.isEval) return;
     // 审批任务默认接受，不适用待接受卡住提醒
     if (task.type === TaskType.APPROVAL) return;
     if (!task.agentId) return;
@@ -588,6 +592,8 @@ export class TaskLoopService implements OnApplicationBootstrap {
         requesterType: 'worker',
         status: In([TaskStatus.WAITING, TaskStatus.RUNNING]),
         updatedAt: MoreThan(new Date(now - ROOT_MESSAGE_LOOKBACK_MS)),
+        // 评估任务不需要需求方机器人回复消息
+        isEval: false,
       },
       order: { updatedAt: 'DESC' },
       take: 50,
@@ -823,6 +829,11 @@ export class TaskLoopService implements OnApplicationBootstrap {
     task: Task,
     entry: TaskWorkerInbox,
   ): Promise<void> {
+    // 评估任务的提问/消息由评估引擎按规则直接答复与判定，不唤醒需求方机器人
+    if (task.isEval) {
+      await this.workerInbox.markDone(entry.id);
+      return;
+    }
     if (
       task.parentId ||
       task.requesterType !== 'worker' ||
@@ -857,6 +868,11 @@ export class TaskLoopService implements OnApplicationBootstrap {
     child: Task,
     entry: TaskWorkerInbox,
   ): Promise<void> {
+    // 评估任务的提问/消息/验收由评估引擎按规则处理，外部一次性会话一律不介入
+    if (child.isEval) {
+      await this.workerInbox.markDone(entry.id);
+      return;
+    }
     if (
       child.requesterType !== 'worker' ||
       !child.requesterId ||
@@ -919,6 +935,8 @@ export class TaskLoopService implements OnApplicationBootstrap {
         subStatus: TaskSubStatus.PENDING_ACCEPT,
         parentId: IsNull(),
         requesterType: 'worker',
+        // 评估任务的验收由评估引擎判定
+        isEval: false,
       },
       order: { id: 'ASC' },
       take: 20,
@@ -986,7 +1004,7 @@ export class TaskLoopService implements OnApplicationBootstrap {
         ? TaskSubStatus.PENDING_FEEDBACK
         : TaskSubStatus.PENDING_ACCEPT;
     const list = await this.tasks.find({
-      where: { status: TaskStatus.WAITING, subStatus },
+      where: { status: TaskStatus.WAITING, subStatus, isEval: false },
       select: {
         id: true,
         code: true,

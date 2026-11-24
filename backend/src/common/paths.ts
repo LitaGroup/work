@@ -34,3 +34,13 @@ export function fileWebroot(): string {
     process.env.DIR_FILE_WEBROOT ?? path.resolve(process.cwd(), '../files'),
   );
 }
+
+/**
+ * 执行记录（Trace）与评估快照包的私有根目录：环境变量 DIR_TRACE_WEBROOT，默认 <项目根>/traces。
+ * 不挂载公开静态路由：JSONL 步骤流与快照包含业务数据，一律经鉴权 API 读取（12.6/12.8）。
+ */
+export function traceWebroot(): string {
+  return path.resolve(
+    process.env.DIR_TRACE_WEBROOT ?? path.resolve(process.cwd(), '../traces'),
+  );
+}

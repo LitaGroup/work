@@ -107,7 +107,10 @@ describe('TasksService 看板列表投影', () => {
 
     const result = await service.findOneForList(2);
 
-    expect(query.where).toHaveBeenCalledWith('t.id = :id', { id: 2 });
+    expect(query.where).toHaveBeenCalledWith(
+      't.id = :id AND t.isEval = false',
+      { id: 2 },
+    );
     const selected = (query.select.mock.calls[0] as [string[]])[0];
     expect(selected).not.toContain('description');
     expect(result).toEqual(expect.objectContaining({ id: 2 }));

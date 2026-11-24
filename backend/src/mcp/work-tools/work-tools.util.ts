@@ -41,6 +41,7 @@ export function asAuthedRequest(principal: McpWorkPrincipal): AuthedRequest {
   return {
     worker: principal.worker,
     user: principal.user,
+    evalContext: principal.evalContext,
   } as unknown as AuthedRequest;
 }
 

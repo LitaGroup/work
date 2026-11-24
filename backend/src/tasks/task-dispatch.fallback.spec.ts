@@ -75,6 +75,13 @@ describe('TaskDispatchService 主模型限额切换备用模型', () => {
       { start: jest.fn() } as never,
       { enqueue: jest.fn(), requeueDelivered: jest.fn() } as never,
       { buildServersConfig: jest.fn() } as never,
+      {} as never,
+      {
+        recordTurnStart: jest.fn().mockResolvedValue(undefined),
+        recordMessageIn: jest.fn().mockResolvedValue(undefined),
+        recordTaskEvent: jest.fn().mockResolvedValue(undefined),
+        finalize: jest.fn().mockResolvedValue(undefined),
+      } as never,
       { transaction: jest.fn() } as never,
       { get: jest.fn() } as never,
     );

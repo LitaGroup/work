@@ -59,6 +59,8 @@ import {
 } from '../workers/worker-env';
 import { WorkersService } from '../workers/workers.service';
 import { McpServersService } from '../mcp-servers/mcp-servers.service';
+import { EvalRunItem } from '../eval/eval-run-item.entity';
+import { TraceService } from '../trace/trace.service';
 import { Task } from './task.entity';
 import { TaskEvent } from './task-event.entity';
 import { TaskTemplate } from './task-template.entity';
@@ -143,6 +145,9 @@ export class TaskDispatchService
     private readonly questionAutoAnswer: TaskQuestionAutoAnswerService,
     private readonly workerInbox: TaskWorkerInboxService,
     private readonly mcpServers: McpServersService,
+    @InjectRepository(EvalRunItem)
+    private readonly evalItems: Repository<EvalRunItem>,
+    private readonly trace: TraceService,
     private readonly dataSource: DataSource,
     config: ConfigService,
   ) {
@@ -218,6 +223,19 @@ export class TaskDispatchService
   }
 
   /**
+   * 评估任务的沙箱工位路径：读取评估项登记的 sandboxId（{runId}/{itemId}）并落到
+   * 执行器宿主的 worker-eval 根目录。评估沙箱由评估引擎预建。
+   */
+  private async evalWorkdirOf(task: Task): Promise<string | null> {
+    if (!task.evalItemId) return null;
+    const item = await this.evalItems.findOne({
+      where: { id: task.evalItemId },
+      select: { sandboxId: true },
+    });
+    return this.workersService.evalSandboxWorkdir(item?.sandboxId ?? null);
+  }
+
+  /**
    * 原子占用机器人执行容量并把指定等待任务推进到执行中。
    * 所有接受、答复恢复、验收返工和 LOOP 恢复都经过同一机器人行锁；
    * 返回 null 表示机器人执行容量已满，调用方应保持/转为待继续等待。
@@ -253,7 +271,8 @@ export class TaskDispatchService
         );
       }
       // 真人机器人可并行执行；AI 机器人受 maxParallelTasks 并行上限约束。
-      if (worker?.runtime !== WorkerRuntime.HUMAN) {
+      // 评估任务（is_eval=1）不占用被测机器人真实工位的执行容量，由评估引擎的全局并发上限约束。
+      if (worker?.runtime !== WorkerRuntime.HUMAN && !task.isEval) {
         const running = await manager.count(Task, {
           where: { agentId: task.agentId!, status: TaskStatus.RUNNING },
         });
@@ -281,7 +300,7 @@ export class TaskDispatchService
     if (worker?.runtime === WorkerRuntime.HUMAN) return true;
     const limit = Math.max(1, worker?.maxParallelTasks ?? 3);
     const running = await this.tasks.count({
-      where: { agentId: workerId, status: TaskStatus.RUNNING },
+      where: { agentId: workerId, status: TaskStatus.RUNNING, isEval: false },
     });
     return running < limit;
   }
@@ -402,36 +421,48 @@ export class TaskDispatchService
     if (!executor || !executor.online) {
       throw new NotFoundException(`执行器 #${worker.executorId} 离线或不存在`);
     }
-    const workdir = this.workersService.workdirOf(worker.id);
+    const workdir = task.isEval
+      ? await this.evalWorkdirOf(task)
+      : this.workersService.workdirOf(worker.id);
     if (!workdir) {
-      throw new NotFoundException('未配置 WORKER_BASE_DIR，无法确定工位目录');
+      throw new NotFoundException(
+        task.isEval
+          ? '评估沙箱工位未就绪'
+          : '未配置 WORKER_BASE_DIR，无法确定工位目录',
+      );
     }
-    // 机器人独立令牌只在工位文件与数据库中出现（初始化/派发时幂等写入），不进入任务 Prompt/聊天/日志
-    const workerToken = await this.workersService.ensureWorkToken(worker.id);
-    const mcpServers = await this.mcpServers.buildServersConfig(
-      this.appUrl,
-      workerToken,
-      worker.mcps ?? [],
-    );
+    // 评估任务沙箱由评估引擎预建（含评估令牌与过滤后的 MCP 配置），
+    // 派发不再写真实工位的骨架/令牌/内核 MCP 配置，避免覆盖沙箱凭据。
     const client = createExecutorClient(executor);
     this.dispatching.add(task.id);
     try {
-      // 1. 工位目录与机器人令牌（幂等；结构化文件写入，bridge 执行器同样适用）
-      await ensureWorkerSkeleton(client, workdir);
-      await upsertWorkerEnv(client, workdir, {
-        LITA_WORK_TOKEN: workerToken,
-        LITA_PROJECT_TOKEN: workerToken,
-        LITA_APP_URL: this.appUrl,
-      });
-      await writeKernelMcpConfig(
-        client,
-        workdir,
-        executor.type ?? ExecutorType.OPENCODE,
-        mcpServers,
-        {
-          denyExternalDirectory: this.denyExternalDirectory,
-        },
-      );
+      if (!task.isEval) {
+        // 1. 工位目录与机器人令牌（幂等；结构化文件写入，bridge 执行器同样适用）
+        // 机器人独立令牌只在工位文件与数据库中出现（初始化/派发时幂等写入），不进入任务 Prompt/聊天/日志
+        const workerToken = await this.workersService.ensureWorkToken(
+          worker.id,
+        );
+        const mcpServers = await this.mcpServers.buildServersConfig(
+          this.appUrl,
+          workerToken,
+          worker.mcps ?? [],
+        );
+        await ensureWorkerSkeleton(client, workdir);
+        await upsertWorkerEnv(client, workdir, {
+          LITA_WORK_TOKEN: workerToken,
+          LITA_PROJECT_TOKEN: workerToken,
+          LITA_APP_URL: this.appUrl,
+        });
+        await writeKernelMcpConfig(
+          client,
+          workdir,
+          executor.type ?? ExecutorType.OPENCODE,
+          mcpServers,
+          {
+            denyExternalDirectory: this.denyExternalDirectory,
+          },
+        );
+      }
 
       // 2. 固定绑定：一个任务只对应一个 opencode 会话。
       //    同一执行器上复用既有会话；执行器变更或会话已不存在时才新建。
@@ -568,6 +599,15 @@ export class TaskDispatchService
         : prompt;
       task.offerAttemptAt = offering ? new Date() : task.offerAttemptAt;
       await client.prompt(sessionId, { text });
+      // 执行记录：平台派发轮次与消息正文
+      void this.trace
+        .recordTurnStart(
+          task,
+          offering ? 'invite' : continuing ? 'answer' : 'execute',
+          worker,
+        )
+        .then(() => this.trace.recordMessageIn(task, text))
+        .catch(() => {});
       if (!offering) this.awaitingTurnStart.add(task.id);
       this.pushLine(
         task.id,
@@ -2513,6 +2553,26 @@ export class TaskDispatchService
     );
     // 任务字段/状态通常在记事件前已落库，这里统一广播一次最新快照
     this.taskRealtime.taskChanged(taskId);
+    // 执行记录：任务事件入 Trace；终态事件触发执行记录收尾
+    void this.trace
+      .recordTaskEvent(taskId, type, {
+        content,
+        ...(operator ? { operator } : {}),
+        ...(meta ?? {}),
+      })
+      .catch(() => {});
+    if (type === '状态变更' && content.includes('已结束')) {
+      void this.tasks.findOne({ where: { id: taskId } }).then((task) => {
+        if (task) {
+          void this.trace
+            .recordTaskEvent(taskId, 'terminal', {
+              status: `${task.status}-${task.subStatus}`,
+            })
+            .catch(() => {});
+          void this.trace.finalize(task).catch(() => {});
+        }
+      });
+    }
   }
 
   async mustFind(taskId: number): Promise<Task> {

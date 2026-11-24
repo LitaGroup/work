@@ -102,6 +102,13 @@ describe('TaskDispatchService.continueConversation 状态守卫', () => {
       {} as never,
       inbox as never,
       { buildServersConfig: jest.fn() } as never,
+      {} as never,
+      {
+        recordTurnStart: jest.fn().mockResolvedValue(undefined),
+        recordMessageIn: jest.fn().mockResolvedValue(undefined),
+        recordTaskEvent: jest.fn().mockResolvedValue(undefined),
+        finalize: jest.fn().mockResolvedValue(undefined),
+      } as never,
       { transaction: jest.fn() } as never,
       { get: jest.fn() } as never,
     );

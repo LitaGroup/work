@@ -41,6 +41,7 @@ describe('AuthGuard（网页接口强制登录）', () => {
       getPublicAgentByToken,
     } as never,
     { findByAgentToken } as never,
+    { verify: jest.fn().mockReturnValue(null) } as never,
   );
 
   beforeEach(() => {

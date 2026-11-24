@@ -111,6 +111,24 @@ const SsoClientsPage = lazy(() =>
 const ModelConfigPage = lazy(() =>
   import('./pages/ModelConfigPage').then((m) => ({ default: m.ModelConfigPage })),
 )
+const EvaluationsPage = lazy(() =>
+  import('./pages/EvaluationsPage').then((m) => ({ default: m.EvaluationsPage })),
+)
+const EvaluationSuitePage = lazy(() =>
+  import('./pages/EvaluationSuitePage').then((m) => ({
+    default: m.EvaluationSuitePage,
+  })),
+)
+const EvaluationRunPage = lazy(() =>
+  import('./pages/EvaluationRunPage').then((m) => ({
+    default: m.EvaluationRunPage,
+  })),
+)
+const EvaluationRunsPage = lazy(() =>
+  import('./pages/EvaluationRunsPage').then((m) => ({
+    default: m.EvaluationRunsPage,
+  })),
+)
 const ScriptLibraryPage = lazy(() =>
   import('./pages/ScriptLibraryPage').then((m) => ({ default: m.ScriptLibraryPage })),
 )
@@ -556,6 +574,19 @@ function App() {
               <Route path="/admin/mcp-servers" element={<McpServersPage />} />
               <Route path="/admin/mcp-logs" element={<McpLogsPage />} />
               <Route path="/admin/model-config" element={<ModelConfigPage />} />
+              <Route path="/admin/evaluations" element={<EvaluationsPage />} />
+              <Route
+                path="/admin/evaluations/runs"
+                element={<EvaluationRunsPage />}
+              />
+              <Route
+                path="/admin/evaluations/runs/:runId"
+                element={<EvaluationRunPage />}
+              />
+              <Route
+                path="/admin/evaluations/:suiteId"
+                element={<EvaluationSuitePage />}
+              />
               <Route path="/admin/sso-clients" element={<SsoClientsPage />} />
             </Route>
             <Route path="/tasks/:id" element={<TaskPackageDetailPage />} />

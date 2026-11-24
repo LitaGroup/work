@@ -250,6 +250,19 @@ export class Task {
   @Column({ type: 'simple-json', nullable: true })
   planRef: TaskPlanRef | null;
 
+  /**
+   * 评估任务标记（TECH_DESIGN 6.9）：is_eval=1 的任务由评估引擎创建，
+   * 不出现在任何人的任务列表/看板/统计中，只在评估报告里展示；
+   * 不占用被测机器人真实工位的执行容量，验收后不生成 REVIEW，不触发收件箱通知。
+   */
+  @Index('IDX_tasks_isEval')
+  @Column({ default: false })
+  isEval: boolean;
+
+  /** 对应的评估项（eval_run_items.id，is_eval=1 时非空） */
+  @Column({ type: 'int', nullable: true })
+  evalItemId: number | null;
+
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;
 

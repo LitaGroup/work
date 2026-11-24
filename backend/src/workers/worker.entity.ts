@@ -214,6 +214,14 @@ export class Worker {
   @Column({ default: true })
   enabled: boolean;
 
+  /** 是否采集执行记录（TECH_DESIGN 12.2）：关闭后真实任务不再采集，已有记录不受影响；评估任务不受该开关影响 */
+  @Column({ default: true })
+  traceEnabled: boolean;
+
+  /** 是否允许优化机器人读取执行记录（12.8）：关闭后优化机器人不能读取、也不能为它发起优化 */
+  @Column({ default: true })
+  optimizerReadable: boolean;
+
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;
 

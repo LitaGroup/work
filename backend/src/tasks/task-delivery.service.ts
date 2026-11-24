@@ -470,12 +470,15 @@ export class TaskDeliveryService {
     await this.assertRequester(task, actor);
     const saved = await this.tasksService.accept(taskId, actorName(actor));
     await this.workerInbox.completeForChild(taskId, 'handoff');
-    // 验收成功后的总结与会话清理均为异步收尾，不阻塞验收结果
-    void this.taskHandoff.request(taskId).catch((error: Error) => {
-      this.logger.warn(
-        `任务 ${saved.code} 验收后启动总结失败：${error.message}`,
-      );
-    });
+    // 验收成功后的总结与会话清理均为异步收尾，不阻塞验收结果。
+    // 评估任务（is_eval=1）不生成 REVIEW 复盘，判定由评估引擎完成。
+    if (!saved.isEval) {
+      void this.taskHandoff.request(taskId).catch((error: Error) => {
+        this.logger.warn(
+          `任务 ${saved.code} 验收后启动总结失败：${error.message}`,
+        );
+      });
+    }
     void this.dispatchService
       .destroyAcceptedSession(taskId)
       .catch((error: Error) => {

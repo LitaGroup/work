@@ -67,6 +67,8 @@ class CreateWorkerDto implements CreateWorkerInput {
   githubPermission?: WorkerGithubPermission;
   resourcePermission?: WorkerResourcePermission;
   maxParallelTasks?: number;
+  traceEnabled?: boolean;
+  optimizerReadable?: boolean;
 }
 
 class UpdateWorkerDto implements UpdateWorkerInput {
@@ -91,6 +93,8 @@ class UpdateWorkerDto implements UpdateWorkerInput {
   githubPermission?: WorkerGithubPermission;
   resourcePermission?: WorkerResourcePermission;
   maxParallelTasks?: number;
+  traceEnabled?: boolean;
+  optimizerReadable?: boolean;
 }
 
 class OptimizePromptDto implements OptimizePromptInput {

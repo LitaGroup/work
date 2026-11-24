@@ -27,6 +27,13 @@ describe('TaskDispatchService 提问提醒', () => {
       {} as never,
       {} as never,
       {} as never,
+      {
+        recordTurnStart: jest.fn().mockResolvedValue(undefined),
+        recordMessageIn: jest.fn().mockResolvedValue(undefined),
+        recordTaskEvent: jest.fn().mockResolvedValue(undefined),
+        finalize: jest.fn().mockResolvedValue(undefined),
+      } as never,
+      {} as never,
       { get: jest.fn() } as never,
     );
 

@@ -7,6 +7,7 @@ import {
 import { Reflector } from '@nestjs/core';
 import type { Request } from 'express';
 import { WorkersService } from '../workers/workers.service';
+import { EvalTokenService } from '../eval/eval-token.service';
 import type { Worker } from '../workers/worker.entity';
 import { AUTH_COOKIE, AuthService } from './auth.service';
 import { readCookie } from './cookies';
@@ -17,6 +18,11 @@ export interface AuthedRequest extends Request {
   user?: import('./user.entity').User;
   /** X-Worker-Token 命中的机器人身份（仅 .md 端点） */
   worker?: import('../workers/worker.entity').Worker;
+  /**
+   * 评估令牌解析出的评估上下文（TECH_DESIGN 9.3）：
+   * 命中时本请求按评估模式权限策略执行，只能操作当前评估任务。
+   */
+  evalContext?: import('../eval/eval-token.service').EvalContext;
 }
 
 /**
@@ -36,6 +42,7 @@ export class AuthGuard implements CanActivate {
     private readonly reflector: Reflector,
     private readonly authService: AuthService,
     private readonly workersService: WorkersService,
+    private readonly evalToken: EvalTokenService,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -49,6 +56,17 @@ export class AuthGuard implements CanActivate {
     // .md 端点面向 AI/agent（curl 直调无 Cookie），凭机器人令牌或会话放行
     const path = (req.originalUrl ?? req.url ?? '').split('?')[0];
     if (path.endsWith('.md')) return this.authorizeMarkdown(req);
+    // 评估令牌只作用于 .md 端点与 MCP 端点，其它 JSON 接口不接受
+    const workerHeader = req.headers['x-worker-token'];
+    const workerTokenValue = Array.isArray(workerHeader)
+      ? workerHeader[0]
+      : workerHeader;
+    if (workerTokenValue) {
+      const evalContext = this.evalToken.verify(workerTokenValue);
+      if (evalContext) {
+        throw new UnauthorizedException('评估令牌仅可用于 .md 与 MCP 端点');
+      }
+    }
 
     const token = readCookie(req, AUTH_COOKIE);
     const user = token ? await this.authService.getUserByToken(token) : null;
@@ -56,6 +74,33 @@ export class AuthGuard implements CanActivate {
       throw new UnauthorizedException('未登录或登录已过期');
     }
     (req as AuthedRequest).user = user;
+    return true;
+  }
+
+  /**
+   * 评估令牌校验：X-Worker-Token 命中评估令牌时挂载对应机器人身份与评估上下文。
+   * 评估令牌为短期 JWT（eval=true 声明），仅作用于当前评估任务。
+   */
+  private async attachEvalToken(req: Request, token: string): Promise<boolean> {
+    const claims = this.evalToken.verify(token);
+    if (!claims) return false;
+    const worker = await this.workersService
+      .findOne(claims.workerId)
+      .catch(() => null);
+    if (!worker || !worker.enabled) {
+      throw new UnauthorizedException('评估令牌对应的机器人不可用');
+    }
+    const authed = req as AuthedRequest;
+    authed.worker = worker;
+    authed.evalContext = {
+      workerId: claims.workerId,
+      evalItemId: claims.evalItemId,
+      taskId: claims.taskId,
+      judge: claims.judge,
+    };
+    if (!worker.humanUserId) return true;
+    const user = await this.authService.getUserById(worker.humanUserId);
+    if (user) authed.user = user;
     return true;
   }
 
@@ -73,6 +118,8 @@ export class AuthGuard implements CanActivate {
       ? workerHeader[0]
       : workerHeader;
     if (workerToken) {
+      // 评估令牌优先（评估沙箱 .env 的 LITA_WORK_TOKEN 即评估令牌）
+      if (await this.attachEvalToken(req, workerToken)) return true;
       const worker = await this.workersService.findByAgentToken(workerToken);
       if (!worker) {
         throw new UnauthorizedException(
@@ -91,6 +138,8 @@ export class AuthGuard implements CanActivate {
     ).searchParams.get('token');
     const provided = headerToken || queryToken;
     if (provided) {
+      // 评估令牌也接受 X-Agent-Token / ?token= 携带（沙箱内核适配场景）
+      if (await this.attachEvalToken(req, provided)) return true;
       const publicAgent = this.authService.getPublicAgentByToken(provided);
       if (publicAgent) {
         (req as AuthedRequest).user = publicAgent;

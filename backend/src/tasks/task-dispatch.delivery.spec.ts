@@ -120,6 +120,13 @@ describe('TaskDispatchService 显式申请验收', () => {
       { start: jest.fn() } as never,
       workerInbox as never,
       { buildServersConfig: jest.fn() } as never,
+      {} as never,
+      {
+        recordTurnStart: jest.fn().mockResolvedValue(undefined),
+        recordMessageIn: jest.fn().mockResolvedValue(undefined),
+        recordTaskEvent: jest.fn().mockResolvedValue(undefined),
+        finalize: jest.fn().mockResolvedValue(undefined),
+      } as never,
       { transaction: jest.fn() } as never,
       { get: jest.fn() } as never,
     );

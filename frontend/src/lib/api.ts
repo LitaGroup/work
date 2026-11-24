@@ -1746,6 +1746,10 @@ export interface Worker {
   resourcePermission: WorkerResourcePermission
   /** 并行执行上限：同一时刻可执行的任务数（仅 AI 机器人；1 表示串行，默认 3） */
   maxParallelTasks: number
+  /** 是否采集执行记录（默认开；评估任务不受该开关影响） */
+  traceEnabled?: boolean
+  /** 是否允许优化机器人读取执行记录（默认开） */
+  optimizerReadable?: boolean
   enabled: boolean
   /** 系统机器人（代码内置，网页不可新增/删除） */
   system: boolean
@@ -2730,6 +2734,296 @@ export const GATEWAY_GITHUB_ACTIONS = [
   'gh.pr.merge',
 ] as const
 export type GatewayGithubAction = (typeof GATEWAY_GITHUB_ACTIONS)[number]
+
+// ===== 机器人评估（TECH_DESIGN 第一期）=====
+
+export const EVAL_SUITE_PURPOSES = ['训练', '验证'] as const
+export type EvalSuitePurpose = (typeof EVAL_SUITE_PURPOSES)[number]
+
+export const EVAL_SUITE_STATUSES = ['启用', '归档'] as const
+export type EvalSuiteStatus = (typeof EVAL_SUITE_STATUSES)[number]
+
+export const EVAL_RUN_STATUSES = ['排队', '执行中', '已完成', '已取消'] as const
+export type EvalRunStatus = (typeof EVAL_RUN_STATUSES)[number]
+
+export const EVAL_ITEM_STATUSES = [
+  '排队',
+  '准备中',
+  '已邀约',
+  '执行中',
+  '等待答复',
+  '判定中',
+  '返工中',
+  '已完成',
+  '已拒绝',
+  '超时',
+  '异常',
+  '已取消',
+] as const
+export type EvalItemStatus = (typeof EVAL_ITEM_STATUSES)[number]
+
+export const EVAL_ITEM_RESULTS = ['一次通过', '返工后通过', '未通过'] as const
+export type EvalItemResult = (typeof EVAL_ITEM_RESULTS)[number]
+
+export interface EvalSuite {
+  id: number
+  name: string
+  description: string | null
+  purpose: EvalSuitePurpose
+  passThreshold: number
+  defaultTimeoutSec: number
+  maxQuestions: number
+  version: number
+  ownerId: number | null
+  status: EvalSuiteStatus
+  createdAt: string
+  updatedAt: string
+}
+
+export interface EvalSuiteSummary extends EvalSuite {
+  caseCount: number
+  enabledCaseCount: number
+  lastRunAt: string | null
+}
+
+export interface EvalCasePoint {
+  id: number
+  caseId: number
+  seq: number
+  point: string
+  required: boolean
+  weight: string
+  hint: string | null
+}
+
+export interface EvalCase {
+  id: number
+  suiteId: number
+  caseKey: string
+  seq: number
+  title: string
+  prompt: string
+  clarify: string | null
+  passThreshold: number | null
+  timeoutSec: number | null
+  enabled: boolean
+}
+
+export interface EvalCaseWithPoints extends EvalCase {
+  points: EvalCasePoint[]
+}
+
+export interface EvalSuiteDetail {
+  suite: EvalSuite
+  cases: EvalCaseWithPoints[]
+}
+
+export interface EvalCaseInput {
+  caseKey: string
+  seq?: number
+  title: string
+  prompt: string
+  clarify?: string | null
+  passThreshold?: number | null
+  timeoutSec?: number | null
+  enabled?: boolean
+  points: Array<{
+    seq: number
+    point: string
+    required?: boolean
+    weight?: number
+    hint?: string | null
+  }>
+}
+
+export interface EvalRunSummary {
+  total: number
+  done: number
+  firstPass: number
+  passAfterRework: number
+  failed: number
+  refused: number
+  timeout: number
+  error: number
+  canceled: number
+  avgScore: number | null
+  passRate: number | null
+  avgIntervention: number
+  avgWaitAnswerMs: number | null
+}
+
+export interface EvalRun {
+  id: number
+  suiteId: number
+  suiteVersion: number
+  suiteSnapshot: {
+    id: number
+    name: string
+    purpose: string
+    passThreshold: number
+    defaultTimeoutSec: number
+    maxQuestions: number
+    version: number
+    cases: Array<{
+      id: number
+      caseKey: string
+      seq: number
+      title: string
+      prompt: string
+      clarify: string | null
+      passThreshold: number | null
+      timeoutSec: number | null
+      enabled: boolean
+      points: Array<{
+        id: number
+        seq: number
+        point: string
+        required: boolean
+        weight: string
+        hint: string | null
+      }>
+    }>
+  }
+  targetWorkerId: number
+  targetWorkerName: string
+  evaluatorWorkerId: number
+  snapshotId: number
+  role: string
+  repeatCount: number
+  concurrency: number
+  mcpPolicy: { keep?: string[]; remove?: string[] } | null
+  status: EvalRunStatus
+  summary: EvalRunSummary | null
+  createdById: number | null
+  createdByName: string | null
+  error: string | null
+  createdAt: string
+  startedAt: string | null
+  finishedAt: string | null
+}
+
+export interface EvalRunItem {
+  id: number
+  runId: number
+  caseId: number
+  repeatIndex: number
+  attempt: number
+  superseded: boolean
+  taskId: number | null
+  sandboxId: string | null
+  status: EvalItemStatus
+  result: EvalItemResult | null
+  firstScore: number | null
+  finalScore: number | null
+  questionCount: number
+  reworkCount: number
+  humanCount: number
+  interventionCount: number
+  acceptedAt: string | null
+  firstApplyAt: string | null
+  finalApplyAt: string | null
+  endedAt: string | null
+  waitAnswerMs: string | null
+  netExecMs: string | null
+  firstNetExecMs: string | null
+  blockedWriteCount: number
+  errorMessage: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface EvalEvent {
+  id: number
+  itemId: number
+  type: string
+  at: string
+  payload: Record<string, unknown> | null
+}
+
+export interface EvalJudgement {
+  id: number
+  itemId: number
+  round: number
+  attempt: number
+  model: string | null
+  inputDigest: string | null
+  rawOutput: string | null
+  pointsResult: Array<{
+    idx: number
+    hit: number
+    evidence: string
+    note: string
+    evidenceInvalid?: boolean
+  }> | null
+  score: number | null
+  pass: boolean | null
+  reason: string | null
+  truncated: boolean
+  effective: boolean
+  createdAt: string
+}
+
+// ===== 执行记录（Trace）=====
+
+export const TRACE_STATUSES = ['采集中', '已完成', '不完整', '已过期'] as const
+export type TraceStatus = (typeof TRACE_STATUSES)[number]
+
+export interface TaskTrace {
+  id: string
+  taskId: number | null
+  workerId: number
+  kernel: string | null
+  model: string | null
+  configDigests: string[] | null
+  isEval: boolean
+  evalItemId: number | null
+  role: string
+  status: TraceStatus
+  outcome: string | null
+  turnCount: number
+  stepCount: number
+  callCount: number
+  callErrorCount: number
+  blockedCount: number
+  windowAttributedCount: number
+  unattributedCount: number
+  questionCount: number
+  reworkCount: number
+  redactionCount: number
+  sizeBytes: string
+  storageUri: string
+  startedAt: string
+  endedAt: string | null
+  expireAt: string
+}
+
+export interface TaskTraceStep {
+  seq: number
+  at: string
+  type: string
+  turn?: number
+  [key: string]: unknown
+}
+
+export interface WorkerTraceStats {
+  total: number
+  avgTurns: number
+  avgCalls: number
+  avgErrors: number
+  blocked: number
+  windowAttributed: number
+  unattributed: number
+  redactions: number
+  samples: Array<{
+    traceId: string
+    taskId: number | null
+    outcome: string | null
+    startedAt: string
+    turns: number
+    calls: number
+    errors: number
+  }>
+}
 
 export const api = {
   listProjects: () => request<Project[]>('/projects'),
@@ -4062,6 +4356,8 @@ export const api = {
       enabled: boolean
       githubPermission: WorkerGithubPermission
       resourcePermission: WorkerResourcePermission
+      traceEnabled: boolean
+      optimizerReadable: boolean
     }>,
   ) =>
     request<Worker>(`/workers/${id}`, {
@@ -4686,6 +4982,126 @@ export const api = {
     if (params.page) qs.set('page', String(params.page))
     if (params.pageSize) qs.set('pageSize', String(params.pageSize))
     return request<KnowledgeSearchResponse>(`/docs/search?${qs.toString()}`)
+  },
+
+  // ===== 机器人评估（TECH_DESIGN 第一期）=====
+
+  listEvalSuites: () => request<EvalSuiteSummary[]>('/eval/suites'),
+  createEvalSuite: (input: {
+    name: string
+    description?: string | null
+    purpose?: EvalSuitePurpose
+    passThreshold?: number
+    defaultTimeoutSec?: number
+    maxQuestions?: number
+  }) =>
+    request<EvalSuite>('/eval/suites', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  getEvalSuite: (suiteId: number) =>
+    request<EvalSuiteDetail>(`/eval/suites/${suiteId}`),
+  updateEvalSuite: (
+    suiteId: number,
+    input: Partial<{
+      name: string
+      description: string | null
+      purpose: EvalSuitePurpose
+      passThreshold: number
+      defaultTimeoutSec: number
+      maxQuestions: number
+      status: EvalSuiteStatus
+    }>,
+  ) =>
+    request<EvalSuite>(`/eval/suites/${suiteId}`, {
+      method: 'PUT',
+      body: JSON.stringify(input),
+    }),
+  archiveEvalSuite: (suiteId: number) =>
+    request<EvalSuite>(`/eval/suites/${suiteId}/archive`, { method: 'POST' }),
+  addEvalCase: (suiteId: number, input: EvalCaseInput) =>
+    request<EvalCase>(`/eval/suites/${suiteId}/cases`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  updateEvalCase: (suiteId: number, caseId: number, input: EvalCaseInput) =>
+    request<EvalCase>(`/eval/suites/${suiteId}/cases/${caseId}`, {
+      method: 'PUT',
+      body: JSON.stringify(input),
+    }),
+  deleteEvalCase: (suiteId: number, caseId: number) =>
+    request<void>(`/eval/suites/${suiteId}/cases/${caseId}`, {
+      method: 'DELETE',
+    }),
+  importEvalSuite: (suiteId: number, payload: unknown) =>
+    request<{ added: number; updated: number }>(`/eval/suites/${suiteId}/import`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  exportEvalSuite: (suiteId: number) =>
+    request<unknown>(`/eval/suites/${suiteId}/export`),
+  listEvalRuns: (params?: { suiteId?: number; targetWorkerId?: number }) => {
+    const qs = new URLSearchParams()
+    if (params?.suiteId) qs.set('suiteId', String(params.suiteId))
+    if (params?.targetWorkerId)
+      qs.set('targetWorkerId', String(params.targetWorkerId))
+    const q = qs.toString()
+    return request<EvalRun[]>(`/eval/runs${q ? `?${q}` : ''}`)
+  },
+  createEvalRun: (input: {
+    suiteId: number
+    targetWorkerId: number
+    evaluatorWorkerId: number
+    repeatCount?: number
+    concurrency?: number
+    mcpPolicy?: { keep?: string[]; remove?: string[] } | null
+  }) =>
+    request<EvalRun>('/eval/runs', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  getEvalRun: (runId: number) => request<EvalRun>(`/eval/runs/${runId}`),
+  listEvalRunItems: (runId: number) =>
+    request<EvalRunItem[]>(`/eval/runs/${runId}/items`),
+  cancelEvalRun: (runId: number) =>
+    request<EvalRun>(`/eval/runs/${runId}/cancel`, { method: 'POST' }),
+  getEvalItem: (itemId: number) =>
+    request<EvalRunItem>(`/eval/items/${itemId}`),
+  getEvalItemEvents: (itemId: number) =>
+    request<EvalEvent[]>(`/eval/items/${itemId}/events`),
+  getEvalItemJudgements: (itemId: number) =>
+    request<EvalJudgement[]>(`/eval/items/${itemId}/judgements`),
+  rerunEvalItem: (itemId: number) =>
+    request<EvalRunItem>(`/eval/items/${itemId}/rerun`, { method: 'POST' }),
+  rejudgeEvalItem: (itemId: number) =>
+    request<EvalJudgement>(`/eval/items/${itemId}/rejudge`, { method: 'POST' }),
+
+  // ===== 执行记录（Trace，TECH_DESIGN 第一期）=====
+
+  getTaskTrace: (taskId: number) =>
+    request<TaskTrace | null>(`/tasks/${taskId}/trace`),
+  getTrace: (traceId: string) =>
+    request<TaskTrace>(`/traces/${traceId}`),
+  getTraceSteps: (
+    traceId: string,
+    params?: { fromSeq?: number; limit?: number; types?: string; turn?: number },
+  ) => {
+    const qs = new URLSearchParams()
+    if (params?.fromSeq) qs.set('fromSeq', String(params.fromSeq))
+    if (params?.limit) qs.set('limit', String(params.limit))
+    if (params?.types) qs.set('types', params.types)
+    if (params?.turn) qs.set('turn', String(params.turn))
+    const q = qs.toString()
+    return request<{ steps: TaskTraceStep[]; nextSeq: number | null }>(
+      `/traces/${traceId}/steps${q ? `?${q}` : ''}`,
+    )
+  },
+  getWorkerTraceStats: (workerId: number, params?: { from?: string; to?: string }) => {
+    const qs = new URLSearchParams()
+    if (params?.from) qs.set('from', params.from)
+    if (params?.to) qs.set('to', params.to)
+    const q = qs.toString()
+    return request<WorkerTraceStats>(`/workers/${workerId}/trace-stats${q ? `?${q}` : ''}`)
   },
 }
 

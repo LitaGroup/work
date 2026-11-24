@@ -21,6 +21,8 @@ function buildController(): {
     mcp as never,
     auth as never,
     workers as never,
+    { verify: jest.fn().mockReturnValue(null) } as never,
+    { recordPlatformCall: jest.fn() } as never,
   );
   return { controller, mcp, auth, workers };
 }

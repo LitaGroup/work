@@ -32,6 +32,13 @@ export interface AgentTaskScope {
   canReadVisibleTasks: boolean;
   /** 身份描述（用于 Markdown 头部） */
   label: string;
+  /**
+   * 评估令牌作用域（TECH_DESIGN 9.3）：只允许操作当前评估任务；
+   * 非空时任务列表仅返回该任务，越权读取一律拒绝。
+   */
+  evalTaskId?: number | null;
+  /** 评估令牌的评估项（记录事件用） */
+  evalItemId?: number | null;
 }
 
 export interface AgentTaskQuery {
@@ -142,6 +149,9 @@ export class TasksAgentService {
       responsibleWorkerIds: [...responsibleWorkerIds],
       canReadVisibleTasks,
       label: [...new Set(labels.filter(Boolean))].join(' / ') || '当前 Agent',
+      // 评估令牌作用域：只暴露当前评估任务（9.3/9.6）
+      evalTaskId: req.evalContext?.taskId ?? null,
+      evalItemId: req.evalContext?.evalItemId ?? null,
     };
   }
 
@@ -226,6 +236,10 @@ export class TasksAgentService {
 
   /** GET /api/tasks/:id.md：任务详情 */
   async detailMarkdown(scope: AgentTaskScope, taskId: number): Promise<string> {
+    // 评估令牌作用域：只允许读取当前评估任务（9.3/9.6），真实任务不可见
+    if (scope.evalTaskId && taskId !== scope.evalTaskId) {
+      throw new ForbiddenException('评估令牌只能读取当前评估任务');
+    }
     const task = await this.tasksService.findOneDetail(taskId);
     const canOperate = this.includes(scope, task);
     if (!canOperate && !scope.canReadVisibleTasks) {
@@ -488,23 +502,31 @@ export class TasksAgentService {
 
   /** 任务查询条件（需求方或执行方） */
   private whereOf(scope: AgentTaskScope): FindOptionsWhere<Task>[] {
+    // 评估令牌：只返回当前评估任务（9.1 list_my_tasks 只返回当前评估任务）
+    if (scope.evalTaskId) {
+      return [{ id: scope.evalTaskId }];
+    }
     const where: FindOptionsWhere<Task>[] = [];
+    // 评估任务（is_eval=1）不进入任何机器人/用户的「我的任务」清单
+    const base: FindOptionsWhere<Task> = { isEval: false };
     if (scope.workerIds.length > 0) {
-      where.push({ agentId: In(scope.workerIds) });
+      where.push({ ...base, agentId: In(scope.workerIds) });
       where.push({
+        ...base,
         requesterType: 'worker',
         requesterId: In(scope.workerIds),
       });
     }
     if (scope.userIds.length > 0) {
       where.push({
+        ...base,
         requesterType: 'user',
         requesterId: In(scope.userIds),
       });
-      where.push({ ownerTakeoverUserId: In(scope.userIds) });
+      where.push({ ...base, ownerTakeoverUserId: In(scope.userIds) });
     }
     if (scope.responsibleWorkerIds.length > 0) {
-      where.push({ agentId: In(scope.responsibleWorkerIds) });
+      where.push({ ...base, agentId: In(scope.responsibleWorkerIds) });
     }
     return where;
   }

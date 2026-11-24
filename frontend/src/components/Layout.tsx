@@ -199,6 +199,24 @@ const NAV_SECTIONS: NavSection[] = [
         ],
       },
       {
+        label: '机器人评估',
+        items: [
+          {
+            to: '/admin/evaluations',
+            label: '测试集',
+            icon: Package,
+            ready: true,
+            end: true,
+          },
+          {
+            to: '/admin/evaluations/runs',
+            label: '评估记录',
+            icon: TimelineEvent,
+            ready: true,
+          },
+        ],
+      },
+      {
         // 业务分区瘦身后，原全局工具页不再提供导航入口（路由不变，深链照常可用）；「研发工具」仅保留系统设置
         label: '研发工具',
         items: [

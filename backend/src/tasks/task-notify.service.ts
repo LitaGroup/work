@@ -564,6 +564,8 @@ export class TaskNotifyService {
     receiverLabel: '负责人' | '需求方' | '执行人' | '工单创建人',
     options?: { workbench?: boolean; actionLabel?: string },
   ): Promise<TaskNotifyResult> {
+    // 评估任务（is_eval=1）不对外发送任何通知，仅在评估报告中展示
+    if (task.isEval) return { sent: false };
     const template = kind === 'accept' ? 'green' : 'orange';
     const taskUrl =
       options?.workbench || kind === 'accept'

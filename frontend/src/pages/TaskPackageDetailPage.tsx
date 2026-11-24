@@ -29,6 +29,7 @@ import { TaskEventsPanel } from '../components/task-detail/TaskEventsPanel'
 import { TaskInfoPanel } from '../components/task-detail/TaskInfoPanel'
 import { TaskRequirementPanel } from '../components/task-detail/TaskRequirementPanel'
 import { TaskTreePanel } from '../components/task-detail/TaskTreePanel'
+import { TaskTracePanel } from '../components/task-detail/TaskTracePanel'
 import {
   HandoffDocumentStatus,
   TaskMarkdownDocumentView,
@@ -49,6 +50,7 @@ type TaskContentTab =
   | 'conversation'
   | 'review'
   | 'topics'
+  | 'trace'
 
 const TASK_CONTENT_TABS: Array<[TaskContentTab, string]> = [
   ['requirement', '需求'],
@@ -60,6 +62,7 @@ const TASK_CONTENT_TABS: Array<[TaskContentTab, string]> = [
   ['conversation', '会话'],
   ['review', '复盘'],
   ['topics', '话题'],
+  ['trace', '执行过程'],
 ]
 
 const TASK_CONTENT_TAB_KEYS = TASK_CONTENT_TABS.map(([key]) => key)
@@ -846,6 +849,10 @@ export function TaskDetailView({
 
             {contentTab === 'events' && (
               <TaskEventsPanel events={events} />
+            )}
+
+            {contentTab === 'trace' && (
+              <TaskTracePanel key={taskId} taskId={taskId} />
             )}
 
             {contentTab === 'documents' && (

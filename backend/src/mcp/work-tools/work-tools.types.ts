@@ -13,6 +13,8 @@ import type { Worker } from '../../workers/worker.entity';
 export interface McpWorkPrincipal {
   user?: User;
   worker?: Worker;
+  /** 评估令牌身份（9.3）：附加 eval 声明，工具按评估模式权限策略执行 */
+  evalContext?: import('../../eval/eval-token.service').EvalContext;
 }
 
 /** 单个工具域注册器（projects / runs / knowledge / defects / github / files） */

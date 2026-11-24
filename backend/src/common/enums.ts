@@ -486,3 +486,104 @@ export enum TopicPostSource {
   PLATFORM = '平台',
   FEISHU_GROUP = '飞书群',
 }
+
+/**
+ * 机器人任务能力评估（TECH_DESIGN v1.2「机器人任务能力评估与优化体系」）领域枚举。
+ * 评估体系：测试集 → 配置快照 → 批次 → 评估项（每用例 × 每次重复）→ 判定；执行记录（Trace）配套采集。
+ */
+
+/** 测试集用途：训练（优化机器人可见 expect）/ 验证（优化机器人不可见，是否采纳修改以验证集为准） */
+export enum EvalSuitePurpose {
+  TRAIN = '训练',
+  VALIDATION = '验证',
+}
+
+/** 测试集状态：启用 / 归档 */
+export enum EvalSuiteStatus {
+  ACTIVE = '启用',
+  ARCHIVED = '归档',
+}
+
+/** 评估批次状态 */
+export enum EvalRunStatus {
+  QUEUED = '排队',
+  RUNNING = '执行中',
+  COMPLETED = '已完成',
+  CANCELED = '已取消',
+}
+
+/** 评估批次角色：普通 / 基线（复用对比基准）/ 候选（第二期优化闭环使用） */
+export enum EvalRunRole {
+  NORMAL = '普通',
+  BASELINE = '基线',
+  CANDIDATE = '候选',
+}
+
+/** 配置快照来源：当前配置 / 变更提案（第二期） */
+export enum EvalSnapshotSource {
+  LIVE = '当前配置',
+  PROPOSAL = '变更提案',
+}
+
+/**
+ * 评估项状态（状态机：排队 → 准备中 → 已邀约 → 执行中 ⇄ 等待答复 → 判定中 → 返工中 → 判定中 → 已完成；
+ * 任意非终态可 → 超时 / 异常 / 已取消）。
+ * 终态分档见 EvalItemResult（仅 status=已完成 使用）。
+ */
+export enum EvalItemStatus {
+  PENDING = '排队',
+  PREPARING = '准备中',
+  INVITED = '已邀约',
+  RUNNING = '执行中',
+  WAITING_ANSWER = '等待答复',
+  JUDGING = '判定中',
+  REWORKING = '返工中',
+  DONE = '已完成',
+  REFUSED = '已拒绝',
+  TIMEOUT = '超时',
+  ERROR = '异常',
+  CANCELED = '已取消',
+}
+
+/** 评估项结果分档（仅 status=已完成）：一次通过 / 返工后通过 / 未通过 */
+export enum EvalItemResult {
+  FIRST_PASS = '一次通过',
+  PASS_AFTER_REWORK = '返工后通过',
+  FAILED = '未通过',
+}
+
+/** 评估项事件类型（引擎语义事件，英文标识，界面映射中文展示） */
+export enum EvalEventType {
+  SANDBOX_READY = 'sandbox_ready',
+  TASK_CREATED = 'task_created',
+  ACCEPTED = 'accepted',
+  REFUSED = 'refused',
+  QUESTION_ASKED = 'question_asked',
+  QUESTION_ANSWERED = 'question_answered',
+  HANDOFF_APPLIED = 'handoff_applied',
+  JUDGE_STARTED = 'judge_started',
+  JUDGE_DONE = 'judge_done',
+  JUDGE_FAILED = 'judge_failed',
+  REWORK_SENT = 'rework_sent',
+  HUMAN_ACTION = 'human_action',
+  WRITE_BLOCKED = 'write_blocked',
+  SUBTASK_BLOCKED = 'subtask_blocked',
+  TIMEOUT = 'timeout',
+  ERROR = 'error',
+  CANCELED = 'canceled',
+  SANDBOX_DESTROYED = 'sandbox_destroyed',
+}
+
+/** 执行记录（Trace）状态：采集中 / 已完成 / 不完整（写入失败丢弃步骤）/ 已过期（到期清理正文） */
+export enum TraceStatus {
+  COLLECTING = '采集中',
+  COMPLETED = '已完成',
+  INCOMPLETE = '不完整',
+  EXPIRED = '已过期',
+}
+
+/** 执行记录角色：执行方（被测/执行机器人）/ 判定（评估机器人判定会话） */
+export enum TraceRole {
+  EXECUTOR = '执行方',
+  JUDGE = '判定',
+}

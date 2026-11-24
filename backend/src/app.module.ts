@@ -44,6 +44,11 @@ import { ModelConfigModule } from './model-config/model-config.module';
 import { FeishuBotModule } from './feishu-bot/feishu-bot.module';
 import { SsoModule } from './sso/sso.module';
 import { TopicsModule } from './topics/topics.module';
+import { EvalModule } from './eval/eval.module';
+import { TraceModule } from './trace/trace.module';
+import { EvalMdInterceptor } from './eval/eval-md.interceptor';
+import { TraceMdInterceptor } from './trace/trace-md.interceptor';
+import { APP_INTERCEPTOR } from '@nestjs/core';
 
 @Module({
   imports: [
@@ -111,12 +116,17 @@ import { TopicsModule } from './topics/topics.module';
     FilesModule,
     ImagesModule,
     ReleasesModule,
+    EvalModule,
+    TraceModule,
   ],
   controllers: [AppController],
   providers: [
     AppService,
     // 全局登录 Guard：网页 JSON 接口要求登录（.md / @Public / WS 例外，见 auth.guard.ts）
     { provide: APP_GUARD, useClass: AuthGuard },
+    // 全局拦截器：评估模式 .md 写操作拦截 + 执行记录 .md 调用采集
+    { provide: APP_INTERCEPTOR, useClass: EvalMdInterceptor },
+    { provide: APP_INTERCEPTOR, useClass: TraceMdInterceptor },
   ],
 })
 export class AppModule {}

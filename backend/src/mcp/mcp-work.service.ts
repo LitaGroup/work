@@ -16,6 +16,8 @@ import { WorkTopicTools } from './work-tools/work-topic.tools';
 import { WorkAgentTools } from './work-tools/work-agent.tools';
 import { WorkIterationTools } from './work-tools/work-iteration.tools';
 import { WorkWakeupTools } from './work-tools/work-wakeup.tools';
+import { WorkEvalTools } from './work-tools/work-eval.tools';
+import { EvalShieldService } from '../eval/eval-shield.service';
 import type {
   McpWorkPrincipal,
   WorkToolRegistrar,
@@ -51,6 +53,8 @@ export class McpWorkService {
     feishuTools: WorkFeishuTools,
     iterationTools: WorkIterationTools,
     wakeupTools: WorkWakeupTools,
+    evalTools: WorkEvalTools,
+    private readonly evalShield: EvalShieldService,
   ) {
     this.registrars = [
       projectTools,
@@ -68,6 +72,7 @@ export class McpWorkService {
       feishuTools,
       iterationTools,
       wakeupTools,
+      evalTools,
     ];
   }
 
@@ -82,8 +87,12 @@ export class McpWorkService {
       { name: 'lita-work', version: '1.0.0' },
       { capabilities: { tools: {} } },
     );
+    // 评估令牌身份：所有工具按评估模式权限策略拦截（TECH_DESIGN 9.4）
+    const target = principal.evalContext
+      ? this.evalShield.shieldMcpServer(server, principal.evalContext)
+      : server;
     for (const registrar of this.registrars) {
-      registrar.register(server, principal);
+      registrar.register(target, principal);
     }
     this.logger.debug(
       `MCP lita-work 请求：${principal.worker ? `worker:${principal.worker.id}` : principal.user ? `user:${principal.user.id}` : 'anonymous'}`,

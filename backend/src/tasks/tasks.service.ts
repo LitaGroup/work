@@ -70,6 +70,12 @@ export interface CreateTaskInput {
    * 根任务创建 / MCP create_task / 项目交付任务；子任务与工单节点任务保持原有标题。
    */
   titleNaming?: boolean;
+  /**
+   * 评估任务标记（is_eval=1，评估引擎创建）：不出现在任务列表/看板/统计，
+   * 不占用并执行容量、不生成 REVIEW、不触发通知；evalItemId 关联评估项。
+   */
+  isEval?: boolean;
+  evalItemId?: number | null;
   /** 兼容旧客户端字段：新流程创建后始终进入「等待中-待分配」 */
   submitForScheduling?: boolean;
 }
@@ -202,6 +208,8 @@ export class TasksService {
     if (params.rootOnly !== false) {
       qb.where('t.parentId IS NULL');
     }
+    // 评估任务只在评估报告中展示，不出现在任何任务列表
+    qb.andWhere('t.isEval = false');
     if (params.status)
       qb.andWhere('t.status = :status', { status: params.status });
     if (params.subStatus)
@@ -260,6 +268,7 @@ export class TasksService {
     const rows = await this.tasks
       .createQueryBuilder('t')
       .select([...TASK_BOARD_FIELDS])
+      .where('t.isEval = false')
       .orderBy('t.updatedAt', 'DESC')
       .getMany();
     const nameOf = await this.requesterNameResolver(rows);
@@ -268,12 +277,12 @@ export class TasksService {
     );
   }
 
-  /** 单个任务列表快照（SSE 任务变更推送用，只取看板投影字段） */
+  /** 单个任务列表快照（SSE 任务变更推送用，只取看板投影字段）；评估任务对外视为不存在 */
   async findOneForList(id: number): Promise<TaskBoardItem | null> {
     const task = await this.tasks
       .createQueryBuilder('t')
       .select([...TASK_BOARD_FIELDS])
-      .where('t.id = :id', { id })
+      .where('t.id = :id AND t.isEval = false', { id })
       .getOne();
     if (!task) return null;
     const nameOf = await this.requesterNameResolver([task]);
@@ -486,19 +495,21 @@ export class TasksService {
     });
   }
 
-  /** 概览统计：按主状态与子状态计数 + 根任务数 */
+  /** 概览统计：按主状态与子状态计数 + 根任务数（不包含评估任务） */
   async overview(): Promise<TaskOverview> {
     const [rows, subRows] = await Promise.all([
       this.tasks
         .createQueryBuilder('t')
         .select('t.status', 'status')
         .addSelect('COUNT(*)', 'n')
+        .where('t.isEval = false')
         .groupBy('t.status')
         .getRawMany<{ status: string; n: string }>(),
       this.tasks
         .createQueryBuilder('t')
         .select('t.subStatus', 'subStatus')
         .addSelect('COUNT(*)', 'n')
+        .where('t.isEval = false')
         .groupBy('t.subStatus')
         .getRawMany<{ subStatus: string; n: string }>(),
     ]);
@@ -512,7 +523,9 @@ export class TasksService {
     for (const row of subRows) {
       subStatuses[row.subStatus] = Number(row.n);
     }
-    const roots = await this.tasks.count({ where: { parentId: IsNull() } });
+    const roots = await this.tasks.count({
+      where: { parentId: IsNull(), isEval: false },
+    });
     return { total, roots, statuses, subStatuses };
   }
 
@@ -579,6 +592,8 @@ export class TasksService {
         handoffSubmittedVersion: null,
         status: TaskStatus.WAITING,
         subStatus: TaskSubStatus.PENDING_ASSIGNMENT,
+        isEval: input.isEval ?? false,
+        evalItemId: input.evalItemId ?? null,
       }),
     );
     task.code = `TK-${String(task.id).padStart(4, '0')}`;

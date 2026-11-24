@@ -67,6 +67,10 @@ export interface CreateWorkerInput {
   resourcePermission?: WorkerResourcePermission;
   /** 并行执行上限（仅 AI 机器人；1 表示串行，默认 3） */
   maxParallelTasks?: number;
+  /** 是否采集执行记录（默认开；评估任务不受该开关影响） */
+  traceEnabled?: boolean;
+  /** 是否允许优化机器人读取执行记录（默认开） */
+  optimizerReadable?: boolean;
 }
 
 export type UpdateWorkerInput = Partial<CreateWorkerInput>;
@@ -242,6 +246,25 @@ export class WorkersService implements OnApplicationBootstrap {
   workdirOf(id: number): string | null {
     if (!this.workerBaseDir) return null;
     return `${this.workerBaseDir.replace(/\/+$/, '')}/${this.workerDirSegment}/${id}`;
+  }
+
+  /**
+   * 评估沙箱根目录：生产 {WORKER_BASE_DIR}/worker-eval、开发 {WORKER_BASE_DIR}/worker-dev-eval。
+   * 沙箱位于执行器宿主的独立目录，不在被测机器人的真实工位内（TECH_DESIGN 9.2）。
+   */
+  evalSandboxRoot(): string | null {
+    if (!this.workerBaseDir) return null;
+    return `${this.workerBaseDir.replace(/\/+$/, '')}/${
+      this.workerDirSegment === 'worker' ? 'worker-eval' : 'worker-dev-eval'
+    }`;
+  }
+
+  /** 评估沙箱工位路径：{root}/{sandboxId}，sandboxId 形如 {runId}/{itemId}；未配置或格式非法返回 null */
+  evalSandboxWorkdir(sandboxId: string | null | undefined): string | null {
+    if (!sandboxId || !/^\d+\/\d+$/.test(sandboxId)) return null;
+    const root = this.evalSandboxRoot();
+    if (!root) return null;
+    return `${root}/${sandboxId}`;
   }
 
   /** 列表（role 筛选），附实时状态与工位路径；个人 AGENT 默认不进入对外机器人清单 */
@@ -616,6 +639,12 @@ export class WorkersService implements OnApplicationBootstrap {
       worker.maxParallelTasks = normalizeMaxParallelTasks(
         input.maxParallelTasks,
       );
+    }
+    if (input.traceEnabled !== undefined) {
+      worker.traceEnabled = input.traceEnabled;
+    }
+    if (input.optimizerReadable !== undefined) {
+      worker.optimizerReadable = input.optimizerReadable;
     }
     normalizeBackupModel(worker);
     await this.assertConfig(worker);

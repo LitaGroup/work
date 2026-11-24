@@ -559,6 +559,27 @@ export class FeishuBotClientService {
   }
 
   /**
+   * 读取用户的直属上级 open_id（contact/v3/users，需通讯录读取权限）。
+   * 未配置上级或权限缺失时返回 null（调用方按“仅管理员”降级）。
+   */
+  async contactLeaderOpenId(
+    configId: number,
+    secrets: FeishuBotSecrets,
+    openId: string,
+  ): Promise<string | null> {
+    const data = await this.request(
+      configId,
+      secrets,
+      'GET',
+      `/contact/v3/users/${encodeURIComponent(
+        openId,
+      )}?user_id_type=open_id&department_id_type=open_department_id`,
+    );
+    const user = data.user as Record<string, unknown> | undefined;
+    return readString(user ?? {}, 'leader_user_id');
+  }
+
+  /**
    * 列出机器人所在群（GET /im/v1/chats，机器人须具备 im:chat:readonly）。
    * 单页 100，最多 20 页（2000 群）防止异常循环。
    */

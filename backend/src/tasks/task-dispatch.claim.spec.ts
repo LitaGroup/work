@@ -48,6 +48,13 @@ describe('TaskDispatchService.claimExecution 执行容量', () => {
       {} as never,
       {} as never,
       {} as never,
+      {} as never,
+      {
+        recordTurnStart: jest.fn().mockResolvedValue(undefined),
+        recordMessageIn: jest.fn().mockResolvedValue(undefined),
+        recordTaskEvent: jest.fn().mockResolvedValue(undefined),
+        finalize: jest.fn().mockResolvedValue(undefined),
+      } as never,
       {
         transaction: jest.fn((callback: (value: unknown) => unknown) =>
           Promise.resolve(callback(manager)),

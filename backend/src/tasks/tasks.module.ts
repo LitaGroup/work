@@ -59,6 +59,8 @@ import {
 import { TasksAgentService } from './tasks-agent.service';
 import { WorkbenchController } from './workbench.controller';
 import { WorkbenchService } from './workbench.service';
+import { EvalRunItem } from '../eval/eval-run-item.entity';
+import { TraceModule } from '../trace/trace.module';
 
 @Module({
   imports: [
@@ -79,6 +81,7 @@ import { WorkbenchService } from './workbench.service';
       Topic,
       Backlog,
       Iteration,
+      EvalRunItem,
     ]),
     WorkersModule,
     ExecutorsModule,
@@ -87,6 +90,7 @@ import { WorkbenchService } from './workbench.service';
     KnowledgeModule,
     McpServersModule,
     ModelConfigModule,
+    TraceModule,
   ],
   controllers: [
     TasksController,
