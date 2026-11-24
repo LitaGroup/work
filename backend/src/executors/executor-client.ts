@@ -101,6 +101,20 @@ export interface ExecutorClient {
     entries: Record<string, string>,
   ): Promise<void>;
 
+  /**
+   * 递归复制目录（评估沙箱构建：真实工位 → 沙箱；源/目标须位于执行器工作区内）。
+   * exclude 为相对 source 的路径（文件或目录），命中的内容不进入 target（凭据不复制）。
+   * opencode 经 shell 实现；bridge 走 /fs/copy-dir 结构化端点（bridge 无 shell）。
+   */
+  copyDir(input: {
+    source: string;
+    target: string;
+    exclude?: string[];
+  }): Promise<void>;
+
+  /** 递归删除目录（评估沙箱销毁）；opencode 经 shell，bridge 走 /fs/rm-dir */
+  removeDir(directory: string): Promise<void>;
+
   /** 建会话（title/model/location/permissions），返回会话信息 */
   createSession(
     input: OpencodeCreateSessionInput,

@@ -1,6 +1,6 @@
 ---
 description: "> AI 助手提示：本文件定义平台与工位侧 executor-bridge 之间的执行器桥接协议（HTTP + SSE，protocol 1）。实现 bridge、新增执行内核或调用 bridge 端点前，必须先阅读本协议。"
-version: 1.2.0
+version: 1.3.0
 type: docs
 ---
 
@@ -81,9 +81,13 @@ opencode 执行器不经 bridge，端口不受本规范约束（当前本机 409
 | POST | `/fs/ensure-dir` | body `{directory}`，路径必须位于 BRIDGE_ROOT 内 |
 | POST | `/fs/write-file` | body `{directory,path,contentBase64,mode?}`，同上路径约束，mode 可选（如 0o600） |
 | POST | `/fs/upsert-env` | body `{directory,path,entries}`；按键合并 env 文件（保留其他键，权限 600） |
+| POST | `/fs/copy-dir` | body `{source,target,exclude?}`；递归复制目录（替代 `cp -a`），source/target 均须位于 BRIDGE_ROOT 内，`target` 不得位于 `source` 内，`exclude` 为相对 source 的路径整项（文件或目录）不复制 |
+| POST | `/fs/rm-dir` | body `{directory}`；递归删除目录（替代 `rm -rf`），同上路径约束，禁止删除 BRIDGE_ROOT 本身 |
 | GET | `/events` | SSE 事件流（见二） |
 
 bridge 不提供 shell（`capabilities.exec=false`）；令牌与 MCP 配置写入只走 `/fs/*`。工位目录布局与各内核适配物见 `docs/WORKER_STATION.md`（平台按执行器类型生成 `.opencode/opencode.json`、`.kiro/settings/mcp.json`、`.devin/mcp_config.json`、`.factory/mcp.json` 与 `.agents/mcp.json`，bridge 内核按各自原生配置自动连接）。
+
+`/fs/copy-dir` 与 `/fs/rm-dir` 供评估沙箱构建/销毁使用（复制真实工位时用 `exclude` 剔除 `docs/`、`.agents/.env`、`.agents/mcp.json` 与各内核 MCP 配置，真实令牌不进入沙箱），平台侧对应 `ExecutorClient.copyDir/removeDir`；opencode 适配器内部以 shell 实现同一语义。
 
 ---
 

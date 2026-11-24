@@ -915,6 +915,29 @@ export class OpencodeClient implements ExecutorClient {
     );
   }
 
+  /** 递归复制目录（cp -a + 剔除 exclude；opencode 经 /api/shell 执行） */
+  async copyDir(input: {
+    source: string;
+    target: string;
+    exclude?: string[];
+  }): Promise<void> {
+    const target = shellQuote(input.target);
+    await this.shell(
+      `mkdir -p ${target} && cp -a ${shellQuote(`${input.source}/.`)} ${target}/`,
+    );
+    const excluded = (input.exclude ?? []).map((item) =>
+      shellQuote(`${input.target}/${item}`),
+    );
+    if (excluded.length > 0) {
+      await this.shell(`rm -rf ${excluded.join(' ')}`);
+    }
+  }
+
+  /** 递归删除目录（rm -rf；opencode 经 /api/shell 执行） */
+  async removeDir(directory: string): Promise<void> {
+    await this.shell(`rm -rf ${shellQuote(directory)}`);
+  }
+
   /** 订阅事件流（GET /api/event SSE）。返回原始 Response，由调用方读流解析 */
   async eventStream(signal: AbortSignal): Promise<Response> {
     return fetch(`${this.baseUrl}/api/event`, {

@@ -187,6 +187,30 @@ export class BridgeClient implements ExecutorClient {
     });
   }
 
+  /** 递归复制目录（bridge 无 shell，走 /fs/copy-dir；exclude 在复制时剔除） */
+  async copyDir(input: {
+    source: string;
+    target: string;
+    exclude?: string[];
+  }): Promise<void> {
+    await this.request('/fs/copy-dir', {
+      method: 'POST',
+      body: JSON.stringify({
+        source: input.source,
+        target: input.target,
+        exclude: input.exclude,
+      }),
+    });
+  }
+
+  /** 递归删除目录（bridge 无 shell，走 /fs/rm-dir） */
+  async removeDir(directory: string): Promise<void> {
+    await this.request('/fs/rm-dir', {
+      method: 'POST',
+      body: JSON.stringify({ directory }),
+    });
+  }
+
   async createSession(
     input: OpencodeCreateSessionInput,
     signal?: AbortSignal,

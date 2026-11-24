@@ -180,6 +180,32 @@ async function handle(
     return;
   }
 
+  if (method === 'POST' && path === '/fs/copy-dir') {
+    const body = (await readJson(req)) as {
+      source?: string;
+      target?: string;
+      exclude?: string[];
+    };
+    if (!body.source || !body.target) {
+      throw new HttpError(400, 'source/target 不能为空');
+    }
+    sendJson(res, 200, await ctx.files.copyDir({
+      source: body.source,
+      target: body.target,
+      exclude: Array.isArray(body.exclude) ? body.exclude.map(String) : undefined,
+    }));
+    return;
+  }
+
+  if (method === 'POST' && path === '/fs/rm-dir') {
+    const body = (await readJson(req)) as { directory?: string };
+    if (!body.directory) throw new HttpError(400, 'directory 不能为空');
+    sendJson(res, 200, await ctx.files.removeDir({
+      directory: body.directory,
+    }));
+    return;
+  }
+
   throw new HttpError(404, `not found: ${method} ${path}`);
 }
 
