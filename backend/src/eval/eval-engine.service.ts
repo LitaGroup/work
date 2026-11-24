@@ -1222,6 +1222,11 @@ export class EvalEngineService implements OnModuleInit {
         status: EvalItemStatus.PENDING,
       }),
     );
+    // 已完成批次重跑后重新进入执行中（批次状态仅在项终态时重算）
+    const run = await this.runs.findOne({ where: { id: item.runId } });
+    if (run && run.status === EvalRunStatus.COMPLETED) {
+      await this.runs.update({ id: run.id }, { status: EvalRunStatus.RUNNING });
+    }
     void this.tick().catch(() => {});
     return newItem;
   }
@@ -1448,6 +1453,8 @@ export class EvalEngineService implements OnModuleInit {
       take: 200,
     });
     for (const item of rows) {
+      // 排队项无任务、无沙箱，无中断态可恢复，重启后由 ticker 继续调度
+      if (item.status === EvalItemStatus.PENDING) continue;
       if (!item.taskId) {
         await this.markItemError(item.id, '平台重启导致评估中断（任务未创建）');
         continue;

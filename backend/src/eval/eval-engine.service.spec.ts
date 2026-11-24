@@ -57,6 +57,61 @@ async function slotAvailable(
   ).slotAvailable(run, currentActive);
 }
 
+describe('EvalEngineService 平台重启恢复（TECH_DESIGN 16）', () => {
+  it('排队项重启后继续排队，有任务/沙箱在途的项才标异常', async () => {
+    const service = Object.create(
+      EvalEngineService.prototype,
+    ) as EvalEngineService;
+    const errors: Array<{ id: number; message: string }> = [];
+    (
+      service as unknown as {
+        markItemError(id: number, message: string): Promise<void>;
+      }
+    ).markItemError = (id, message) => {
+      errors.push({ id, message });
+      return Promise.resolve();
+    };
+    (
+      service as unknown as {
+        items: { find(query: unknown): Promise<unknown[]> };
+      }
+    ).items = {
+      find: () =>
+        Promise.resolve([
+          {
+            id: 2,
+            status: EvalItemStatus.PENDING,
+            taskId: null,
+            superseded: false,
+          },
+          {
+            id: 3,
+            status: EvalItemStatus.INVITED,
+            taskId: null,
+            superseded: false,
+          },
+          {
+            id: 4,
+            status: EvalItemStatus.RUNNING,
+            taskId: 9,
+            superseded: false,
+          },
+        ]),
+    };
+    (
+      service as unknown as {
+        tasks: { findOne(query: unknown): Promise<unknown> };
+      }
+    ).tasks = { findOne: () => Promise.resolve(null) };
+
+    await service.onApplicationBootstrap();
+    expect(errors).toEqual([
+      { id: 3, message: '平台重启导致评估中断（任务未创建）' },
+      { id: 4, message: '评估任务丢失' },
+    ]);
+  });
+});
+
 describe('EvalEngineService 并发槽位调度（TECH_DESIGN 15.3）', () => {
   const run = (id: number, concurrency: number) => ({
     id,
