@@ -49,6 +49,7 @@ import {
   type KnowledgeNodeSummary,
 } from '../lib/api'
 import { PageBreadcrumb } from '../components/PageBreadcrumb'
+import { ExternalDocumentImportDialog } from '../components/DocumentDialogs'
 import { MarkdownEditor, type MarkdownEditorHandle } from '../components/MarkdownEditor'
 import { PopoverNotice, noticeDurationMs } from '../components/PopoverNotice'
 import { splitFrontmatter } from '../lib/doc-frontmatter'
@@ -61,6 +62,20 @@ interface KnowledgeLocation {
 /** 任务交付文档/复盘文档由任务中心维护，知识库只读展示 */
 function isTaskDocumentPath(path: string): boolean {
   return path === '/task' || path.startsWith('/task/')
+}
+
+function isExternalKnowledgeNode(node: {
+  source: KnowledgeNode['source']
+}): boolean {
+  return node.source === 'feishu' || node.source === 'apipost'
+}
+
+function knowledgeSourceLabel(source: KnowledgeNode['source']): string {
+  if (source === 'native') return '知识'
+  if (source === 'feishu') return '飞书'
+  if (source === 'apipost') return 'APIPOST'
+  if (source === 'project-document') return '项目文档'
+  return '系统同步'
 }
 
 /** 从 /docs/detail/... 解析路径；逐段解码并拒绝编码斜杠 */
@@ -187,7 +202,12 @@ function KnowledgeDirectoryView({
   onChanged: () => void
 }) {
   const total = directory.directories.length + directory.articles.length
+  const navigate = useNavigate()
   const managedByTaskCenter = isTaskDocumentPath(directory.path)
+  const canImport =
+    !managedByTaskCenter &&
+    directory.path !== '/project' &&
+    !directory.path.startsWith('/project/')
   return (
     <div className="min-w-0">
       <PageBreadcrumb items={crumbs} />
@@ -217,6 +237,22 @@ function KnowledgeDirectoryView({
                 parentPath={directory.path}
                 onSaved={onChanged}
               />
+              {canImport && (
+                <ExternalDocumentImportDialog
+                  onImport={({ url, type, description }) =>
+                    api.importKnowledgeDocument({
+                      parentPath: directory.path,
+                      url,
+                      type,
+                      description,
+                    })
+                  }
+                  onImported={(node) => {
+                    onChanged()
+                    navigate(knowledgeWebPath(node.path, false))
+                  }}
+                />
+              )}
             </>
           )}
         </div>
@@ -251,7 +287,7 @@ function KnowledgeDirectoryView({
               </TableCell>
               <TableCell className="text-center">
                 <Badge variant="soft">
-                  {node.source === 'native' ? '知识' : '项目文档'}
+                  {knowledgeSourceLabel(node.source)}
                 </Badge>
               </TableCell>
               <TableCell>
@@ -262,6 +298,11 @@ function KnowledgeDirectoryView({
                   <span className="text-xs text-foreground-muted">
                     任务中心维护
                   </span>
+                ) : isExternalKnowledgeNode(node) ? (
+                  <div className="flex items-center justify-end gap-1">
+                    <SyncKnowledgeButton node={node} onSynced={onChanged} />
+                    <DeleteKnowledgeButton node={node} onDeleted={onChanged} />
+                  </div>
                 ) : node.source === 'native' ? (
                   <DeleteKnowledgeButton node={node} onDeleted={onChanged} />
                 ) : (
@@ -450,6 +491,7 @@ function KnowledgeArticleView({
 }) {
   const navigate = useNavigate()
   const managedByTaskCenter = isTaskDocumentPath(article.path)
+  const external = isExternalKnowledgeNode(article)
   const editable = article.source === 'native' && !managedByTaskCenter
   const taskFrontmatter = managedByTaskCenter
     ? splitFrontmatter(article.content ?? '')
@@ -522,12 +564,18 @@ function KnowledgeArticleView({
             <Badge variant={editable ? 'soft' : 'secondary'}>
               {managedByTaskCenter
                 ? '任务文档'
-                : editable
-                  ? '知识文章'
-                  : '项目文档同步'}
+                : knowledgeSourceLabel(article.source)}
             </Badge>
+            {external && article.documentType && (
+              <span>类型：{article.documentType}</span>
+            )}
             <span>更新于 {new Date(article.updatedAt).toLocaleString()}</span>
           </div>
+          {external && article.description && (
+            <p className="mt-2 text-sm text-foreground-muted">
+              {article.description}
+            </p>
+          )}
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <a
@@ -547,6 +595,27 @@ function KnowledgeArticleView({
               查看原文档
             </Button>
           )}
+          {external && (
+            <>
+              {article.sourceUrl && (
+                <a
+                  href={article.sourceUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-sm underline"
+                >
+                  原始文档
+                </a>
+              )}
+              <SyncKnowledgeButton node={article} onSynced={onChanged} />
+              <DeleteKnowledgeButton
+                node={article}
+                onDeleted={() =>
+                  navigate(knowledgeWebPath(article.parentPath, true))
+                }
+              />
+            </>
+          )}
           {editable && (
             <>
               <MoveKnowledgeDialog
@@ -555,7 +624,12 @@ function KnowledgeArticleView({
                   navigate(knowledgeWebPath(moved.path, false))
                 }
               />
-              <DeleteKnowledgeButton node={article} onDeleted={() => navigate(knowledgeWebPath(article.parentPath, true))} />
+              <DeleteKnowledgeButton
+                node={article}
+                onDeleted={() =>
+                  navigate(knowledgeWebPath(article.parentPath, true))
+                }
+              />
               <Button size="sm" onClick={save} disabled={!dirty || saving}>
                 {saving ? '保存中…' : dirty ? '保存' : '已保存'}
               </Button>
@@ -594,7 +668,9 @@ function KnowledgeArticleView({
         <p className="text-sm text-foreground-muted">
           {managedByTaskCenter
             ? '任务交付/复盘文档由任务中心维护：请在任务工作台编辑交付文档，验收后生成的复盘文档只读。'
-            : '项目文档正文由文档模块同步，请在原文档中修改；此处只读并参与知识检索。'}
+            : external
+              ? '外部导入文档正文由来源同步，请在飞书 / APIPOST 中修改后使用「更新同步」；此处只读并参与知识检索。'
+              : '项目文档正文由文档模块同步，请在原文档中修改；此处只读并参与知识检索。'}
         </p>
       )}
     </div>
@@ -841,6 +917,79 @@ function MoveKnowledgeDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  )
+}
+
+function SyncKnowledgeButton({
+  node,
+  onSynced,
+}: {
+  node: { id: string; title: string }
+  onSynced: () => void
+}) {
+  const [pending, setPending] = useState(false)
+  const [feedback, setFeedback] = useState<{
+    success?: string
+    error?: string
+  } | null>(null)
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const clearTimer = () => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current)
+      timerRef.current = null
+    }
+  }
+
+  useEffect(() => clearTimer, [])
+
+  const showFeedback = (
+    next: NonNullable<typeof feedback>,
+    after?: () => void,
+  ) => {
+    clearTimer()
+    setFeedback(next)
+    timerRef.current = setTimeout(() => {
+      setFeedback(null)
+      after?.()
+    }, noticeDurationMs(next.error))
+  }
+
+  const sync = () => {
+    if (pending) return
+    setPending(true)
+    api
+      .syncKnowledgeDocument(node.id)
+      .then(() => {
+        showFeedback({ success: '已更新同步' }, onSynced)
+      })
+      .catch((e: Error) =>
+        showFeedback({ error: e.message || '同步失败' }),
+      )
+      .finally(() => setPending(false))
+  }
+
+  return (
+    <PopoverNotice
+      open={feedback !== null}
+      success={feedback?.success}
+      error={feedback?.error}
+      onOpenChange={(open) => {
+        if (!open && feedback?.error) {
+          clearTimer()
+          setFeedback(null)
+        }
+      }}
+    >
+      <Button
+        variant="outline"
+        size="sm"
+        disabled={pending || !!feedback?.success}
+        onClick={sync}
+      >
+        {pending ? '同步中…' : '更新同步'}
+      </Button>
+    </PopoverNotice>
   )
 }
 

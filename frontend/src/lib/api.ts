@@ -206,7 +206,12 @@ export function documentKnowledgePath(projectId: number, documentId: number): st
 
 export const KNOWLEDGE_NODE_KINDS = ['directory', 'article'] as const
 export type KnowledgeNodeKind = (typeof KNOWLEDGE_NODE_KINDS)[number]
-export type KnowledgeNodeSource = 'native' | 'project-document' | 'system'
+export type KnowledgeNodeSource =
+  | 'native'
+  | 'project-document'
+  | 'system'
+  | 'feishu'
+  | 'apipost'
 export type KnowledgeIndexStatus = 'pending' | 'ready' | 'error'
 /** 搜索数据源：仅站内知识（飞书云文档搜索已下线） */
 export type KnowledgeSearchSource = 'project'
@@ -221,6 +226,10 @@ export interface KnowledgeNode {
   content: string | null
   source: KnowledgeNodeSource
   sourceDocumentId: number | null
+  sourceKey: string | null
+  sourceUrl: string | null
+  documentType: string | null
+  description: string | null
   contentHash: string
   indexStatus: KnowledgeIndexStatus
   indexError: string | null
@@ -4978,6 +4987,22 @@ export const api = {
     request<KnowledgeNode>('/docs/nodes', {
       method: 'POST',
       body: JSON.stringify(input),
+    }),
+  /** 从飞书 / APIPOST 导入知识文章，按链接自动识别来源 */
+  importKnowledgeDocument: (input: {
+    parentPath: string
+    url: string
+    type?: DocumentType
+    description?: string
+  }) =>
+    request<KnowledgeNode>('/docs/nodes/import', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  /** 按保存的原始链接更新同步外部知识文章 */
+  syncKnowledgeDocument: (id: string) =>
+    request<KnowledgeNode>(`/docs/nodes/${id}/sync`, {
+      method: 'POST',
     }),
   updateKnowledgeNode: (
     id: string,

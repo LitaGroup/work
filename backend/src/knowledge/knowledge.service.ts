@@ -6,6 +6,7 @@ import {
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { createHash } from 'crypto';
 import { mdFrontmatter } from '../common/frontmatter';
 import { KnowledgeEmbeddingService } from './knowledge-embedding.service';
 import {
@@ -15,6 +16,7 @@ import {
 } from './knowledge.path';
 import { KnowledgeStore } from './knowledge.store';
 import type {
+  ExternalKnowledgeSource,
   KnowledgeDirectory,
   KnowledgeNode,
   KnowledgeSearchResponse,
@@ -176,6 +178,95 @@ export class KnowledgeService {
   }
 
   /**
+   * 导入飞书 / APIPOST 文档：同一目录、同一来源标识重复导入时覆盖更新。
+   * 路径由来源标识的哈希生成，标题变化不会改变知识路径。
+   */
+  async importExternal(input: {
+    parentPath: string;
+    source: ExternalKnowledgeSource;
+    sourceKey: string;
+    sourceUrl: string;
+    title: string;
+    content: string;
+    documentType: string;
+    description?: string | null;
+  }): Promise<KnowledgeNode> {
+    this.assertEnabled();
+    const parent = this.normalize(input.parentPath || '/');
+    this.assertNativePath(parent);
+    if (parent !== '/') {
+      const parentNode = await this.store.getByPath(parent);
+      if (!parentNode || parentNode.kind !== 'directory') {
+        throw new BadRequestException(`父目录 ${parent} 不存在`);
+      }
+      if (parentNode.source !== 'native') {
+        throw new ForbiddenException('只能在原生知识目录导入外部文档');
+      }
+    }
+    const sourceKey = input.sourceKey.trim();
+    if (!sourceKey) throw new BadRequestException('来源标识不能为空');
+    const existing = await this.store.findExternalNode(
+      parent,
+      input.source,
+      sourceKey,
+    );
+    if (existing) {
+      try {
+        return await this.store.updateExternalNode(existing.id, {
+          title: input.title,
+          content: input.content,
+          sourceUrl: input.sourceUrl,
+          documentType: input.documentType,
+          description: input.description,
+        });
+      } catch (error) {
+        throw this.storeError(error);
+      }
+    }
+    const digest = createHash('sha256')
+      .update(sourceKey)
+      .digest('hex')
+      .slice(0, 20);
+    const path =
+      parent === '/'
+        ? `/${input.source}-${digest}`
+        : `${parent}/${input.source}-${digest}`;
+    try {
+      return await this.store.createExternalNode({
+        path,
+        source: input.source,
+        sourceKey,
+        sourceUrl: input.sourceUrl,
+        title: input.title,
+        content: input.content,
+        documentType: input.documentType,
+        description: input.description,
+      });
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        throw new BadRequestException('导入路径已存在，请稍后重试');
+      }
+      throw this.storeError(error);
+    }
+  }
+
+  /** 从外部来源同步正文与标题；知识路径保持不变 */
+  async syncExternal(
+    id: string,
+    input: { title: string; content: string },
+  ): Promise<KnowledgeNode> {
+    const node = await this.getNodeById(id);
+    if (node.source !== 'feishu' && node.source !== 'apipost') {
+      throw new BadRequestException('当前知识节点不是外部导入文档');
+    }
+    try {
+      return await this.store.updateExternalNode(id, input);
+    } catch (error) {
+      throw this.storeError(error);
+    }
+  }
+
+  /**
    * 按完整路径创建文章，自动创建缺失的父目录。
    * 供平台内部归档（如任务总结报告）使用；目标路径已存在时直接报错。
    */
@@ -250,7 +341,11 @@ export class KnowledgeService {
   async remove(id: string, recursive = false): Promise<void> {
     this.assertEnabled();
     const node = await this.getNodeById(id);
-    if (node.source !== 'native') {
+    if (
+      node.source !== 'native' &&
+      node.source !== 'feishu' &&
+      node.source !== 'apipost'
+    ) {
       throw new ForbiddenException('项目同步或系统知识为只读');
     }
     try {

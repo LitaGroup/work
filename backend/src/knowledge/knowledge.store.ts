@@ -37,6 +37,10 @@ interface NodeRow {
   content: string | null;
   source: KnowledgeNodeSource;
   source_document_id: number | null;
+  source_key: string | null;
+  source_url: string | null;
+  document_type: string | null;
+  description: string | null;
   content_hash: string;
   index_status: KnowledgeIndexStatus;
   index_error: string | null;
@@ -44,6 +48,30 @@ interface NodeRow {
   created_at: Date;
   updated_at: Date;
 }
+
+/** 目录列表只需要摘要字段：正文可能很大，不要随列表从 PG 读出再丢掉 */
+type NodeSummaryRow = Pick<
+  NodeRow,
+  | 'id'
+  | 'kind'
+  | 'path'
+  | 'parent_path'
+  | 'name'
+  | 'title'
+  | 'source'
+  | 'source_document_id'
+  | 'source_key'
+  | 'source_url'
+  | 'document_type'
+  | 'description'
+  | 'index_status'
+  | 'created_at'
+  | 'updated_at'
+>;
+
+const NODE_SUMMARY_COLUMNS = `id, kind, path, parent_path, name, title, source,
+       source_document_id, source_key, source_url, document_type, description,
+       index_status, created_at, updated_at`;
 
 interface ChunkRow {
   id: string;
@@ -70,6 +98,10 @@ function mapNode(row: NodeRow): KnowledgeNode {
     content: row.content,
     source: row.source,
     sourceDocumentId: row.source_document_id,
+    sourceKey: row.source_key,
+    sourceUrl: row.source_url,
+    documentType: row.document_type,
+    description: row.description,
     contentHash: row.content_hash,
     indexStatus: row.index_status,
     indexError: row.index_error,
@@ -79,7 +111,7 @@ function mapNode(row: NodeRow): KnowledgeNode {
   };
 }
 
-function mapSummary(row: NodeRow): KnowledgeNodeSummary {
+function mapSummary(row: NodeSummaryRow): KnowledgeNodeSummary {
   return {
     id: row.id,
     kind: row.kind,
@@ -89,6 +121,10 @@ function mapSummary(row: NodeRow): KnowledgeNodeSummary {
     title: row.title,
     source: row.source,
     sourceDocumentId: row.source_document_id,
+    sourceKey: row.source_key,
+    sourceUrl: row.source_url,
+    documentType: row.document_type,
+    description: row.description,
     indexStatus: row.index_status,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -248,8 +284,12 @@ export class KnowledgeStore implements OnApplicationBootstrap, OnModuleDestroy {
           title text NOT NULL,
           content text,
           source text NOT NULL DEFAULT 'native'
-            CHECK (source IN ('native', 'project-document', 'system')),
+            CHECK (source IN ('native', 'project-document', 'system', 'feishu', 'apipost')),
           source_document_id integer,
+          source_key text,
+          source_url text,
+          document_type text,
+          description text,
           content_hash text NOT NULL DEFAULT '',
           index_status text NOT NULL DEFAULT 'pending'
             CHECK (index_status IN ('pending', 'ready', 'error')),
@@ -259,10 +299,51 @@ export class KnowledgeStore implements OnApplicationBootstrap, OnModuleDestroy {
           updated_at timestamptz NOT NULL DEFAULT now()
         )
       `);
+      // 外部导入元数据：旧库通过幂等 ALTER 升级，不重建表
+      await client.query(`
+        ALTER TABLE knowledge_nodes
+          ADD COLUMN IF NOT EXISTS source_key text,
+          ADD COLUMN IF NOT EXISTS source_url text,
+          ADD COLUMN IF NOT EXISTS document_type text,
+          ADD COLUMN IF NOT EXISTS description text
+      `);
+      await client.query(`
+        DO $$
+        DECLARE constraint_row record;
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint
+            WHERE conrelid = 'knowledge_nodes'::regclass
+              AND contype = 'c'
+              AND pg_get_constraintdef(oid) LIKE '%feishu%'
+          ) THEN
+            FOR constraint_row IN
+              SELECT conname FROM pg_constraint
+              WHERE conrelid = 'knowledge_nodes'::regclass
+                AND contype = 'c'
+                AND pg_get_constraintdef(oid) LIKE '%native%'
+                AND pg_get_constraintdef(oid) LIKE '%source%'
+            LOOP
+              EXECUTE format(
+                'ALTER TABLE knowledge_nodes DROP CONSTRAINT %I',
+                constraint_row.conname
+              );
+            END LOOP;
+            ALTER TABLE knowledge_nodes
+              ADD CONSTRAINT knowledge_nodes_source_check
+              CHECK (source IN ('native', 'project-document', 'system', 'feishu', 'apipost'));
+          END IF;
+        END $$;
+      `);
       await client.query(`
         CREATE UNIQUE INDEX IF NOT EXISTS knowledge_nodes_source_document_uidx
         ON knowledge_nodes (source_document_id)
         WHERE source_document_id IS NOT NULL
+      `);
+      await client.query(`
+        CREATE UNIQUE INDEX IF NOT EXISTS knowledge_nodes_external_uidx
+        ON knowledge_nodes (parent_path, source, source_key)
+        WHERE source IN ('feishu', 'apipost') AND source_key IS NOT NULL
       `);
       await client.query(`
         CREATE INDEX IF NOT EXISTS knowledge_nodes_parent_idx
@@ -391,8 +472,8 @@ export class KnowledgeStore implements OnApplicationBootstrap, OnModuleDestroy {
 
   async listChildren(path: string): Promise<KnowledgeDirectory> {
     const normalized = normalizeKnowledgePath(path);
-    const result = await this.db().query<NodeRow>(
-      `SELECT * FROM knowledge_nodes
+    const result = await this.db().query<NodeSummaryRow>(
+      `SELECT ${NODE_SUMMARY_COLUMNS} FROM knowledge_nodes
        WHERE parent_path = $1
        ORDER BY kind = 'article', name COLLATE "C"`,
       [normalized.path],
@@ -484,6 +565,131 @@ export class KnowledgeStore implements OnApplicationBootstrap, OnModuleDestroy {
         await this.replaceChunks(client, result.rows[0]);
       }
       return mapNode(result.rows[0]);
+    });
+  }
+
+  async findExternalNode(
+    parentPath: string,
+    source: 'feishu' | 'apipost',
+    sourceKey: string,
+  ): Promise<KnowledgeNode | null> {
+    const result = await this.db().query<NodeRow>(
+      `SELECT * FROM knowledge_nodes
+       WHERE parent_path = $1 AND source = $2 AND source_key = $3
+       LIMIT 1`,
+      [normalizeKnowledgePath(parentPath).path, source, sourceKey],
+    );
+    return result.rows[0] ? mapNode(result.rows[0]) : null;
+  }
+
+  async createExternalNode(input: {
+    path: string;
+    source: 'feishu' | 'apipost';
+    sourceKey: string;
+    sourceUrl: string;
+    title: string;
+    content: string;
+    documentType: string;
+    description?: string | null;
+  }): Promise<KnowledgeNode> {
+    const normalized = normalizeKnowledgePath(input.path);
+    if (normalized.path === '/') throw new Error('不能创建根目录');
+    const title = input.title.trim() || normalized.name;
+    const content = input.content;
+    return this.withTransaction(async (client) => {
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+        'knowledge-path',
+      ]);
+      await this.ensureDirectory(client, normalized.parentPath, 'native');
+      const result = await client.query<NodeRow>(
+        `INSERT INTO knowledge_nodes
+           (kind, path, parent_path, name, title, content, source,
+            source_key, source_url, document_type, description,
+            content_hash, index_status)
+         VALUES ('article', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending')
+         RETURNING *`,
+        [
+          normalized.path,
+          normalized.parentPath,
+          normalized.name,
+          title,
+          content,
+          input.source,
+          input.sourceKey,
+          input.sourceUrl,
+          input.documentType,
+          input.description?.trim() || null,
+          hashContent(title, content),
+        ],
+      );
+      await this.replaceChunks(client, result.rows[0]);
+      return mapNode(result.rows[0]);
+    });
+  }
+
+  async updateExternalNode(
+    id: string,
+    input: {
+      title: string;
+      content: string;
+      sourceUrl?: string;
+      documentType?: string;
+      /** undefined 保持原值，null 清空 */
+      description?: string | null;
+    },
+  ): Promise<KnowledgeNode> {
+    return this.withTransaction(async (client) => {
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+        'knowledge-path',
+      ]);
+      const found = await client.query<NodeRow>(
+        'SELECT * FROM knowledge_nodes WHERE id = $1 FOR UPDATE',
+        [id],
+      );
+      const node = found.rows[0];
+      if (!node) throw new Error('知识节点不存在');
+      if (node.source !== 'feishu' && node.source !== 'apipost') {
+        throw new Error('当前知识节点不是外部导入文档');
+      }
+      const title = input.title.trim() || node.title;
+      const content = input.content;
+      const description =
+        input.description === undefined
+          ? node.description
+          : input.description?.trim() || null;
+      const sourceUrl = input.sourceUrl ?? node.source_url;
+      const documentType = input.documentType ?? node.document_type;
+      if (node.content_hash === hashContent(title, content)) {
+        const metadataUpdated = await client.query<NodeRow>(
+          `UPDATE knowledge_nodes
+           SET source_url = $2, document_type = $3, description = $4,
+               updated_at = now()
+           WHERE id = $1
+           RETURNING *`,
+          [id, sourceUrl, documentType, description],
+        );
+        return mapNode(metadataUpdated.rows[0]);
+      }
+      const updated = await client.query<NodeRow>(
+        `UPDATE knowledge_nodes
+         SET title = $2, content = $3, source_url = $4,
+             document_type = $5, description = $6,
+             content_hash = $7, index_status = 'pending',
+             index_error = NULL, index_attempts = 0, updated_at = now()
+         WHERE id = $1
+         RETURNING *`,
+        [
+          id,
+          title,
+          content,
+          sourceUrl,
+          documentType,
+          description,
+          hashContent(title, content),
+        ],
+      );
+      await this.replaceChunks(client, updated.rows[0]);
+      return mapNode(updated.rows[0]);
     });
   }
 
@@ -725,7 +931,11 @@ export class KnowledgeStore implements OnApplicationBootstrap, OnModuleDestroy {
       );
       const node = found.rows[0];
       if (!node) return;
-      if (node.source !== 'native') {
+      if (
+        node.source !== 'native' &&
+        node.source !== 'feishu' &&
+        node.source !== 'apipost'
+      ) {
         throw new Error('项目同步或系统知识为只读，不能直接删除');
       }
       if (node.kind === 'directory' && !recursive) {

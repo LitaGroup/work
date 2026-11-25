@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Button } from '@appica/ui-react/button'
 import {
   Dialog,
@@ -20,6 +20,7 @@ import {
 } from '@appica/ui-react/select'
 import { Textarea } from '@appica/ui-react/textarea'
 import { api, DOCUMENT_TYPES, type DocumentType } from '../lib/api'
+import { PopoverNotice, noticeDurationMs } from './PopoverNotice'
 
 /** 文档类型选择（创建/导入弹窗共用） */
 export function DocumentTypeSelect({
@@ -152,22 +153,59 @@ function detectImportSource(url: string): 'apipost' | 'feishu' {
   return 'feishu'
 }
 
-/** 导入文档（飞书单向同步 / APIPOST 接口文档导入，按链接自动识别）；导入后回调（含新文档 id） */
-export function ImportDocumentDialog({
-  projectId,
+/** 飞书 / APIPOST 导入弹窗：需求资料与知识库共用，实际导入请求由调用方提供 */
+export function ExternalDocumentImportDialog<T extends { id: number | string }>({
+  onImport,
   onImported,
 }: {
-  projectId: number
-  onImported: (documentId?: number) => void
+  onImport: (input: {
+    url: string
+    type: DocumentType
+    description?: string
+  }) => Promise<T>
+  onImported: (document: T) => void
 }) {
   const [open, setOpen] = useState(false)
   const [url, setUrl] = useState('')
   const [type, setType] = useState<DocumentType>('需求')
   const [description, setDescription] = useState('')
-  const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+  const [feedback, setFeedback] = useState<{
+    success?: string
+    error?: string
+  } | null>(null)
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const source = detectImportSource(url)
+
+  const clearTimer = () => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current)
+      timerRef.current = null
+    }
+  }
+
+  useEffect(() => clearTimer, [])
+
+  const showFeedback = (
+    next: NonNullable<typeof feedback>,
+    after?: () => void,
+  ) => {
+    clearTimer()
+    setFeedback(next)
+    timerRef.current = setTimeout(() => {
+      setFeedback(null)
+      after?.()
+    }, noticeDurationMs(next.error))
+  }
+
+  const handleOpenChange = (next: boolean) => {
+    setOpen(next)
+    if (!next) {
+      clearTimer()
+      setFeedback(null)
+    }
+  }
 
   const handleUrlChange = (value: string) => {
     setUrl(value)
@@ -176,35 +214,29 @@ export function ImportDocumentDialog({
   }
 
   const submit = () => {
-    setError(null)
+    if (!url.trim() || loading) return
     setLoading(true)
-    const call =
-      source === 'apipost'
-        ? api.importApipostDocument({
-            projectId,
-            url,
-            type,
-            description: description || undefined,
-          })
-        : api.importFeishuDocument({
-            projectId,
-            type,
-            url,
-            description: description || undefined,
-          })
-    call
-      .then((doc) => {
-        setOpen(false)
-        setUrl('')
-        setDescription('')
-        onImported(doc.id)
+    onImport({
+      url: url.trim(),
+      type,
+      description: description.trim() || undefined,
+    })
+      .then((document) => {
+        showFeedback({ success: '文档已导入' }, () => {
+          setOpen(false)
+          setUrl('')
+          setDescription('')
+          onImported(document)
+        })
       })
-      .catch((e: Error) => setError(e.message))
+      .catch((e: Error) =>
+        showFeedback({ error: e.message || '导入失败' }),
+      )
       .finally(() => setLoading(false))
   }
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger render={<Button size="sm" />}>导入文档</DialogTrigger>
       <DialogContent>
         <DialogHeader>
@@ -226,7 +258,7 @@ export function ImportDocumentDialog({
               {url.trim() && (
                 <span className="text-xs text-foreground-muted">
                   {source === 'apipost'
-                    ? '已识别为 APIPOST 链接，将导入为接口文档（内容存 swagger JSON）'
+                    ? '已识别为 APIPOST 链接，将转换为 Markdown 并参与知识检索'
                     : '已识别为飞书链接，将单向同步为 Markdown'}
                 </span>
               )}
@@ -240,18 +272,53 @@ export function ImportDocumentDialog({
                 rows={3}
               />
             </label>
-            {error && <p className="text-sm">导入失败:{error}</p>}
           </div>
         </DialogBody>
         <DialogFooter>
           <DialogClose>
             <Button variant="outline" size="sm">取消</Button>
           </DialogClose>
-          <Button size="sm" onClick={submit} disabled={!url.trim() || loading}>
-            {loading ? '导入中…' : '导入'}
-          </Button>
+          <PopoverNotice
+            open={feedback !== null}
+            success={feedback?.success}
+            error={feedback?.error}
+            onOpenChange={(next) => {
+              if (!next && feedback?.error) {
+                clearTimer()
+                setFeedback(null)
+              }
+            }}
+          >
+            <Button
+              size="sm"
+              onClick={submit}
+              disabled={!url.trim() || loading || !!feedback?.success}
+            >
+              {loading ? '导入中…' : '导入'}
+            </Button>
+          </PopoverNotice>
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  )
+}
+
+/** 需求资料导入：按链接自动选择飞书 / APIPOST 同步接口 */
+export function ImportDocumentDialog({
+  projectId,
+  onImported,
+}: {
+  projectId: number
+  onImported: (documentId?: number) => void
+}) {
+  return (
+    <ExternalDocumentImportDialog
+      onImport={({ url, type, description }) =>
+        detectImportSource(url) === 'apipost'
+          ? api.importApipostDocument({ projectId, url, type, description })
+          : api.importFeishuDocument({ projectId, type, url, description })
+      }
+      onImported={(doc) => onImported(doc.id)}
+    />
   )
 }

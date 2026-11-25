@@ -1,5 +1,7 @@
 export type KnowledgeNodeKind = 'directory' | 'article';
-export type KnowledgeNodeSource = 'native' | 'project-document' | 'system';
+export type ExternalKnowledgeSource = 'feishu' | 'apipost';
+export type KnowledgeNodeSource =
+  'native' | 'project-document' | 'system' | 'feishu' | 'apipost';
 export type KnowledgeIndexStatus = 'pending' | 'ready' | 'error';
 /** 搜索数据源：仅站内知识（飞书云文档搜索已下线） */
 export type KnowledgeSearchSource = 'project';
@@ -14,6 +16,14 @@ export interface KnowledgeNode {
   content: string | null;
   source: KnowledgeNodeSource;
   sourceDocumentId: number | null;
+  /** 外部导入的来源判重标识：飞书 feishuKey / APIPOST 规范化原文链接 */
+  sourceKey: string | null;
+  /** 外部导入的原始链接 */
+  sourceUrl: string | null;
+  /** 外部导入时选择的文档类型 */
+  documentType: string | null;
+  /** 外部导入时填写的文档描述 */
+  description: string | null;
   contentHash: string;
   indexStatus: KnowledgeIndexStatus;
   indexError: string | null;

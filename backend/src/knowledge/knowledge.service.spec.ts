@@ -34,8 +34,12 @@ describe('KnowledgeService.search', () => {
     unavailableMessage: string;
     search: jest.Mock;
     getByPath: jest.Mock;
+    getById: jest.Mock;
     listChildren: jest.Mock;
     createNode: jest.Mock;
+    findExternalNode: jest.Mock;
+    createExternalNode: jest.Mock;
+    updateExternalNode: jest.Mock;
   };
 
   beforeEach(() => {
@@ -43,7 +47,15 @@ describe('KnowledgeService.search', () => {
       isEnabled: true,
       unavailableMessage: '知识库不可用',
       search: jest.fn().mockResolvedValue(retrieval()),
-      getByPath: jest.fn().mockResolvedValue({ kind: 'directory' }),
+      getByPath: jest.fn().mockResolvedValue({
+        kind: 'directory',
+        source: 'native',
+        title: 'guides',
+      }),
+      getById: jest.fn(),
+      findExternalNode: jest.fn().mockResolvedValue(null),
+      createExternalNode: jest.fn().mockResolvedValue({ id: 'external-1' }),
+      updateExternalNode: jest.fn(),
       listChildren: jest.fn().mockResolvedValue({
         path: '/guides',
         title: 'guides',
@@ -61,6 +73,10 @@ describe('KnowledgeService.search', () => {
         content: '# 总结',
         source: 'native',
         sourceDocumentId: null,
+        sourceKey: null,
+        sourceUrl: null,
+        documentType: null,
+        description: null,
         contentHash: 'h',
         indexStatus: 'pending',
         indexError: null,
@@ -126,6 +142,91 @@ describe('KnowledgeService.search', () => {
     expect(directory.title).toBe('研发指引');
   });
 
+  it('导入外部文档时生成稳定且不冲突的路径', async () => {
+    const node = await service.importExternal({
+      parentPath: '/guides',
+      source: 'feishu',
+      sourceKey: 'docx:doc-1',
+      sourceUrl: 'https://example.feishu.cn/docx/doc-1',
+      title: '飞书部署文档',
+      content: '# 部署',
+      documentType: '技术',
+      description: '部署资料',
+    });
+
+    expect(node).toEqual({ id: 'external-1' });
+    const createCall = store.createExternalNode.mock.calls[0] as unknown as [
+      {
+        path: string;
+        source: string;
+        sourceKey: string;
+        sourceUrl: string;
+        title: string;
+        content: string;
+        documentType: string;
+        description: string;
+      },
+    ];
+    const { path, ...created } = createCall[0];
+    expect(path).toMatch(/^\/guides\/feishu-[a-f0-9]{20}$/);
+    expect(created).toEqual({
+      source: 'feishu',
+      sourceKey: 'docx:doc-1',
+      sourceUrl: 'https://example.feishu.cn/docx/doc-1',
+      title: '飞书部署文档',
+      content: '# 部署',
+      documentType: '技术',
+      description: '部署资料',
+    });
+  });
+
+  it('同目录同来源重复导入时覆盖原文章，不新建节点', async () => {
+    store.findExternalNode.mockResolvedValueOnce({
+      id: 'existing-1',
+      source: 'apipost',
+    });
+    store.updateExternalNode.mockResolvedValueOnce({ id: 'existing-1' });
+
+    await service.importExternal({
+      parentPath: '/guides',
+      source: 'apipost',
+      sourceKey: 'https://docs.apipost.net/docs/detail/1',
+      sourceUrl: 'https://docs.apipost.net/docs/detail/1',
+      title: '接口文档',
+      content: '# 接口',
+      documentType: '接口',
+    });
+
+    expect(store.updateExternalNode).toHaveBeenCalledWith('existing-1', {
+      title: '接口文档',
+      content: '# 接口',
+      sourceUrl: 'https://docs.apipost.net/docs/detail/1',
+      documentType: '接口',
+      description: undefined,
+    });
+    expect(store.createExternalNode).not.toHaveBeenCalled();
+  });
+
+  it('更新同步只更新外部导入文档', async () => {
+    store.getById
+      .mockResolvedValueOnce({ id: 'external-1', source: 'feishu' })
+      .mockResolvedValueOnce({ id: 'native-1', source: 'native' });
+    store.updateExternalNode.mockResolvedValueOnce({ id: 'external-1' });
+
+    await service.syncExternal('external-1', {
+      title: '新标题',
+      content: '# 新正文',
+    });
+    expect(store.updateExternalNode).toHaveBeenCalledWith('external-1', {
+      title: '新标题',
+      content: '# 新正文',
+    });
+
+    await expect(
+      service.syncExternal('native-1', { title: 'x', content: 'y' }),
+    ).rejects.toThrow('当前知识节点不是外部导入文档');
+  });
+
   it('按完整路径创建文章时自动交给存储层创建父目录', async () => {
     const node = await service.createArticleAtPath({
       path: '/task/handoff/20261028/TK-0001/0.md',
@@ -155,6 +256,10 @@ describe('KnowledgeService.search', () => {
       content,
       source: 'native',
       sourceDocumentId: null,
+      sourceKey: null,
+      sourceUrl: null,
+      documentType: null,
+      description: null,
       contentHash: 'h',
       indexStatus: 'ready',
       indexError: null,

@@ -17,6 +17,7 @@ import { AuthModule } from './auth/auth.module';
 import { AuthGuard } from './auth/auth.guard';
 import { ProjectsModule } from './projects/projects.module';
 import { KnowledgeModule } from './knowledge/knowledge.module';
+import { KnowledgeImportModule } from './knowledge/knowledge-import.module';
 import { DocumentsModule } from './documents/documents.module';
 import { ChecksModule } from './checks/checks.module';
 import { SchedulesModule } from './schedules/schedules.module';
@@ -83,6 +84,7 @@ import { APP_INTERCEPTOR } from '@nestjs/core';
     ProjectsModule,
     AuthModule,
     KnowledgeModule,
+    KnowledgeImportModule,
     DocumentsModule,
     ChecksModule,
     SchedulesModule,
