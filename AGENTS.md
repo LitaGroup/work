@@ -208,7 +208,7 @@
 ### 知识库
 
 - `knowledge_nodes` 维护目录/文章树，`path` 唯一；`knowledge_chunks` 按 Markdown 标题切片并保存全文向量和 Embedding。
-- 知识库支持从飞书或 APIPOST 导入文章到当前原生目录（`POST /api/docs/nodes/import`）：路径按来源标识哈希自动生成且保持稳定，同一目录同来源重复导入覆盖原文章（判重键为 `parentPath + source + sourceKey`）；APIPOST swagger 转为 Markdown 后入库。导入文章 `source` 为 `feishu` / `apipost`，正文与标题按原始链接手动「更新同步」（`POST /api/docs/nodes/:id/sync`），不允许本地修改正文、标题或移动；可从知识库删除。`/project`、`/task` 保留路径不开放导入。
+- 知识库支持从飞书或 APIPOST 导入文章到当前原生目录（`POST /api/docs/nodes/import`）：路径按来源标识哈希自动生成且保持稳定，同一目录同来源重复导入覆盖原文章（判重键为 `parentPath + source + sourceKey`）；APIPOST swagger 转为 Markdown 后入库。导入文章 `source` 为 `feishu` / `apipost`，可在导入时填写自定义标题（留空使用来源标题），自定义标题在「更新同步」（`POST /api/docs/nodes/:id/sync`）时保留；正文不允许本地修改、移动，可从知识库删除。`/project`、`/task` 保留路径不开放导入。
 - 检索为全文 + Embedding 的 RRF 混合检索，支持 `path/page/pageSize`，`pageSize` 最大 100。向量不可用时降级全文；低相似纯向量候选不进入 RRF。
 - `/project/**` 是项目文档系统镜像，通用知识写接口只读；`/task/**` 同样只读，任务文档必须走任务流程，避免绕过版本控制。
 - Agent 知识写操作按 path 定位；目录与文章的 URL 规则不可混淆。

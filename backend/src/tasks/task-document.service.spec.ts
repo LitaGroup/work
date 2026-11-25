@@ -52,6 +52,7 @@ describe('TaskDocumentService 任务文档', () => {
     sourceUrl: null,
     documentType: null,
     description: null,
+    titleCustomized: false,
     contentHash: '',
     indexStatus: 'ready',
     indexError: null,

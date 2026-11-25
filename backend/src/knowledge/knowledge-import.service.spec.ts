@@ -21,7 +21,7 @@ function buildService() {
 }
 
 describe('KnowledgeImportService', () => {
-  it('导入飞书文档时复用 feishuKey 并按当前目录写入', async () => {
+  it('导入飞书文档时支持自定义标题并按当前目录写入', async () => {
     const { service, knowledge, feishu } = buildService();
     feishu.readByUrl.mockResolvedValue({
       feishuKey: 'docx:doc-1',
@@ -33,8 +33,7 @@ describe('KnowledgeImportService', () => {
     await service.import({
       parentPath: '/guides',
       url: 'https://example.feishu.cn/docx/doc-1',
-      type: DocumentType.FEATURE,
-      description: '部署资料',
+      title: '自定义部署标题',
     });
 
     expect(feishu.readByUrl).toHaveBeenCalledWith(
@@ -45,10 +44,10 @@ describe('KnowledgeImportService', () => {
       source: 'feishu',
       sourceKey: 'docx:doc-1',
       sourceUrl: 'https://example.feishu.cn/docx/doc-1',
-      title: '飞书部署文档',
+      title: '自定义部署标题',
       content: '# 部署',
-      documentType: DocumentType.FEATURE,
-      description: '部署资料',
+      documentType: DocumentType.REQUIREMENT,
+      titleCustomized: true,
     });
   });
 
@@ -77,6 +76,7 @@ describe('KnowledgeImportService', () => {
         sourceUrl: 'https://docs.apipost.net/docs/detail/123',
         title: '接口文档-用户',
         documentType: DocumentType.API,
+        titleCustomized: false,
       }),
     );
     const importCall = knowledge.importExternal.mock.calls[0] as unknown as [
@@ -91,6 +91,8 @@ describe('KnowledgeImportService', () => {
       id: 'node-3',
       source: 'apipost',
       sourceUrl: 'https://docs.apipost.net/docs/detail/456',
+      title: '接口文档-订单',
+      titleCustomized: false,
     });
     apipost.readByUrl.mockResolvedValue({
       docsUrl: 'https://docs.apipost.net/docs/detail/456',
@@ -114,6 +116,32 @@ describe('KnowledgeImportService', () => {
     expect(syncCall[0]).toBe('node-3');
     expect(syncCall[1].title).toBe('接口文档-订单');
     expect(syncCall[1].content).toContain('订单接口说明');
+  });
+
+  it('更新同步保留用户自定义标题', async () => {
+    const { service, knowledge, feishu } = buildService();
+    knowledge.getNodeById.mockResolvedValue({
+      id: 'node-5',
+      source: 'feishu',
+      sourceUrl: 'https://example.feishu.cn/docx/doc-5',
+      title: '自定义知识标题',
+      titleCustomized: true,
+    });
+    feishu.readByUrl.mockResolvedValue({
+      feishuKey: 'docx:doc-5',
+      title: '来源新标题',
+      content: '# 新正文',
+    });
+    knowledge.syncExternal.mockResolvedValue({ id: 'node-5' });
+
+    await service.sync('node-5');
+
+    const syncCall = knowledge.syncExternal.mock.calls[0] as unknown as [
+      string,
+      { title: string; content: string },
+    ];
+    expect(syncCall[1].title).toBe('自定义知识标题');
+    expect(syncCall[1].content).toBe('# 新正文');
   });
 
   it('拒绝无效链接和非外部知识节点', async () => {

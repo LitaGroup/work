@@ -24,6 +24,8 @@ export interface KnowledgeNode {
   documentType: string | null;
   /** 外部导入时填写的文档描述 */
   description: string | null;
+  /** 是否使用用户自定义标题；同步时保留自定义标题 */
+  titleCustomized: boolean;
   contentHash: string;
   indexStatus: KnowledgeIndexStatus;
   indexError: string | null;

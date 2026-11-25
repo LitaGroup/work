@@ -40,8 +40,7 @@ export class KnowledgeImportService {
   async import(input: {
     parentPath?: string;
     url: string;
-    type?: DocumentType;
-    description?: string;
+    title?: string;
   }): Promise<KnowledgeNode> {
     const url = input.url?.trim();
     if (!url) throw new BadRequestException('文档链接不能为空');
@@ -50,19 +49,19 @@ export class KnowledgeImportService {
     }
     const source = detectSource(url);
     const documentType =
-      input.type ??
-      (source === 'apipost' ? DocumentType.API : DocumentType.REQUIREMENT);
+      source === 'apipost' ? DocumentType.API : DocumentType.REQUIREMENT;
     assertDocumentType(documentType);
     const content = await this.readSource(source, url);
+    const customTitle = input.title?.trim();
     return this.knowledge.importExternal({
       parentPath: input.parentPath || '/',
       source,
       sourceKey: content.sourceKey,
       sourceUrl: content.sourceUrl,
-      title: content.title,
+      title: customTitle || content.title,
       content: content.content,
       documentType,
-      description: input.description,
+      titleCustomized: Boolean(customTitle),
     });
   }
 
@@ -76,7 +75,7 @@ export class KnowledgeImportService {
     }
     const content = await this.readSource(node.source, node.sourceUrl);
     return this.knowledge.syncExternal(id, {
-      title: content.title,
+      title: node.titleCustomized ? node.title : content.title,
       content: content.content,
     });
   }

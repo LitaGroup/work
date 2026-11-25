@@ -48,14 +48,14 @@ describe('KnowledgeImportController routes', () => {
       .send({
         parentPath: '/guides',
         url: 'https://example.feishu.cn/docx/doc-1',
-        type: '技术',
+        title: '自定义标题',
       })
       .expect(200);
 
     expect(imports.import).toHaveBeenCalledWith({
       parentPath: '/guides',
       url: 'https://example.feishu.cn/docx/doc-1',
-      type: '技术',
+      title: '自定义标题',
     });
   });
 

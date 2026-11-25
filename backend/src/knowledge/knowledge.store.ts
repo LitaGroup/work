@@ -41,6 +41,7 @@ interface NodeRow {
   source_url: string | null;
   document_type: string | null;
   description: string | null;
+  title_customized: boolean;
   content_hash: string;
   index_status: KnowledgeIndexStatus;
   index_error: string | null;
@@ -64,6 +65,7 @@ type NodeSummaryRow = Pick<
   | 'source_url'
   | 'document_type'
   | 'description'
+  | 'title_customized'
   | 'index_status'
   | 'created_at'
   | 'updated_at'
@@ -71,7 +73,7 @@ type NodeSummaryRow = Pick<
 
 const NODE_SUMMARY_COLUMNS = `id, kind, path, parent_path, name, title, source,
        source_document_id, source_key, source_url, document_type, description,
-       index_status, created_at, updated_at`;
+       title_customized, index_status, created_at, updated_at`;
 
 interface ChunkRow {
   id: string;
@@ -102,6 +104,7 @@ function mapNode(row: NodeRow): KnowledgeNode {
     sourceUrl: row.source_url,
     documentType: row.document_type,
     description: row.description,
+    titleCustomized: row.title_customized,
     contentHash: row.content_hash,
     indexStatus: row.index_status,
     indexError: row.index_error,
@@ -125,6 +128,7 @@ function mapSummary(row: NodeSummaryRow): KnowledgeNodeSummary {
     sourceUrl: row.source_url,
     documentType: row.document_type,
     description: row.description,
+    titleCustomized: row.title_customized,
     indexStatus: row.index_status,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -290,6 +294,7 @@ export class KnowledgeStore implements OnApplicationBootstrap, OnModuleDestroy {
           source_url text,
           document_type text,
           description text,
+          title_customized boolean NOT NULL DEFAULT false,
           content_hash text NOT NULL DEFAULT '',
           index_status text NOT NULL DEFAULT 'pending'
             CHECK (index_status IN ('pending', 'ready', 'error')),
@@ -305,7 +310,8 @@ export class KnowledgeStore implements OnApplicationBootstrap, OnModuleDestroy {
           ADD COLUMN IF NOT EXISTS source_key text,
           ADD COLUMN IF NOT EXISTS source_url text,
           ADD COLUMN IF NOT EXISTS document_type text,
-          ADD COLUMN IF NOT EXISTS description text
+          ADD COLUMN IF NOT EXISTS description text,
+          ADD COLUMN IF NOT EXISTS title_customized boolean NOT NULL DEFAULT false
       `);
       await client.query(`
         DO $$
@@ -591,6 +597,7 @@ export class KnowledgeStore implements OnApplicationBootstrap, OnModuleDestroy {
     content: string;
     documentType: string;
     description?: string | null;
+    titleCustomized?: boolean;
   }): Promise<KnowledgeNode> {
     const normalized = normalizeKnowledgePath(input.path);
     if (normalized.path === '/') throw new Error('不能创建根目录');
@@ -605,8 +612,8 @@ export class KnowledgeStore implements OnApplicationBootstrap, OnModuleDestroy {
         `INSERT INTO knowledge_nodes
            (kind, path, parent_path, name, title, content, source,
             source_key, source_url, document_type, description,
-            content_hash, index_status)
-         VALUES ('article', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending')
+            title_customized, content_hash, index_status)
+         VALUES ('article', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'pending')
          RETURNING *`,
         [
           normalized.path,
@@ -619,6 +626,7 @@ export class KnowledgeStore implements OnApplicationBootstrap, OnModuleDestroy {
           input.sourceUrl,
           input.documentType,
           input.description?.trim() || null,
+          input.titleCustomized ?? false,
           hashContent(title, content),
         ],
       );
@@ -636,6 +644,7 @@ export class KnowledgeStore implements OnApplicationBootstrap, OnModuleDestroy {
       documentType?: string;
       /** undefined 保持原值，null 清空 */
       description?: string | null;
+      titleCustomized?: boolean;
     },
   ): Promise<KnowledgeNode> {
     return this.withTransaction(async (client) => {
@@ -659,14 +668,15 @@ export class KnowledgeStore implements OnApplicationBootstrap, OnModuleDestroy {
           : input.description?.trim() || null;
       const sourceUrl = input.sourceUrl ?? node.source_url;
       const documentType = input.documentType ?? node.document_type;
+      const titleCustomized = input.titleCustomized ?? node.title_customized;
       if (node.content_hash === hashContent(title, content)) {
         const metadataUpdated = await client.query<NodeRow>(
           `UPDATE knowledge_nodes
            SET source_url = $2, document_type = $3, description = $4,
-               updated_at = now()
+               title_customized = $5, updated_at = now()
            WHERE id = $1
            RETURNING *`,
-          [id, sourceUrl, documentType, description],
+          [id, sourceUrl, documentType, description, titleCustomized],
         );
         return mapNode(metadataUpdated.rows[0]);
       }
@@ -674,8 +684,9 @@ export class KnowledgeStore implements OnApplicationBootstrap, OnModuleDestroy {
         `UPDATE knowledge_nodes
          SET title = $2, content = $3, source_url = $4,
              document_type = $5, description = $6,
-             content_hash = $7, index_status = 'pending',
-             index_error = NULL, index_attempts = 0, updated_at = now()
+             title_customized = $7, content_hash = $8,
+             index_status = 'pending', index_error = NULL,
+             index_attempts = 0, updated_at = now()
          WHERE id = $1
          RETURNING *`,
         [
@@ -685,6 +696,7 @@ export class KnowledgeStore implements OnApplicationBootstrap, OnModuleDestroy {
           sourceUrl,
           documentType,
           description,
+          titleCustomized,
           hashContent(title, content),
         ],
       );

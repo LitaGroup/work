@@ -230,6 +230,7 @@ export interface KnowledgeNode {
   sourceUrl: string | null
   documentType: string | null
   description: string | null
+  titleCustomized: boolean
   contentHash: string
   indexStatus: KnowledgeIndexStatus
   indexError: string | null
@@ -4992,8 +4993,7 @@ export const api = {
   importKnowledgeDocument: (input: {
     parentPath: string
     url: string
-    type?: DocumentType
-    description?: string
+    title?: string
   }) =>
     request<KnowledgeNode>('/docs/nodes/import', {
       method: 'POST',

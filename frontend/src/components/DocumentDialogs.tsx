@@ -157,18 +157,26 @@ function detectImportSource(url: string): 'apipost' | 'feishu' {
 export function ExternalDocumentImportDialog<T extends { id: number | string }>({
   onImport,
   onImported,
+  showDocumentType = true,
+  showDescription = true,
+  showTitle = false,
 }: {
   onImport: (input: {
     url: string
-    type: DocumentType
+    type?: DocumentType
     description?: string
+    title?: string
   }) => Promise<T>
   onImported: (document: T) => void
+  showDocumentType?: boolean
+  showDescription?: boolean
+  showTitle?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const [url, setUrl] = useState('')
   const [type, setType] = useState<DocumentType>('需求')
   const [description, setDescription] = useState('')
+  const [title, setTitle] = useState('')
   const [loading, setLoading] = useState(false)
   const [feedback, setFeedback] = useState<{
     success?: string
@@ -210,7 +218,9 @@ export function ExternalDocumentImportDialog<T extends { id: number | string }>(
   const handleUrlChange = (value: string) => {
     setUrl(value)
     // APIPOST 是接口文档，识别到后类型自动切为「接口」
-    if (detectImportSource(value) === 'apipost') setType('接口')
+    if (showDocumentType && detectImportSource(value) === 'apipost') {
+      setType('接口')
+    }
   }
 
   const submit = () => {
@@ -218,14 +228,18 @@ export function ExternalDocumentImportDialog<T extends { id: number | string }>(
     setLoading(true)
     onImport({
       url: url.trim(),
-      type,
-      description: description.trim() || undefined,
+      type: showDocumentType ? type : undefined,
+      description: showDescription
+        ? description.trim() || undefined
+        : undefined,
+      title: showTitle ? title.trim() || undefined : undefined,
     })
       .then((document) => {
         showFeedback({ success: '文档已导入' }, () => {
           setOpen(false)
           setUrl('')
           setDescription('')
+          setTitle('')
           onImported(document)
         })
       })
@@ -244,10 +258,12 @@ export function ExternalDocumentImportDialog<T extends { id: number | string }>(
         </DialogHeader>
         <DialogBody>
           <div className="flex flex-col gap-4">
-            <label className="flex flex-col gap-1 text-sm">
-              文档类型
-              <DocumentTypeSelect value={type} onChange={setType} />
-            </label>
+            {showDocumentType && (
+              <label className="flex flex-col gap-1 text-sm">
+                文档类型
+                <DocumentTypeSelect value={type} onChange={setType} />
+              </label>
+            )}
             <label className="flex flex-col gap-1 text-sm">
               文档链接
               <Input
@@ -263,15 +279,27 @@ export function ExternalDocumentImportDialog<T extends { id: number | string }>(
                 </span>
               )}
             </label>
-            <label className="flex flex-col gap-1 text-sm">
-              文档描述（可不填）
-              <Textarea
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                placeholder="简单描述这份文档的用途…"
-                rows={3}
-              />
-            </label>
+            {showTitle && (
+              <label className="flex flex-col gap-1 text-sm">
+                标题（可不填）
+                <Input
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  placeholder="不填则使用来源文档标题"
+                />
+              </label>
+            )}
+            {showDescription && (
+              <label className="flex flex-col gap-1 text-sm">
+                文档描述（可不填）
+                <Textarea
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  placeholder="简单描述这份文档的用途…"
+                  rows={3}
+                />
+              </label>
+            )}
           </div>
         </DialogBody>
         <DialogFooter>
@@ -313,7 +341,7 @@ export function ImportDocumentDialog({
 }) {
   return (
     <ExternalDocumentImportDialog
-      onImport={({ url, type, description }) =>
+      onImport={({ url, type = '需求', description }) =>
         detectImportSource(url) === 'apipost'
           ? api.importApipostDocument({ projectId, url, type, description })
           : api.importFeishuDocument({ projectId, type, url, description })

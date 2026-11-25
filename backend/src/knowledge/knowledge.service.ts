@@ -190,6 +190,7 @@ export class KnowledgeService {
     content: string;
     documentType: string;
     description?: string | null;
+    titleCustomized?: boolean;
   }): Promise<KnowledgeNode> {
     this.assertEnabled();
     const parent = this.normalize(input.parentPath || '/');
@@ -218,6 +219,7 @@ export class KnowledgeService {
           sourceUrl: input.sourceUrl,
           documentType: input.documentType,
           description: input.description,
+          titleCustomized: input.titleCustomized ?? false,
         });
       } catch (error) {
         throw this.storeError(error);
@@ -241,6 +243,7 @@ export class KnowledgeService {
         content: input.content,
         documentType: input.documentType,
         description: input.description,
+        titleCustomized: input.titleCustomized ?? false,
       });
     } catch (error) {
       if (isUniqueViolation(error)) {

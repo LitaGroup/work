@@ -123,6 +123,7 @@ describe('KnowledgeController routes', () => {
       sourceUrl: null,
       documentType: null,
       description: null,
+      titleCustomized: false,
       contentHash: 'hash',
       indexStatus: 'pending' as const,
       indexError: null,

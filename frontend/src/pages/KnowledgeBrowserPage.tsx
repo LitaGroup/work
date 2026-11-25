@@ -239,12 +239,14 @@ function KnowledgeDirectoryView({
               />
               {canImport && (
                 <ExternalDocumentImportDialog
-                  onImport={({ url, type, description }) =>
+                  showDocumentType={false}
+                  showDescription={false}
+                  showTitle
+                  onImport={({ url, title }) =>
                     api.importKnowledgeDocument({
                       parentPath: directory.path,
                       url,
-                      type,
-                      description,
+                      title,
                     })
                   }
                   onImported={(node) => {

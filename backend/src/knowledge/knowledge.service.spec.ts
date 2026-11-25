@@ -77,6 +77,7 @@ describe('KnowledgeService.search', () => {
         sourceUrl: null,
         documentType: null,
         description: null,
+        titleCustomized: false,
         contentHash: 'h',
         indexStatus: 'pending',
         indexError: null,
@@ -165,6 +166,7 @@ describe('KnowledgeService.search', () => {
         content: string;
         documentType: string;
         description: string;
+        titleCustomized: boolean;
       },
     ];
     const { path, ...created } = createCall[0];
@@ -177,6 +179,7 @@ describe('KnowledgeService.search', () => {
       content: '# 部署',
       documentType: '技术',
       description: '部署资料',
+      titleCustomized: false,
     });
   });
 
@@ -203,6 +206,7 @@ describe('KnowledgeService.search', () => {
       sourceUrl: 'https://docs.apipost.net/docs/detail/1',
       documentType: '接口',
       description: undefined,
+      titleCustomized: false,
     });
     expect(store.createExternalNode).not.toHaveBeenCalled();
   });
@@ -260,6 +264,7 @@ describe('KnowledgeService.search', () => {
       sourceUrl: null,
       documentType: null,
       description: null,
+      titleCustomized: false,
       contentHash: 'h',
       indexStatus: 'ready',
       indexError: null,

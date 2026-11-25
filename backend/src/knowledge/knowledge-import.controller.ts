@@ -1,5 +1,4 @@
 import { Body, Controller, HttpCode, Param, Post } from '@nestjs/common';
-import { DocumentType } from '../common/enums';
 import { assertTaskDocumentWritable } from './task-document.guard';
 import { KnowledgeImportService } from './knowledge-import.service';
 import { KnowledgeService } from './knowledge.service';
@@ -7,8 +6,8 @@ import { KnowledgeService } from './knowledge.service';
 class ImportKnowledgeDocumentDto {
   parentPath?: string;
   url: string;
-  type?: DocumentType;
-  description?: string;
+  /** 自定义标题；留空使用来源文档标题 */
+  title?: string;
 }
 
 @Controller('docs')
