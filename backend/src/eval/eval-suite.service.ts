@@ -57,6 +57,39 @@ export interface EvalSuiteExport {
   }>;
 }
 
+/** 单个标签最大长度 */
+export const EVAL_SUITE_TAG_MAX_LENGTH = 20;
+
+/** 单个测试集最多标签数 */
+export const EVAL_SUITE_TAG_MAX_COUNT = 20;
+
+/** 标签归一化：去首尾空格、忽略空值、按原写法去重 */
+export function normalizeEvalSuiteTags(tags: unknown): string[] {
+  if (!Array.isArray(tags)) {
+    throw new BadRequestException('标签必须为字符串数组');
+  }
+  const result: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of tags) {
+    if (typeof raw !== 'string') {
+      throw new BadRequestException('标签必须为字符串数组');
+    }
+    const tag = raw.trim();
+    if (!tag || seen.has(tag)) continue;
+    if (tag.length > EVAL_SUITE_TAG_MAX_LENGTH) {
+      throw new BadRequestException(
+        `单个标签不能超过 ${EVAL_SUITE_TAG_MAX_LENGTH} 个字符`,
+      );
+    }
+    seen.add(tag);
+    result.push(tag);
+  }
+  if (result.length > EVAL_SUITE_TAG_MAX_COUNT) {
+    throw new BadRequestException(`标签最多 ${EVAL_SUITE_TAG_MAX_COUNT} 个`);
+  }
+  return result;
+}
+
 /** 测试集 CRUD（14.1）：用例随测试集维护，要点随用例整体替换；支持 JSON 导入导出。 */
 @Injectable()
 export class EvalSuiteService {
@@ -120,6 +153,7 @@ export class EvalSuiteService {
       this.suites.create({
         name,
         description: input.description?.trim() || null,
+        tags: [],
         purpose: input.purpose ?? EvalSuitePurpose.VALIDATION,
         passThreshold: clampThreshold(input.passThreshold ?? 80),
         defaultTimeoutSec: clampPositive(input.defaultTimeoutSec ?? 1800, 1800),
@@ -166,6 +200,21 @@ export class EvalSuiteService {
     if (input.status) patch.status = input.status;
     patch.version = suite.version + 1;
     await this.suites.update({ id: suiteId }, patch);
+    return this.suites.findOneOrFail({ where: { id: suiteId } });
+  }
+
+  /** 更新标签：仅分类元数据，不递增评估版本 */
+  async updateTags(suiteId: number, tags: unknown): Promise<EvalSuite> {
+    const suite = await this.suites.findOne({ where: { id: suiteId } });
+    if (!suite) throw new NotFoundException('测试集不存在');
+    const normalized = normalizeEvalSuiteTags(tags);
+    if (
+      normalized.length === (suite.tags ?? []).length &&
+      normalized.every((tag, index) => tag === suite.tags[index])
+    ) {
+      return suite;
+    }
+    await this.suites.update({ id: suiteId }, { tags: normalized });
     return this.suites.findOneOrFail({ where: { id: suiteId } });
   }
 

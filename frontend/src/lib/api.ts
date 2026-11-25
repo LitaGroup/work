@@ -2743,6 +2743,10 @@ export type EvalSuitePurpose = (typeof EVAL_SUITE_PURPOSES)[number]
 export const EVAL_SUITE_STATUSES = ['启用', '归档'] as const
 export type EvalSuiteStatus = (typeof EVAL_SUITE_STATUSES)[number]
 
+/** 与后端 eval-suite.service.ts 的标签限制保持一致 */
+export const EVAL_SUITE_TAG_MAX_LENGTH = 20
+export const EVAL_SUITE_TAG_MAX_COUNT = 20
+
 export const EVAL_RUN_STATUSES = ['排队', '执行中', '已完成', '已取消'] as const
 export type EvalRunStatus = (typeof EVAL_RUN_STATUSES)[number]
 
@@ -2774,6 +2778,7 @@ export interface EvalSuite {
   id: number
   name: string
   description: string | null
+  tags: string[]
   purpose: EvalSuitePurpose
   passThreshold: number
   defaultTimeoutSec: number
@@ -5022,6 +5027,11 @@ export const api = {
     request<EvalSuite>(`/eval/suites/${suiteId}`, {
       method: 'PUT',
       body: JSON.stringify(input),
+    }),
+  updateEvalSuiteTags: (suiteId: number, tags: string[]) =>
+    request<EvalSuite>(`/eval/suites/${suiteId}/tags`, {
+      method: 'PUT',
+      body: JSON.stringify({ tags }),
     }),
   archiveEvalSuite: (suiteId: number) =>
     request<EvalSuite>(`/eval/suites/${suiteId}/archive`, { method: 'POST' }),

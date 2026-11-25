@@ -30,6 +30,7 @@ import {
   type Worker,
 } from '../lib/api'
 import { PopoverNotice, noticeDurationMs } from '../components/PopoverNotice'
+import { EvalSuiteTags } from '../components/EvalSuiteTags'
 
 /** 空用例模板 */
 function emptyCase(seq: number): EvalCaseWithPoints {
@@ -260,6 +261,15 @@ export function EvaluationSuitePage() {
             通过阈值：{detail.suite.passThreshold}｜超时：{detail.suite.defaultTimeoutSec}s｜
             提问上限：{detail.suite.maxQuestions} 次/项
           </p>
+          <EvalSuiteTags
+            className="mt-2"
+            suite={detail.suite}
+            onUpdated={(updated) =>
+              setDetail((prev) =>
+                prev ? { ...prev, suite: updated } : prev,
+              )
+            }
+          />
         </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" onClick={importJson}>

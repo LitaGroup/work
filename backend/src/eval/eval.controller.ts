@@ -92,6 +92,16 @@ export class EvalController {
     return this.suites.update(suiteId, body);
   }
 
+  @Put('suites/:suiteId/tags')
+  updateSuiteTags(
+    @Req() req: AuthedRequest,
+    @Param('suiteId', ParseIntPipe) suiteId: number,
+    @Body() body: { tags?: string[] },
+  ) {
+    this.requireAdmin(req);
+    return this.suites.updateTags(suiteId, body.tags);
+  }
+
   @Post('suites/:suiteId/archive')
   archiveSuite(
     @Req() req: AuthedRequest,

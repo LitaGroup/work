@@ -29,6 +29,7 @@ import {
   type EvalSuiteSummary,
 } from '../lib/api'
 import { PopoverNotice, noticeDurationMs } from '../components/PopoverNotice'
+import { EvalSuiteTags } from '../components/EvalSuiteTags'
 
 /** 机器人评估 · 测试集列表（评估批次见「评估记录」） */
 export function EvaluationsPage() {
@@ -113,6 +114,7 @@ export function EvaluationsPage() {
           <TableHeader>
             <TableRow>
               <TableHead>名称</TableHead>
+              <TableHead className="w-64">标签</TableHead>
               <TableHead className="w-24">用途</TableHead>
               <TableHead className="w-24">用例数</TableHead>
               <TableHead className="w-20">版本</TableHead>
@@ -135,6 +137,22 @@ export function EvaluationsPage() {
                       {suite.description}
                     </p>
                   )}
+                </TableCell>
+                <TableCell>
+                  <EvalSuiteTags
+                    suite={suite}
+                    onUpdated={(updated) =>
+                      setSuites((prev) =>
+                        prev
+                          ? prev.map((row) =>
+                              row.id === updated.id
+                                ? { ...row, ...updated }
+                                : row,
+                            )
+                          : prev,
+                      )
+                    }
+                  />
                 </TableCell>
                 <TableCell>
                   <Badge variant="secondary" size="sm">
@@ -167,7 +185,7 @@ export function EvaluationsPage() {
             ))}
             {suites && suites.length === 0 && (
               <TableRow>
-                <TableCell colSpan={6} className="text-foreground-muted">
+                <TableCell colSpan={7} className="text-foreground-muted">
                   还没有测试集。点击右上角「新建测试集」，添加 Prompt 与期望要点。
                 </TableCell>
               </TableRow>

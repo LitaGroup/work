@@ -24,6 +24,10 @@ export class EvalSuite {
   @Column({ type: 'text', nullable: true })
   description: string | null;
 
+  /** 标签：人工维护的分类元数据，不参与评估计分和批次快照 */
+  @Column({ type: 'jsonb', default: () => "'[]'::jsonb" })
+  tags: string[];
+
   /** 用途：训练（优化机器人可见）/ 验证（优化机器人不可见） */
   @Column({
     type: 'varchar',
