@@ -80,14 +80,17 @@ export class KnowledgeService {
   async readDirectory(path: string): Promise<KnowledgeDirectory> {
     this.assertEnabled();
     const normalized = this.normalize(path);
+    let title = '知识库';
     if (normalized !== '/') {
       const node = await this.store.getByPath(normalized);
       if (!node) throw new NotFoundException(`目录 ${normalized} 不存在`);
       if (node.kind !== 'directory') {
         throw new NotFoundException(`${normalized} 是文章，不是目录`);
       }
+      title = node.title;
     }
-    return this.store.listChildren(normalized);
+    const directory = await this.store.listChildren(normalized);
+    return { ...directory, title };
   }
 
   async readArticle(path: string): Promise<KnowledgeNode> {

@@ -39,16 +39,18 @@ import {
   TableHead,
   TableCell,
 } from '@appica/ui-react/table'
-import { Book, Folder } from '@appica/icons-react'
+import { Folder } from '@appica/icons-react'
 import {
   api,
   knowledgeMdPath,
   knowledgeWebPath,
   type KnowledgeDirectory,
   type KnowledgeNode,
+  type KnowledgeNodeSummary,
 } from '../lib/api'
 import { PageBreadcrumb } from '../components/PageBreadcrumb'
 import { MarkdownEditor, type MarkdownEditorHandle } from '../components/MarkdownEditor'
+import { PopoverNotice, noticeDurationMs } from '../components/PopoverNotice'
 import { splitFrontmatter } from '../lib/doc-frontmatter'
 
 interface KnowledgeLocation {
@@ -187,148 +189,253 @@ function KnowledgeDirectoryView({
   const total = directory.directories.length + directory.articles.length
   const managedByTaskCenter = isTaskDocumentPath(directory.path)
   return (
-    <div className="flex h-full min-h-0 gap-5">
-      <aside className="w-56 shrink-0 border-r border-border-strong pr-4">
-        <Link
-          to={knowledgeWebPath('/', true)}
-          className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm font-medium text-foreground-intense hover:bg-background-muted"
-        >
-          <Book size={17} />
-          知识库
-        </Link>
-        <p className="mt-4 mb-1 px-2 text-xs text-foreground-muted">当前目录</p>
-        <div className="flex flex-col gap-0.5">
-          {directory.directories.map((node) => (
-            <Link
-              key={node.id}
-              to={knowledgeWebPath(node.path, true)}
-              className="flex items-center gap-2 truncate rounded-md px-2 py-1.5 text-sm text-foreground-muted hover:bg-background-muted hover:text-foreground-intense"
-              title={node.path}
-            >
-              <Folder size={15} className="shrink-0" />
-              <span className="truncate">{node.name}</span>
-            </Link>
-          ))}
-          {directory.directories.length === 0 && (
-            <span className="px-2 text-xs text-foreground-muted">暂无子目录</span>
+    <div className="min-w-0">
+      <PageBreadcrumb items={crumbs} />
+      <div className="mt-3 mb-4 flex items-center justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold">
+            {directory.path === '/' ? '知识库' : directory.title}
+          </h1>
+          <p className="mt-1 font-mono text-xs text-foreground-muted">
+            {directory.path === '/' ? '/' : `${directory.path}/`}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          {managedByTaskCenter ? (
+            <span className="text-xs text-foreground-muted">
+              任务文档由任务中心维护
+            </span>
+          ) : (
+            <>
+              <CreateKnowledgeDialog
+                kind="directory"
+                parentPath={directory.path}
+                onSaved={onChanged}
+              />
+              <CreateKnowledgeDialog
+                kind="article"
+                parentPath={directory.path}
+                onSaved={onChanged}
+              />
+            </>
           )}
         </div>
-      </aside>
-
-      <div className="min-w-0 flex-1">
-        <PageBreadcrumb items={crumbs} />
-        <div className="mt-3 mb-4 flex items-center justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-semibold">
-              {directory.path === '/' ? '知识库' : directory.title}
-            </h1>
-            <p className="mt-1 font-mono text-xs text-foreground-muted">
-              {directory.path === '/' ? '/' : `${directory.path}/`}
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            {managedByTaskCenter ? (
-              <span className="text-xs text-foreground-muted">
-                任务文档由任务中心维护
-              </span>
-            ) : (
-              <>
-                <CreateKnowledgeDialog
-                  kind="directory"
-                  parentPath={directory.path}
-                  onSaved={onChanged}
-                />
-                <CreateKnowledgeDialog
-                  kind="article"
-                  parentPath={directory.path}
-                  onSaved={onChanged}
-                />
-              </>
-            )}
-          </div>
-        </div>
-
-        <Table hoverableRows>
-          <TableHeader>
-            <TableRow>
-              <TableHead>名称</TableHead>
-              <TableHead className="w-24 text-center">类型</TableHead>
-              <TableHead className="w-40">更新时间</TableHead>
-              <TableHead className="w-28 text-center">操作</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {directory.directories.map((node) => (
-              <TableRow key={node.id}>
-                <TableCell>
-                  <Link
-                    to={knowledgeWebPath(node.path, true)}
-                    className="flex items-center gap-2 text-foreground-intense underline"
-                  >
-                    <Folder size={16} />
-                    {node.title}/
-                  </Link>
-                </TableCell>
-                <TableCell className="text-center">
-                  <Badge variant="secondary">目录</Badge>
-                </TableCell>
-                <TableCell>
-                  {new Date(node.updatedAt).toLocaleString()}
-                </TableCell>
-                <TableCell className="text-center">
-                  {isTaskDocumentPath(node.path) ? (
-                    <span className="text-xs text-foreground-muted">
-                      任务中心维护
-                    </span>
-                  ) : (
-                    <DeleteKnowledgeButton node={node} onDeleted={onChanged} />
-                  )}
-                </TableCell>
-              </TableRow>
-            ))}
-            {directory.articles.map((node) => (
-              <TableRow key={node.id}>
-                <TableCell>
-                  <Link
-                    to={knowledgeWebPath(node.path, false)}
-                    className="text-foreground-intense underline"
-                  >
-                    {node.title}
-                  </Link>
-                </TableCell>
-                <TableCell className="text-center">
-                  <Badge variant="soft">
-                    {node.source === 'native' ? '知识' : '项目文档'}
-                  </Badge>
-                </TableCell>
-                <TableCell>
-                  {new Date(node.updatedAt).toLocaleString()}
-                </TableCell>
-                <TableCell className="text-center">
-                  {isTaskDocumentPath(node.path) ? (
-                    <span className="text-xs text-foreground-muted">
-                      任务中心维护
-                    </span>
-                  ) : node.source === 'native' ? (
-                    <DeleteKnowledgeButton node={node} onDeleted={onChanged} />
-                  ) : (
-                    <span className="text-xs text-foreground-muted">系统同步</span>
-                  )}
-                </TableCell>
-              </TableRow>
-            ))}
-            {total === 0 && (
-              <TableRow>
-                <TableCell colSpan={4}>
-                  当前目录为空。可新建文章或子目录；项目文档同步后会出现在 /project
-                  下。
-                </TableCell>
-              </TableRow>
-            )}
-          </TableBody>
-        </Table>
       </div>
+
+      <Table hoverableRows>
+        <TableHeader>
+          <TableRow>
+            <TableHead>名称</TableHead>
+            <TableHead className="w-24 text-center">类型</TableHead>
+            <TableHead className="w-40">更新时间</TableHead>
+            <TableHead className="w-40 text-center">操作</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {directory.directories.map((node) => (
+            <KnowledgeDirectoryRow
+              key={node.id}
+              node={node}
+              onChanged={onChanged}
+            />
+          ))}
+          {directory.articles.map((node) => (
+            <TableRow key={node.id}>
+              <TableCell>
+                <Link
+                  to={knowledgeWebPath(node.path, false)}
+                  className="text-foreground-intense underline"
+                >
+                  {node.title}
+                </Link>
+              </TableCell>
+              <TableCell className="text-center">
+                <Badge variant="soft">
+                  {node.source === 'native' ? '知识' : '项目文档'}
+                </Badge>
+              </TableCell>
+              <TableCell>
+                {new Date(node.updatedAt).toLocaleString()}
+              </TableCell>
+              <TableCell className="text-center">
+                {isTaskDocumentPath(node.path) ? (
+                  <span className="text-xs text-foreground-muted">
+                    任务中心维护
+                  </span>
+                ) : node.source === 'native' ? (
+                  <DeleteKnowledgeButton node={node} onDeleted={onChanged} />
+                ) : (
+                  <span className="text-xs text-foreground-muted">系统同步</span>
+                )}
+              </TableCell>
+            </TableRow>
+          ))}
+          {total === 0 && (
+            <TableRow>
+              <TableCell colSpan={4}>
+                当前目录为空。可新建文章或子目录；项目文档同步后会出现在 /project
+                下。
+              </TableCell>
+            </TableRow>
+          )}
+        </TableBody>
+      </Table>
     </div>
+  )
+}
+
+function KnowledgeDirectoryRow({
+  node,
+  onChanged,
+}: {
+  node: KnowledgeNodeSummary
+  onChanged: () => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [name, setName] = useState(node.title)
+  const [pending, setPending] = useState(false)
+  const [feedback, setFeedback] = useState<{
+    success?: string
+    error?: string
+  } | null>(null)
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const managedByTaskCenter = isTaskDocumentPath(node.path)
+  const canRename = node.source === 'native' && !managedByTaskCenter
+
+  const clearTimer = () => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current)
+      timerRef.current = null
+    }
+  }
+
+  useEffect(() => clearTimer, [])
+
+  const showFeedback = (
+    next: NonNullable<typeof feedback>,
+    after?: () => void,
+  ) => {
+    clearTimer()
+    setFeedback(next)
+    timerRef.current = setTimeout(() => {
+      setFeedback(null)
+      after?.()
+    }, noticeDurationMs(next.error))
+  }
+
+  const startEditing = () => {
+    setName(node.title)
+    setFeedback(null)
+    setEditing(true)
+  }
+
+  const cancelEditing = () => {
+    if (pending) return
+    clearTimer()
+    setFeedback(null)
+    setEditing(false)
+  }
+
+  const save = () => {
+    if (pending) return
+    const next = name.trim() || node.name
+    setPending(true)
+    api
+      .updateKnowledgeNode(node.id, { title: next })
+      .then(() => {
+        showFeedback({ success: '名称已保存' }, () => {
+          setEditing(false)
+          onChanged()
+        })
+      })
+      .catch((e: Error) =>
+        showFeedback({ error: e.message || '保存失败' }),
+      )
+      .finally(() => setPending(false))
+  }
+
+  return (
+    <TableRow>
+      <TableCell>
+        {editing ? (
+          <div className="flex items-center gap-2">
+            <Folder size={16} className="shrink-0" />
+            <Input
+              autoFocus
+              value={name}
+              placeholder={node.name}
+              className="h-7 w-56"
+              onChange={(event) => setName(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault()
+                  save()
+                } else if (event.key === 'Escape') {
+                  event.preventDefault()
+                  cancelEditing()
+                }
+              }}
+              aria-label="目录名称"
+            />
+            <PopoverNotice
+              open={feedback !== null}
+              success={feedback?.success}
+              error={feedback?.error}
+              onOpenChange={(open) => {
+                if (!open && feedback?.error) {
+                  clearTimer()
+                  setFeedback(null)
+                }
+              }}
+              align="start"
+            >
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={pending || !!feedback?.success}
+                onClick={save}
+              >
+                {pending ? '保存中…' : '保存'}
+              </Button>
+            </PopoverNotice>
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={pending}
+              onClick={cancelEditing}
+            >
+              取消
+            </Button>
+          </div>
+        ) : (
+          <Link
+            to={knowledgeWebPath(node.path, true)}
+            className="flex items-center gap-2 text-foreground-intense underline"
+          >
+            <Folder size={16} />
+            {node.title}/
+          </Link>
+        )}
+      </TableCell>
+      <TableCell className="text-center">
+        <Badge variant="secondary">目录</Badge>
+      </TableCell>
+      <TableCell>{new Date(node.updatedAt).toLocaleString()}</TableCell>
+      <TableCell className="text-center">
+        {managedByTaskCenter ? (
+          <span className="text-xs text-foreground-muted">任务中心维护</span>
+        ) : canRename ? (
+          <div className="flex items-center justify-end gap-1">
+            <Button variant="ghost" size="sm" onClick={startEditing}>
+              改名
+            </Button>
+            <DeleteKnowledgeButton node={node} onDeleted={onChanged} />
+          </div>
+        ) : (
+          <span className="text-xs text-foreground-muted">系统同步</span>
+        )}
+      </TableCell>
+    </TableRow>
   )
 }
 
@@ -508,8 +615,34 @@ function CreateKnowledgeDialog({
   const [name, setName] = useState('')
   const [title, setTitle] = useState('')
   const [content, setContent] = useState('')
-  const [error, setError] = useState<string | null>(null)
+  const [pending, setPending] = useState(false)
+  const [feedback, setFeedback] = useState<{
+    success?: string
+    error?: string
+  } | null>(null)
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isArticle = kind === 'article'
+
+  const clearTimer = () => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current)
+      timerRef.current = null
+    }
+  }
+
+  useEffect(() => clearTimer, [])
+
+  const showFeedback = (
+    next: NonNullable<typeof feedback>,
+    after?: () => void,
+  ) => {
+    clearTimer()
+    setFeedback(next)
+    timerRef.current = setTimeout(() => {
+      setFeedback(null)
+      after?.()
+    }, noticeDurationMs(next.error))
+  }
 
   const handleOpenChange = (next: boolean) => {
     setOpen(next)
@@ -517,26 +650,38 @@ function CreateKnowledgeDialog({
       setName('')
       setTitle('')
       setContent('')
-      setError(null)
+      setFeedback(null)
+    } else {
+      clearTimer()
+      setFeedback(null)
     }
   }
 
   const submit = () => {
-    setError(null)
+    if (!name.trim() || pending) return
+    setPending(true)
     api
       .createKnowledgeNode({
         kind,
         parentPath,
         name: name.trim(),
-        title: isArticle ? title.trim() || name.trim() : undefined,
+        title: title.trim() || name.trim(),
         content: isArticle ? content : undefined,
       })
       .then((node) => {
-        setOpen(false)
-        onSaved()
-        navigate(knowledgeWebPath(node.path, !isArticle))
+        showFeedback(
+          { success: isArticle ? '文章已创建' : '目录已创建' },
+          () => {
+            setOpen(false)
+            onSaved()
+            navigate(knowledgeWebPath(node.path, !isArticle))
+          },
+        )
       })
-      .catch((e: Error) => setError(e.message))
+      .catch((e: Error) =>
+        showFeedback({ error: e.message || '创建失败' }),
+      )
+      .finally(() => setPending(false))
   }
 
   return (
@@ -551,13 +696,25 @@ function CreateKnowledgeDialog({
         <DialogBody>
           <div className="flex flex-col gap-4">
             <label className="flex flex-col gap-1 text-sm">
-              路径名（一个 URL 路径段，不能包含 /）
+              {isArticle
+                ? '路径名（一个 URL 路径段，不能包含 /）'
+                : '路径（必填，一个 URL 路径段，不能包含 /）'}
               <Input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder={isArticle ? 'deploy-guide' : 'guides'}
               />
             </label>
+            {!isArticle && (
+              <label className="flex flex-col gap-1 text-sm">
+                名称（可选，不填则与路径一致）
+                <Input
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  placeholder="研发指引"
+                />
+              </label>
+            )}
             {isArticle && (
               <>
                 <label className="flex flex-col gap-1 text-sm">
@@ -584,16 +741,31 @@ function CreateKnowledgeDialog({
               {name || '…'}
               {!isArticle && '/'}
             </p>
-            {error && <p className="text-sm">创建失败：{error}</p>}
           </div>
         </DialogBody>
         <DialogFooter>
           <DialogClose>
             <Button variant="outline" size="sm">取消</Button>
           </DialogClose>
-          <Button size="sm" onClick={submit} disabled={!name.trim()}>
-            创建
-          </Button>
+          <PopoverNotice
+            open={feedback !== null}
+            success={feedback?.success}
+            error={feedback?.error}
+            onOpenChange={(next) => {
+              if (!next && feedback?.error) {
+                clearTimer()
+                setFeedback(null)
+              }
+            }}
+          >
+            <Button
+              size="sm"
+              onClick={submit}
+              disabled={!name.trim() || pending || !!feedback?.success}
+            >
+              {pending ? '创建中…' : '创建'}
+            </Button>
+          </PopoverNotice>
         </DialogFooter>
       </DialogContent>
     </Dialog>

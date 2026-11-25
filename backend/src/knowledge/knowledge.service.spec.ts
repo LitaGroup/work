@@ -34,6 +34,7 @@ describe('KnowledgeService.search', () => {
     unavailableMessage: string;
     search: jest.Mock;
     getByPath: jest.Mock;
+    listChildren: jest.Mock;
     createNode: jest.Mock;
   };
 
@@ -43,6 +44,13 @@ describe('KnowledgeService.search', () => {
       unavailableMessage: '知识库不可用',
       search: jest.fn().mockResolvedValue(retrieval()),
       getByPath: jest.fn().mockResolvedValue({ kind: 'directory' }),
+      listChildren: jest.fn().mockResolvedValue({
+        path: '/guides',
+        title: 'guides',
+        parentPath: '/',
+        directories: [],
+        articles: [],
+      }),
       createNode: jest.fn().mockResolvedValue({
         id: 'n2',
         kind: 'article',
@@ -104,6 +112,18 @@ describe('KnowledgeService.search', () => {
     await expect(
       service.search({ query: '部署', path: '/missing' }),
     ).rejects.toThrow('搜索目录 /missing 不存在');
+  });
+
+  it('目录详情使用节点已保存的名称而不是路径段', async () => {
+    store.getByPath.mockResolvedValueOnce({
+      kind: 'directory',
+      title: '研发指引',
+    });
+
+    const directory = await service.readDirectory('/guides');
+
+    expect(store.listChildren).toHaveBeenCalledWith('/guides');
+    expect(directory.title).toBe('研发指引');
   });
 
   it('按完整路径创建文章时自动交给存储层创建父目录', async () => {
