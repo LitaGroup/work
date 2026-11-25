@@ -203,6 +203,41 @@ interface InitializeJob {
 }
 
 /**
+ * 平台固定文案指纹：AGENTS.md 中不来自数据源、只随代码变化的章节
+ *（协同协议 + 目录结构）。
+ *
+ * 工位同步以 revision 判等跳过，而 revision 只覆盖 prompt/技能/规范等数据源；
+ * 平台改这里的文案而不升 STATION_SYNC_VERSION 时，已初始化的工位会静默留旧文案。
+ * 把这段文案的 sha256 并入 revision 即可自动触发一次重同步。
+ */
+export function stationTemplateFingerprint(
+  appUrl: string,
+  kernel: ExecutorType,
+): string {
+  return createHash('sha256')
+    .update(buildTaskCollaborationAgents(appUrl))
+    .update('\n')
+    .update(buildDirectoryAgentsSection(kernel))
+    .digest('hex');
+}
+
+/** 写入 AGENTS.md 的目录结构章节（按内核列出适配物） */
+export function buildDirectoryAgentsSection(kernel: ExecutorType): string {
+  return `## 目录结构
+
+- AGENTS.md    机器人的工作基本原则
+- .agents/     通用 Agent 目录（内核无关的技能、规范与平台注入内容）
+- .agents/.env   平台注入的工位环境变量（权限 600，不得读取展示、改写或删除）：LITA_WORK_TOKEN 访问项目平台 .md 接口（新名，优先）、LITA_PROJECT_TOKEN 兼容旧名（同值）、LITA_USER_TOKEN 访问 Lita 平台技能、LITA_APP_URL 平台访问地址
+- .agents/mcp.json   平台注入的内核无关 MCP 声明（权限 600，含凭据，不得读取展示、改写或删除）
+- .agents/skills/    当前机器人的技能源目录（opencode、devin 原生发现；kiro、droid 需镜像）
+- .agents/rules/     平台同步的规范与规则源文档（保持规范库原始目录结构；.standards-manifest.json 是受管清单）
+- .agents/rules/.standards-manifest.json   本次同步的规范文件清单（JSON：{"version":1,"files":[...]}）
+- docs/         机器人自行维护的知识文档（可以根据完成任务的情况更新总结）
+- .agents/.station-manifest.json   平台同步版本与文件校验清单（不得读取展示、改写或删除）
+- 内核适配物（平台按执行器类型生成，权限 600，不得读取展示、改写或删除）：当前内核 ${kernel}；opencode 为 .opencode/opencode.json 与 .opencode/rules 镜像；kiro 为 .kiro/settings/mcp.json 与 .kiro/skills、.kiro/steering 镜像；devin 为 .devin/mcp_config.json；droid 为 .factory/mcp.json 与 .factory/skills、.factory/rules 镜像`;
+}
+
+/**
  * 机器人工作环境初始化：把数据库中的 AGENTS.md、技能引用与规范引用应用到工位。
  * 工位目录结构（内核无关）：
  * - AGENTS.md
@@ -777,18 +812,7 @@ export class WorkerEnvironmentService implements OnModuleDestroy {
   }
 
   private buildDirectorySection(kernel: ExecutorType): string {
-    return `## 目录结构
-
-- AGENTS.md    机器人的工作基本原则
-- .agents/     通用 Agent 目录（内核无关的技能、规范与平台注入内容）
-- .agents/.env   平台注入的工位环境变量（权限 600，不得读取展示、改写或删除）：LITA_WORK_TOKEN 访问项目平台 .md 接口（新名，优先）、LITA_PROJECT_TOKEN 兼容旧名（同值）、LITA_USER_TOKEN 访问 Lita 平台技能、LITA_APP_URL 平台访问地址
-- .agents/mcp.json   平台注入的内核无关 MCP 声明（权限 600，含凭据，不得读取展示、改写或删除）
-- .agents/skills/    当前机器人的技能源目录（opencode、devin 原生发现；kiro、droid 需镜像）
-- .agents/rules/     平台同步的规范与规则源文档（保持规范库原始目录结构；.standards-manifest.json 是受管清单）
-- .agents/rules/.standards-manifest.json   本次同步的规范文件清单（JSON：{"version":1,"files":[...]}）
-- docs/         机器人自行维护的知识文档（可以根据完成任务的情况更新总结）
-- .agents/.station-manifest.json   平台同步版本与文件校验清单（不得读取展示、改写或删除）
-- 内核适配物（平台按执行器类型生成，权限 600，不得读取展示、改写或删除）：当前内核 ${kernel}；opencode 为 .opencode/opencode.json 与 .opencode/rules 镜像；kiro 为 .kiro/settings/mcp.json 与 .kiro/skills、.kiro/steering 镜像；devin 为 .devin/mcp_config.json；droid 为 .factory/mcp.json 与 .factory/skills、.factory/rules 镜像`;
+    return buildDirectoryAgentsSection(kernel);
   }
 
   /** 下载源仓库目录下的全部文件，并映射到工位路径 */
@@ -859,6 +883,7 @@ export class WorkerEnvironmentService implements OnModuleDestroy {
         JSON.stringify({
           version: STATION_SYNC_VERSION,
           appUrl: this.appUrl(),
+          template: stationTemplateFingerprint(this.appUrl(), kernel),
           kernel,
           prompt: worker.prompt ?? '',
           githubPermission: worker.githubPermission,

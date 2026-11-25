@@ -1,9 +1,15 @@
+import { createHash } from 'crypto';
 import { BadRequestException } from '@nestjs/common';
 import { firstValueFrom } from 'rxjs';
 import { toArray } from 'rxjs/operators';
 import { ExecutorType, WorkerRuntime } from '../common/enums';
 import { createExecutorClient } from '../executors/executor-client';
-import { WorkerEnvironmentService } from './worker-environment.service';
+import {
+  buildDirectoryAgentsSection,
+  buildTaskCollaborationAgents,
+  stationTemplateFingerprint,
+  WorkerEnvironmentService,
+} from './worker-environment.service';
 import { ManagedStandardFiles } from './worker-standard-catalog.service';
 import { Worker } from './worker.entity';
 
@@ -439,5 +445,34 @@ describe('WorkerEnvironmentService', () => {
     };
     expect(payload.type).toBe('snapshot');
     expect(payload.snapshot.status).toBe('idle');
+  });
+});
+
+describe('工位同步 revision 覆盖平台固定文案', () => {
+  it('指纹等于固定文案章节的 sha256，文案一改就变', () => {
+    const appUrl = 'http://work.cinta.team';
+    const kernel = ExecutorType.OPENCODE;
+    const expected = createHash('sha256')
+      .update(buildTaskCollaborationAgents(appUrl))
+      .update('\n')
+      .update(buildDirectoryAgentsSection(kernel))
+      .digest('hex');
+    expect(stationTemplateFingerprint(appUrl, kernel)).toBe(expected);
+    expect(stationTemplateFingerprint(appUrl, kernel)).toBe(
+      stationTemplateFingerprint(appUrl, kernel),
+    );
+  });
+
+  it('平台地址或内核变化时指纹随之变化', () => {
+    const a = stationTemplateFingerprint(
+      'http://work.cinta.team',
+      ExecutorType.OPENCODE,
+    );
+    expect(
+      stationTemplateFingerprint('http://project.cinta.team', ExecutorType.OPENCODE),
+    ).not.toBe(a);
+    expect(
+      stationTemplateFingerprint('http://work.cinta.team', ExecutorType.DROID),
+    ).not.toBe(a);
   });
 });
