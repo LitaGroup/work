@@ -1,6 +1,9 @@
 import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import { UserRole } from '../common/enums';
-import { McpAdminController } from './mcp-admin.controller';
+import {
+  ADMIN_WORKER_IDS_ENV,
+  McpAdminController,
+} from './mcp-admin.controller';
 
 /** 构造被测 controller（mcp / auth / workers / evalToken / trace 全部 mock） */
 function buildController(): {
@@ -157,6 +160,48 @@ describe('McpAdminController 鉴权（经 handlePost 验证）', () => {
     await expect(
       post(controller, reqOf({ authorization: 'Bearer bad-token' })),
     ).rejects.toThrow(UnauthorizedException);
+  });
+
+  it('MCP_ADMIN_WORKER_IDS 显式授权的纯 AI 机器人放行', async () => {
+    const { controller, mcp, auth, workers } = buildController();
+    mockTokens(auth, workers);
+    process.env[ADMIN_WORKER_IDS_ENV] = '9, 12';
+    try {
+      await post(controller, reqOf({ workerToken: 'ai-worker-token' }));
+      expect(principalOf(mcp)).toEqual({ worker: aiWorker });
+    } finally {
+      delete process.env[ADMIN_WORKER_IDS_ENV];
+    }
+  });
+
+  it('白名单未命中时纯 AI 机器人仍 403', async () => {
+    const { controller, mcp, auth, workers } = buildController();
+    mockTokens(auth, workers);
+    process.env[ADMIN_WORKER_IDS_ENV] = '12';
+    try {
+      await expect(
+        post(controller, reqOf({ workerToken: 'ai-worker-token' })),
+      ).rejects.toThrow(ForbiddenException);
+      expect(mcp.handleRequest).not.toHaveBeenCalled();
+    } finally {
+      delete process.env[ADMIN_WORKER_IDS_ENV];
+    }
+  });
+
+  it('白名单不放行评估令牌', async () => {
+    const { controller, mcp, auth, workers, evalToken } = buildController();
+    mockTokens(auth, workers);
+    process.env[ADMIN_WORKER_IDS_ENV] = '9';
+    evalToken.verify.mockReturnValue({ workerId: 9, evalItemId: 1, judge: false });
+    workers.findOne.mockResolvedValue(aiWorker);
+    try {
+      await expect(
+        post(controller, reqOf({ workerToken: 'eval-token' })),
+      ).rejects.toThrow(ForbiddenException);
+      expect(mcp.handleRequest).not.toHaveBeenCalled();
+    } finally {
+      delete process.env[ADMIN_WORKER_IDS_ENV];
+    }
   });
 
   it('无令牌时 401', async () => {
