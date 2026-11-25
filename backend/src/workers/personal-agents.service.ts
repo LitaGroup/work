@@ -563,7 +563,6 @@ export class PersonalAgentsService {
       this.appUrl,
       token,
       worker.mcps ?? [],
-      worker.id,
     );
     const client = createExecutorClient(executor);
     // 调试/聊天与任务执行共用工位根目录，AGENTS.md 与 .agents 就是当前目录，

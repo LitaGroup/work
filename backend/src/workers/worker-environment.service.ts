@@ -34,7 +34,6 @@ import {
 } from './worker-env';
 import { WorkersService } from './workers.service';
 import { McpServersService } from '../mcp-servers/mcp-servers.service';
-import { LITA_WORK_ADMIN_SERVER_NAME } from '../mcp/mcp-admin-grant';
 import { GithubPermissionCredentialService } from './github-permission-credential.service';
 import { GithubCredentialStatus } from '../github-gateway/github-permission-credential.entity';
 import {
@@ -426,7 +425,6 @@ export class WorkerEnvironmentService implements OnModuleDestroy {
         this.appUrl(),
         token,
         worker.mcps ?? [],
-        worker.id,
       );
       const mcpNames = Object.keys(servers).filter(
         (name) => name !== 'lita-work',
@@ -798,26 +796,16 @@ export class WorkerEnvironmentService implements OnModuleDestroy {
   }
 
   private buildMcpSection(mcpNames: string[]): string {
-    const adminGranted = mcpNames.includes(LITA_WORK_ADMIN_SERVER_NAME);
-    const customNames = mcpNames.filter(
-      (name) => name !== LITA_WORK_ADMIN_SERVER_NAME,
-    );
     return [
       '## 已配置的 MCP 服务',
       '',
       '平台固定注入：lita-work（Streamable HTTP，机器人令牌鉴权，由平台按执行内核写入配置文件并自动连接）。',
-      ...(adminGranted
-        ? [
-            '',
-            '本机器人已获管理员授权，额外注入 lita-work-admin（`/api/mcp/work-admin`）：可管理机器人、任务定义、测试集与评估、执行记录；操作有平台权限风险，只做明确被要求的事。',
-          ]
-        : []),
-      ...(customNames.length
+      ...(mcpNames.length
         ? [
             '',
             '机器人勾选的自定义 MCP（自动连接，可直接使用其工具）：',
             '',
-            ...customNames.map((name) => `- ${name}`),
+            ...mcpNames.map((name) => `- ${name}`),
           ]
         : ['', '机器人未勾选其它自定义 MCP 服务。']),
     ].join('\n');

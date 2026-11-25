@@ -457,7 +457,6 @@ export class TaskDispatchService
           this.appUrl,
           workerToken,
           worker.mcps ?? [],
-          worker.id,
         );
         await ensureWorkerSkeleton(client, workdir);
         await upsertWorkerEnv(client, workdir, {
