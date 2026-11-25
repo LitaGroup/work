@@ -8,7 +8,7 @@ type: docs
 
 平台把原 **lita-work / knowledge-search / file-upload** 三个 Agent 技能（`.md` HTTP 端点）改造成 MCP 服务 **`lita-work`**：外部 Agent（opencode / Claude Code / Cursor 等）完成一次配置后，即可直接调用带 schema 的平台工具——需求、迭代项、文档、知识库、脚本运行、缺陷、反馈、灵感、代码分支、文件上传、任务协同与工单等基础业务能力。
 
-管理面能力（机器人、任务定义、测试集与评估、执行记录、平台设置）独立为 **`lita-work-admin`**（`POST /api/mcp/work-admin`），仅管理员令牌可用（公共 Agent、管理员绑定的真人机器人，或后端 `MCP_ADMIN_WORKER_IDS` 显式授权的机器人），见「六、lita-work-admin（管理面）」。
+管理面能力（机器人、任务定义、测试集与评估、执行记录、平台设置）独立为 **`lita-work-admin`**（`POST /api/mcp/work-admin`），仅管理员令牌可用，见「六、lita-work-admin（管理面）」。
 
 - 服务地址：`POST /api/mcp/work`（MCP Streamable HTTP，响应为 SSE 流）
 - 鉴权：机器人令牌（`Authorization: Bearer` / `X-Worker-Token` / `X-Agent-Token` / `?token=`），或管理员下发的公共 Agent 令牌；与 `.md` 端点同一令牌体系。真人用户没有独立令牌，其令牌就是绑定真人机器人的 `workers.agentToken`
