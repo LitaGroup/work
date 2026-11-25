@@ -315,6 +315,9 @@ claude mcp add --transport http lita-work http://your-host:3100/api/mcp/work \
 | `export_eval_suite` | `suiteId` | 导出测试集 JSON |
 | `list_eval_runs` | `suiteId?`、`targetWorkerId?`、`limit?` | 评估批次清单（倒序，上限 100） |
 | `create_eval_run` | `suiteId`、`targetWorkerId`、`evaluatorWorkerId`、`repeatCount?`、`concurrency?`、`mcpPolicy?` | 发起评估（冻结快照、生成评估项；发起人记当前管理员） |
+| `run_eval` | 同 `create_eval_run` + `timeout_seconds?`（10-1800，默认 1800） | 发起评估并等待批次终态：评估项完成数经 progress 推送，终态返回评估报告；超时只结束等待，批次在平台继续 |
+| `get_eval_run` | `runId` | 评估批次状态与进度：批次信息、汇总指标、评估项状态计数（不展开逐项） |
+| `get_worker_eval_summary` | `workerId`、`limit?`（默认 10） | 机器人评估成绩：最近批次的通过率、平均得分、评估项数与时间 |
 | `get_eval_run_report` | `runId` | 评估报告（批次信息 + 汇总 + 逐项得分/状态/提问返工） |
 | `cancel_eval_run` | `runId` | 取消评估批次 |
 | `get_eval_item` | `itemId` | 评估项详情（状态 / 事件 / 判定明细） |

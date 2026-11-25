@@ -2,7 +2,34 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { EvalItemResult, EvalRunStatus, UserRole } from '../../common/enums';
 import { AdminEvalTools } from './admin-eval.tools';
 
-type Handler = (args: Record<string, unknown>) => Promise<unknown>;
+type Handler = (
+  args: Record<string, unknown>,
+  extra?: unknown,
+) => Promise<unknown>;
+
+const runFixture = {
+  id: 5,
+  suiteId: 1,
+  suiteVersion: 3,
+  suiteSnapshot: {
+    name: '登录测试集',
+    cases: [
+      { id: 10, title: '正常登录' },
+      { id: 11, title: '异常登录' },
+    ],
+  },
+  targetWorkerId: 1002,
+  targetWorkerName: '活动开发机器人',
+  evaluatorWorkerId: 1001,
+  repeatCount: 3,
+  concurrency: 3,
+  status: EvalRunStatus.COMPLETED,
+  createdByName: '管理员',
+  createdAt: new Date('2026-11-25T00:00:00.000Z'),
+  finishedAt: new Date('2026-11-25T01:00:00.000Z'),
+  error: null,
+  summary: { passRate: 66.7, avgScore: 70, total: 2 },
+};
 
 function buildTools(): {
   tools: Map<string, Handler>;
@@ -23,6 +50,7 @@ function buildTools(): {
     findRun: jest.Mock;
     listItems: jest.Mock;
   };
+  progress: { onRun: jest.Mock };
 } {
   const suites = {
     list: jest.fn().mockResolvedValue([{ id: 1, name: '登录测试集' }]),
@@ -36,31 +64,9 @@ function buildTools(): {
     export: jest.fn().mockResolvedValue({ suite: {}, cases: [] }),
   };
   const engine = {
-    listRuns: jest.fn().mockResolvedValue([{ id: 5 }]),
+    listRuns: jest.fn().mockResolvedValue([runFixture]),
     createRun: jest.fn().mockResolvedValue({ id: 5 }),
-    findRun: jest.fn().mockResolvedValue({
-      id: 5,
-      suiteId: 1,
-      suiteVersion: 3,
-      suiteSnapshot: {
-        name: '登录测试集',
-        cases: [
-          { id: 10, title: '正常登录' },
-          { id: 11, title: '异常登录' },
-        ],
-      },
-      targetWorkerId: 1002,
-      targetWorkerName: '活动开发机器人',
-      evaluatorWorkerId: 1001,
-      repeatCount: 3,
-      concurrency: 3,
-      status: EvalRunStatus.COMPLETED,
-      createdByName: '管理员',
-      createdAt: new Date('2026-11-25T00:00:00.000Z'),
-      finishedAt: new Date('2026-11-25T01:00:00.000Z'),
-      error: null,
-      summary: { passRate: 66.7 },
-    }),
+    findRun: jest.fn().mockResolvedValue(runFixture),
     listItems: jest.fn().mockResolvedValue([
       {
         id: 20,
@@ -96,10 +102,15 @@ function buildTools(): {
       tools.set(name, handler);
     },
   } as unknown as McpServer;
-  new AdminEvalTools(suites as never, engine as never).register(server, {
+  const progress = { onRun: jest.fn().mockReturnValue(() => {}) };
+  new AdminEvalTools(
+    suites as never,
+    engine as never,
+    progress as never,
+  ).register(server, {
     user: { id: 1, name: '管理员', role: UserRole.ADMIN },
   } as never);
-  return { tools, suites, engine };
+  return { tools, suites, engine, progress };
 }
 
 describe('AdminEvalTools', () => {
@@ -118,6 +129,9 @@ describe('AdminEvalTools', () => {
         'export_eval_suite',
         'list_eval_runs',
         'create_eval_run',
+        'run_eval',
+        'get_eval_run',
+        'get_worker_eval_summary',
         'get_eval_run_report',
         'cancel_eval_run',
         'get_eval_item',
@@ -182,5 +196,47 @@ describe('AdminEvalTools', () => {
     expect(text).toContain('正常登录');
     expect(text).toContain('异常登录');
     expect(text).toContain('通过：1');
+  });
+
+  it('run_eval 发起后等待终态并返回报告', async () => {
+    const { tools, engine } = buildTools();
+    const result = (await tools.get('run_eval')!(
+      { suiteId: 1, targetWorkerId: 1002, evaluatorWorkerId: 1001 },
+      { _meta: {} },
+    )) as { content: { text: string }[] };
+    expect(engine.createRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        suiteId: 1,
+        targetWorkerId: 1002,
+        evaluatorWorkerId: 1001,
+      }),
+    );
+    expect(result.content[0].text).toContain('评估报告：批次 #5');
+  });
+
+  it('get_eval_run 输出批次状态与评估项计数', async () => {
+    const { tools } = buildTools();
+    const result = (await tools.get('get_eval_run')!({ runId: 5 })) as {
+      content: { text: string }[];
+    };
+    const text = result.content[0].text;
+    expect(text).toContain('评估批次 #5');
+    expect(text).toContain('进度：2/2 项结束');
+    expect(text).toContain('已完成：2');
+  });
+
+  it('get_worker_eval_summary 汇总机器人最近批次', async () => {
+    const { tools, engine } = buildTools();
+    const result = (await tools.get('get_worker_eval_summary')!({
+      workerId: 1002,
+    })) as { content: { text: string }[] };
+    expect(engine.listRuns).toHaveBeenCalledWith({
+      targetWorkerId: 1002,
+      limit: 10,
+    });
+    const text = result.content[0].text;
+    expect(text).toContain('机器人评估成绩：活动开发机器人（#1002）');
+    expect(text).toContain('登录测试集');
+    expect(text).toContain('66.7%');
   });
 });

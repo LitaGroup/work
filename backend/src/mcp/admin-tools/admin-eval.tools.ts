@@ -3,6 +3,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import {
   EvalItemResult,
+  EvalRunStatus,
   EvalSuitePurpose,
   EvalSuiteStatus,
 } from '../../common/enums';
@@ -12,6 +13,10 @@ import {
   EvalSuiteService,
 } from '../../eval/eval-suite.service';
 import { EvalEngineService } from '../../eval/eval-engine.service';
+import type { EvalRun } from '../../eval/eval-run.entity';
+import type { EvalRunItem } from '../../eval/eval-run-item.entity';
+import { EvalProgressService } from '../../eval/eval-progress.service';
+import { createProgressEmitter, type ProgressFn } from '../mcp-progress';
 import {
   executeTool,
   jsonResult,
@@ -21,6 +26,18 @@ import type {
   McpWorkPrincipal,
   WorkToolRegistrar,
 } from '../work-tools/work-tools.types';
+
+/** 评估运行等待终态默认上限：30 分钟（超时只结束等待，批次在平台继续） */
+const EVAL_WAIT_DEFAULT_SECONDS = 1800;
+
+/** 评估项终态（用于进度统计） */
+const TERMINAL_ITEM_STATUSES = new Set([
+  '已完成',
+  '已拒绝',
+  '超时',
+  '异常',
+  '已取消',
+]);
 
 const PurposeArg = z.enum(
   Object.values(EvalSuitePurpose) as [EvalSuitePurpose, ...EvalSuitePurpose[]],
@@ -86,6 +103,7 @@ export class AdminEvalTools implements WorkToolRegistrar {
   constructor(
     private readonly suites: EvalSuiteService,
     private readonly engine: EvalEngineService,
+    private readonly progress: EvalProgressService,
   ) {}
 
   register(server: McpServer, principal: McpWorkPrincipal): void {
@@ -403,6 +421,75 @@ export class AdminEvalTools implements WorkToolRegistrar {
     );
 
     server.registerTool(
+      'run_eval',
+      {
+        title: '运行评估',
+        description:
+          '发起评估并等待批次终态：执行过程经 progress 推送（评估项完成数），终态返回评估报告。' +
+          `默认等待 ${EVAL_WAIT_DEFAULT_SECONDS} 秒；超时只结束等待，批次在平台继续，可稍后用 get_eval_run_report 查询。`,
+        inputSchema: {
+          suiteId: z.number().int().positive().describe('测试集 ID'),
+          targetWorkerId: z.number().int().positive().describe('被测机器人 ID'),
+          evaluatorWorkerId: z
+            .number()
+            .int()
+            .positive()
+            .describe('评估机器人 ID（作为需求方与判定）'),
+          repeatCount: z
+            .number()
+            .int()
+            .min(1)
+            .max(5)
+            .optional()
+            .describe('每用例重复次数（1-5，默认 3）'),
+          concurrency: z
+            .number()
+            .int()
+            .min(1)
+            .optional()
+            .describe('并发评估项上限（默认 3）'),
+          mcpPolicy: McpPolicyArg.nullish().describe('自定义 MCP 的评估策略'),
+          timeout_seconds: z
+            .number()
+            .int()
+            .min(10)
+            .max(1800)
+            .optional()
+            .describe(
+              `等待终态的秒数（10-1800，默认 ${EVAL_WAIT_DEFAULT_SECONDS}）；超时只结束等待，批次在平台继续`,
+            ),
+        },
+      },
+      (args, extra) =>
+        executeTool(this.logger, 'run_eval', principal, async () => {
+          const run = await this.engine.createRun({
+            suiteId: args.suiteId,
+            targetWorkerId: args.targetWorkerId,
+            evaluatorWorkerId: args.evaluatorWorkerId,
+            repeatCount: args.repeatCount,
+            concurrency: args.concurrency,
+            mcpPolicy: args.mcpPolicy ?? null,
+            createdById: principal.user?.id ?? null,
+            createdByName: principal.user?.name ?? null,
+          });
+          const latest = await this.waitRun(
+            run.id,
+            createProgressEmitter(extra),
+            extra.signal,
+            this.evalTimeoutMs(args.timeout_seconds),
+          );
+          const items = await this.engine.listItems(run.id);
+          const report = this.renderReport(latest, items);
+          return markdownResult(
+            latest.status === EvalRunStatus.COMPLETED ||
+              latest.status === EvalRunStatus.CANCELED
+              ? report
+              : `${report}\n> 等待超时：批次在平台继续执行，可稍后用 get_eval_run_report 查询终态。\n`,
+          );
+        }),
+    );
+
+    server.registerTool(
       'get_eval_run_report',
       {
         title: '评估报告',
@@ -432,6 +519,58 @@ export class AdminEvalTools implements WorkToolRegistrar {
       (args) =>
         executeTool(this.logger, 'cancel_eval_run', principal, async () =>
           jsonResult(await this.engine.cancelRun(args.runId)),
+        ),
+    );
+
+    server.registerTool(
+      'get_eval_run',
+      {
+        title: '评估批次状态',
+        description:
+          '读取评估批次状态与进度：批次信息、汇总指标、评估项状态计数（不展开逐项；明细用 get_eval_run_report）。',
+        inputSchema: {
+          runId: z.number().int().positive().describe('评估批次 ID'),
+        },
+      },
+      (args) =>
+        executeTool(this.logger, 'get_eval_run', principal, async () => {
+          const run = await this.engine.findRun(args.runId);
+          const items = await this.engine.listItems(args.runId);
+          return markdownResult(this.renderRunStatus(run, items));
+        }),
+    );
+
+    server.registerTool(
+      'get_worker_eval_summary',
+      {
+        title: '机器人评估成绩',
+        description:
+          '按被测机器人汇总最近评估批次：状态、通过率、平均得分、评估项数与时间，用于查看机器人的评估历史。',
+        inputSchema: {
+          workerId: z.number().int().positive().describe('被测机器人 ID'),
+          limit: z
+            .number()
+            .int()
+            .min(1)
+            .max(50)
+            .optional()
+            .describe('最近批次数（默认 10）'),
+        },
+      },
+      (args) =>
+        executeTool(
+          this.logger,
+          'get_worker_eval_summary',
+          principal,
+          async () => {
+            const runs = await this.engine.listRuns({
+              targetWorkerId: args.workerId,
+              limit: args.limit ?? 10,
+            });
+            return markdownResult(
+              this.renderWorkerSummary(args.workerId, runs),
+            );
+          },
         ),
     );
 
@@ -488,6 +627,150 @@ export class AdminEvalTools implements WorkToolRegistrar {
           jsonResult(await this.engine.rejudgeItem(args.itemId)),
         ),
     );
+  }
+
+  /** 等待评估批次终态：进度事件 + 15 秒保底轮询；超时或调用方断开只结束等待 */
+  private waitRun(
+    runId: number,
+    notify: ProgressFn | null,
+    signal: AbortSignal | undefined,
+    timeoutMs: number,
+  ): Promise<EvalRun> {
+    return new Promise<EvalRun>((resolve, reject) => {
+      let current: EvalRun | null = null;
+      let settled = false;
+      let lastProgress = -1;
+      let pollTimer: NodeJS.Timeout | null = null;
+      let timeoutTimer: NodeJS.Timeout | null = null;
+      let unsubscribe: (() => void) | null = null;
+
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        if (pollTimer) clearInterval(pollTimer);
+        if (timeoutTimer) clearTimeout(timeoutTimer);
+        unsubscribe?.();
+        signal?.removeEventListener('abort', onAbort);
+        if (current) resolve(current);
+        else reject(new Error('评估批次不存在'));
+      };
+      const onAbort = () => finish();
+
+      const poll = async () => {
+        if (settled) return;
+        try {
+          const run = await this.engine.findRun(runId);
+          current = run;
+          const items = await this.engine.listItems(runId);
+          const active = items.filter((item) => !item.superseded);
+          const completed = active.filter((item) =>
+            TERMINAL_ITEM_STATUSES.has(item.status),
+          ).length;
+          if (notify && completed !== lastProgress) {
+            lastProgress = completed;
+            void notify(
+              completed,
+              `评估批次 #${runId}：${run.status}，已完成 ${completed}/${active.length}`,
+            ).catch(() => {});
+          }
+          if (this.isTerminalRun(run.status)) finish();
+        } catch {
+          finish();
+        }
+      };
+
+      signal?.addEventListener('abort', onAbort, { once: true });
+      pollTimer = setInterval(() => void poll(), 15_000);
+      pollTimer.unref?.();
+      timeoutTimer = setTimeout(() => finish(), timeoutMs);
+      timeoutTimer.unref?.();
+      unsubscribe = this.progress.onRun(runId, () => void poll());
+      void poll();
+    });
+  }
+
+  private isTerminalRun(status: EvalRunStatus): boolean {
+    return (
+      status === EvalRunStatus.COMPLETED || status === EvalRunStatus.CANCELED
+    );
+  }
+
+  private evalTimeoutMs(seconds: number | undefined): number {
+    const value = seconds && seconds > 0 ? seconds : EVAL_WAIT_DEFAULT_SECONDS;
+    return Math.min(Math.max(value, 10), 1800) * 1000;
+  }
+
+  /** 批次状态与进度（不展开逐项） */
+  private renderRunStatus(run: EvalRun, items: EvalRunItem[]): string {
+    const active = items.filter((item) => !item.superseded);
+    const completed = active.filter((item) =>
+      TERMINAL_ITEM_STATUSES.has(item.status),
+    ).length;
+    const counts = new Map<string, number>();
+    for (const item of active) {
+      counts.set(item.status, (counts.get(item.status) ?? 0) + 1);
+    }
+    return [
+      `# 评估批次 #${run.id}`,
+      '',
+      `- 测试集：${run.suiteSnapshot.name}（#${run.suiteId}，版本 v${run.suiteVersion}）`,
+      `- 被测机器人：${run.targetWorkerName}（#${run.targetWorkerId}）`,
+      `- 评估机器人：#${run.evaluatorWorkerId}`,
+      `- 状态：${run.status}`,
+      `- 进度：${completed}/${active.length} 项结束`,
+      `- 创建时间：${run.createdAt.toISOString()}`,
+      ...(run.finishedAt
+        ? [`- 结束时间：${run.finishedAt.toISOString()}`]
+        : []),
+      ...(run.error ? [`- 失败原因：${run.error}`] : []),
+      '',
+      '## 评估项状态',
+      '',
+      ...(counts.size > 0
+        ? [...counts.entries()].map(
+            ([status, count]) => `- ${status}：${count}`,
+          )
+        : ['- （暂无评估项）']),
+      ...(run.summary
+        ? [
+            '',
+            '## 汇总',
+            '',
+            '```json',
+            JSON.stringify(run.summary, null, 2),
+            '```',
+          ]
+        : []),
+      '',
+      `> 逐项明细用 get_eval_run_report（runId=${run.id}）。`,
+      '',
+    ].join('\n');
+  }
+
+  /** 机器人评估成绩：最近批次汇总 */
+  private renderWorkerSummary(workerId: number, runs: EvalRun[]): string {
+    if (runs.length === 0) {
+      return `# 机器人评估成绩\n\n机器人 #${workerId} 暂无评估批次。\n`;
+    }
+    const metric = (run: EvalRun, key: string): string => {
+      const value = run.summary?.[key];
+      return typeof value === 'number' ? String(value) : '-';
+    };
+    return [
+      `# 机器人评估成绩：${runs[0].targetWorkerName}（#${workerId}）`,
+      '',
+      `最近 ${runs.length} 个评估批次：`,
+      '',
+      '| 批次 | 测试集 | 状态 | 通过率 | 平均分 | 评估项 | 发起人 | 创建时间 |',
+      '|---|---|---|---|---|---|---|---|',
+      ...runs.map((run) => {
+        const passRate = metric(run, 'passRate');
+        return `| #${run.id} | ${run.suiteSnapshot.name.replace(/\|/g, '\\|')} | ${run.status} | ${passRate === '-' ? '-' : `${passRate}%`} | ${metric(run, 'avgScore')} | ${metric(run, 'total')} | ${run.createdByName ?? '-'} | ${run.createdAt.toISOString()} |`;
+      }),
+      '',
+      '> 逐项明细用 get_eval_run_report（runId 取上表批次号）。',
+      '',
+    ].join('\n');
   }
 
   /** 评估报告 Markdown：批次信息 + 汇总 + 逐项结果 */
