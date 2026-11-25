@@ -3,7 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Cron } from '@nestjs/schedule';
 import { In, Repository } from 'typeorm';
 import { User } from '../auth/user.entity';
-import { TaskStatus, TaskSubStatus, WorkerRuntime } from '../common/enums';
+import { TaskStatus, WorkerRuntime } from '../common/enums';
 import { isAgentRuntime } from '../common/worker-runtime';
 import { Task } from '../tasks/task.entity';
 import { TaskDeliveryService } from '../tasks/task-delivery.service';
@@ -27,14 +27,14 @@ import { FeishuBotTaskChat } from './feishu-bot-task-chat.entity';
 /** 任务终态到解散群的延时 */
 const DESTROY_DELAY_MS = 24 * 60 * 60 * 1000;
 
-/** 建群失败重试上限（每分钟一轮，30 次约半小时） */
-const CREATE_MAX_ATTEMPTS = 30;
+// [自动建群已停用] 建群失败重试上限（每分钟一轮，30 次约半小时）
+// const CREATE_MAX_ATTEMPTS = 30;
 
 /** 解散失败重试上限 */
 const DESTROY_MAX_ATTEMPTS = 20;
 
-/** 单次对账扫描的候选任务数上限 */
-const CANDIDATE_LIMIT = 100;
+// [自动建群已停用] 单次对账扫描的候选任务数上限
+// const CANDIDATE_LIMIT = 100;
 
 /** 群名长度上限 */
 const CHAT_NAME_LIMIT = 80;
@@ -49,6 +49,7 @@ interface TaskParties {
 
 /**
  * 任务群（任务 = 飞书群）：
+ * - [自动建群已停用] 建群扫描与失败重试已注释（见 reconcileOnce），已有群的生命周期不受影响；
  * - 仅「一个真人 + 一个 AI 机器人」的根任务自动建群（第一期，两方都是机器人暂不支持）；
  * - 平台官方机器人建群并代理任务 AI，真人参与者经 open_id 拉入群；
  * - 任务进入终态后发送结果卡片，24 小时后自动解散；
@@ -76,7 +77,7 @@ export class FeishuBotTaskChatService {
     private readonly users: Repository<User>,
   ) {}
 
-  /** 每分钟对账：建群 / 结果卡片 / 到期解散 */
+  /** 每分钟对账：结果卡片 / 到期解散（自动建群已停用，建群段见 reconcileOnce 注释） */
   @Cron('0 * * * * *')
   async reconcile(): Promise<void> {
     if (this.reconciling) return;
@@ -164,42 +165,45 @@ export class FeishuBotTaskChatService {
       }
     }
 
-    if (!official || paused) {
-      if (paused) {
-        this.logger.debug('飞书群消息已暂停：跳过任务群建群与重试');
-      }
-      return;
-    }
-    const secrets = this.configs.secretsOf(official);
-    const bound = new Set(rows.map((row) => row.taskId));
-    const candidates = await this.tasks.find({
-      where: { status: TaskStatus.RUNNING, subStatus: TaskSubStatus.EXECUTING },
-      take: CANDIDATE_LIMIT,
-    });
-    for (const task of candidates) {
-      if (bound.has(task.id)) continue;
-      if (task.parentId !== null) continue;
-      // 项目交付任务使用 ProjectChat 多人沟通群，不再创建双人任务群。
-      if (task.templateId === SYSTEM_PROJECT_DELIVERY_TASK_TEMPLATE_ID)
-        continue;
-      const existing = rows.find((row) => row.taskId === task.id);
-      if (
-        existing &&
-        existing.officialConfigId === official.id &&
-        !existing.chatId &&
-        (existing.state === 'creating' || existing.state === 'error') &&
-        existing.attempts < CREATE_MAX_ATTEMPTS
-      ) {
-        // 建群失败重试
-        await this.createGroupChat(official, secrets, task, existing);
-        continue;
-      }
-      if (existing) continue;
-      const parties = await this.resolveParties(task);
-      if (!parties) continue;
-      await this.createGroupChat(official, secrets, task, null, parties);
-    }
+    // [自动建群已停用] 建群扫描 / 首次建群 / 失败重试；恢复时取消本段注释。
+    // if (!official || paused) {
+    //   if (paused) {
+    //     this.logger.debug('飞书群消息已暂停：跳过任务群建群与重试');
+    //   }
+    //   return;
+    // }
+    // const secrets = this.configs.secretsOf(official);
+    // const bound = new Set(rows.map((row) => row.taskId));
+    // const candidates = await this.tasks.find({
+    //   where: { status: TaskStatus.RUNNING, subStatus: TaskSubStatus.EXECUTING },
+    //   take: CANDIDATE_LIMIT,
+    // });
+    // for (const task of candidates) {
+    //   if (bound.has(task.id)) continue;
+    //   if (task.parentId !== null) continue;
+    //   // 项目交付任务使用 ProjectChat 多人沟通群，不再创建双人任务群。
+    //   if (task.templateId === SYSTEM_PROJECT_DELIVERY_TASK_TEMPLATE_ID)
+    //     continue;
+    //   const existing = rows.find((row) => row.taskId === task.id);
+    //   if (
+    //     existing &&
+    //     existing.officialConfigId === official.id &&
+    //     !existing.chatId &&
+    //     (existing.state === 'creating' || existing.state === 'error') &&
+    //     existing.attempts < CREATE_MAX_ATTEMPTS
+    //   ) {
+    //     // 建群失败重试
+    //     await this.createGroupChat(official, secrets, task, existing);
+    //     continue;
+    //   }
+    //   if (existing) continue;
+    //   const parties = await this.resolveParties(task);
+    //   if (!parties) continue;
+    //   await this.createGroupChat(official, secrets, task, null, parties);
+    // }
   }
+
+  // [自动建群已停用] 以下两个方法已无调用方，保留以便编译检查与恢复。
 
   /**
    * 解析任务的「真人 + AI」参与方：

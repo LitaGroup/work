@@ -215,6 +215,8 @@ describe('FeishuBotProjectChatService', () => {
     };
   }
 
+  // [自动建群已停用] 以下用例随自动建群一起注释，恢复时取消注释。
+  /*
   it('点击创建任务后幂等建群并拉入可识别的项目相关方', async () => {
     const { service, chat, client, chats } = setup();
 
@@ -275,6 +277,7 @@ describe('FeishuBotProjectChatService', () => {
       botIds: [],
     });
   });
+  */
 
   it('对账只推送根任务与直接子任务，根任务终态锁定 7 天解散且不重复推送', async () => {
     const acceptedAt = new Date('2026-11-09T12:00:00+08:00');
@@ -386,6 +389,8 @@ describe('FeishuBotProjectChatService', () => {
     expect(chat()?.botIds).toEqual(['cli_agent']);
   });
 
+  // [自动建群已停用] 随自动建群一起注释，恢复时取消注释。
+  /*
   it('建群失败不回滚任务，记录错误供后续重试', async () => {
     const { service, chat, client } = setup();
     client.createChat.mockRejectedValue(new Error('feishu down'));
@@ -400,6 +405,7 @@ describe('FeishuBotProjectChatService', () => {
       lastError: 'feishu down',
     });
   });
+  */
 
   describe('飞书群消息暂停（FEISHU_GROUP_SEND_PAUSED）', () => {
     const original = process.env.FEISHU_GROUP_SEND_PAUSED;

@@ -6,13 +6,13 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Cron } from '@nestjs/schedule';
-import { In, IsNull, Not, Repository } from 'typeorm';
+import { In, Not, Repository } from 'typeorm';
 import { Subscription } from 'rxjs';
 import { User } from '../auth/user.entity';
 import { BacklogStatus, TaskStatus } from '../common/enums';
 import { splitMemberNames } from '../common/names';
 import { Backlog } from '../iterations/backlog.entity';
-import { SYSTEM_PROJECT_DELIVERY_TASK_TEMPLATE_ID } from '../tasks/system-task-templates';
+// [自动建群已停用] import { SYSTEM_PROJECT_DELIVERY_TASK_TEMPLATE_ID } from '../tasks/system-task-templates';
 import { TaskRealtimeService } from '../tasks/task-realtime.service';
 import { Task } from '../tasks/task.entity';
 import { Worker } from '../workers/worker.entity';
@@ -31,11 +31,11 @@ import { FeishuBotProjectChat } from './feishu-bot-project-chat.entity';
 /** 根任务终态后保留沟通群的时间 */
 const DISSOLVE_DELAY_MS = 7 * 24 * 60 * 60 * 1000;
 
-/** 建群失败重试上限（每分钟一轮） */
-const CREATE_MAX_ATTEMPTS = 30;
+// [自动建群已停用] 建群失败重试上限（每分钟一轮）
+// const CREATE_MAX_ATTEMPTS = 30;
 
-/** 单次对账补建群的候选任务数上限 */
-const CANDIDATE_LIMIT = 100;
+// [自动建群已停用] 单次对账补建群的候选任务数上限
+// const CANDIDATE_LIMIT = 100;
 
 /** 飞书建群单次最多邀请的用户数 */
 const MAX_CHAT_MEMBERS = 50;
@@ -80,6 +80,7 @@ interface ResolvedMembers {
 
 /**
  * 项目交付沟通群：项目详情创建交付任务后建立飞书群。
+ * - [自动建群已停用] 建群入口与对账补建已注释；已有群的生命周期不受影响；
  * - 拉入前端、后端、测试、产品等项目相关方；无法识别的成员跳过；
  * - 官方机器人建群并作为群主，绑定了飞书应用的执行机器人尽力拉入；
  * - 根任务和直接子任务状态变化实时推送，定时对账补偿漏发；
@@ -130,62 +131,67 @@ export class FeishuBotProjectChatService
   /**
    * 点击「安排项目机器人」后的入口：幂等创建绑定并立即尝试建群。
    * 建群失败不回滚任务，保留绑定供定时对账重试。
+   * [自动建群已停用] 方法体已注释；保留入口避免改动调用方，恢复时取消注释即可。
    */
+  // eslint-disable-next-line @typescript-eslint/require-await -- 自动建群停用期间为空壳入口，保留签名避免改动调用方
   async ensureForProjectTask(projectId: number, taskId: number): Promise<void> {
-    // 暂停期间不建群、不写绑定；恢复后由对账补建
-    if (feishuGroupSendPaused()) return;
-    const [project, task, official] = await Promise.all([
-      this.projects.findOne({ where: { id: projectId } }),
-      this.tasks.findOne({ where: { id: taskId } }),
-      this.configs.loadEnabledOfficial(),
-    ]);
-    if (!project || !task || !official) return;
-    if (
-      task.parentId !== null ||
-      task.templateId !== SYSTEM_PROJECT_DELIVERY_TASK_TEMPLATE_ID
-    ) {
-      return;
-    }
+    this.logger.debug(
+      `自动建群已停用：跳过项目沟通群（project=${projectId}, task=${taskId}）`,
+    );
+    // // 暂停期间不建群、不写绑定；恢复后由对账补建
+    // if (feishuGroupSendPaused()) return;
+    // const [project, task, official] = await Promise.all([
+    //   this.projects.findOne({ where: { id: projectId } }),
+    //   this.tasks.findOne({ where: { id: taskId } }),
+    //   this.configs.loadEnabledOfficial(),
+    // ]);
+    // if (!project || !task || !official) return;
+    // if (
+    //   task.parentId !== null ||
+    //   task.templateId !== SYSTEM_PROJECT_DELIVERY_TASK_TEMPLATE_ID
+    // ) {
+    //   return;
+    // }
 
-    let row = await this.chats.findOne({ where: { taskId } });
-    if (!row) {
-      await this.chats
-        .createQueryBuilder()
-        .insert()
-        .into(FeishuBotProjectChat)
-        .values({
-          projectId,
-          taskId,
-          officialConfigId: official.id,
-          state: 'creating',
-          name: projectChatName(project.name),
-          projectName: project.name,
-          memberUserIds: [],
-          memberNames: [],
-          botIds: [],
-          lastStatuses: {},
-          finishedAt: null,
-          finishedNotified: false,
-          destroyAfter: null,
-          attempts: 0,
-          lastError: null,
-        })
-        .orIgnore()
-        .execute();
-      row = await this.chats.findOne({ where: { taskId } });
-    }
-    if (!row || row.state === 'destroyed' || row.chatId) return;
-    if (row.attempts >= CREATE_MAX_ATTEMPTS) return;
+    // let row = await this.chats.findOne({ where: { taskId } });
+    // if (!row) {
+    //   await this.chats
+    //     .createQueryBuilder()
+    //     .insert()
+    //     .into(FeishuBotProjectChat)
+    //     .values({
+    //       projectId,
+    //       taskId,
+    //       officialConfigId: official.id,
+    //       state: 'creating',
+    //       name: projectChatName(project.name),
+    //       projectName: project.name,
+    //       memberUserIds: [],
+    //       memberNames: [],
+    //       botIds: [],
+    //       lastStatuses: {},
+    //       finishedAt: null,
+    //       finishedNotified: false,
+    //       destroyAfter: null,
+    //       attempts: 0,
+    //       lastError: null,
+    //     })
+    //     .orIgnore()
+    //     .execute();
+    //   row = await this.chats.findOne({ where: { taskId } });
+    // }
+    // if (!row || row.state === 'destroyed' || row.chatId) return;
+    // if (row.attempts >= CREATE_MAX_ATTEMPTS) return;
 
-    await this.withLock(`chat:${row.id}`, async () => {
-      const fresh = await this.chats.findOne({ where: { id: row.id } });
-      if (!fresh || fresh.chatId || fresh.state === 'destroyed') return;
-      const secrets = this.configs.secretsOf(official);
-      await this.createGroupChat(fresh, official, secrets, project, task);
-    });
+    // await this.withLock(`chat:${row.id}`, async () => {
+    //   const fresh = await this.chats.findOne({ where: { id: row.id } });
+    //   if (!fresh || fresh.chatId || fresh.state === 'destroyed') return;
+    //   const secrets = this.configs.secretsOf(official);
+    //   await this.createGroupChat(fresh, official, secrets, project, task);
+    // });
   }
 
-  /** 每分钟对账：补建群 / 状态补偿 / 终态计时 / 到期解散 */
+  /** 每分钟对账：状态补偿 / 终态计时 / 到期解散（自动建群已停用，建群段见注释） */
   @Cron('15 * * * * *')
   async reconcile(): Promise<void> {
     if (this.reconciling) return;
@@ -246,16 +252,17 @@ export class FeishuBotProjectChatService
       await this.withLock(`chat:${row.id}`, async () => {
         const fresh = await this.chats.findOne({ where: { id: row.id } });
         if (!fresh || fresh.state === 'destroyed') return;
-        if (
-          !paused &&
-          (!fresh.chatId ||
-            fresh.state === 'creating' ||
-            fresh.state === 'error') &&
-          fresh.attempts < CREATE_MAX_ATTEMPTS
-        ) {
-          await this.createGroupChat(fresh, official, secrets, project, root);
-          return;
-        }
+        // [自动建群已停用] 建群失败重试；恢复时取消注释。
+        // if (
+        //   !paused &&
+        //   (!fresh.chatId ||
+        //     fresh.state === 'creating' ||
+        //     fresh.state === 'error') &&
+        //   fresh.attempts < CREATE_MAX_ATTEMPTS
+        // ) {
+        //   await this.createGroupChat(fresh, official, secrets, project, root);
+        //   return;
+        // }
         if (fresh.state !== 'active' || !fresh.chatId) return;
 
         await this.markRootFinished(fresh, root);
@@ -272,22 +279,25 @@ export class FeishuBotProjectChatService
       });
     }
 
-    if (!official) return;
-    const bound = new Set(rows.map((row) => row.taskId));
-    const candidates = await this.tasks.find({
-      where: {
-        templateId: SYSTEM_PROJECT_DELIVERY_TASK_TEMPLATE_ID,
-        parentId: IsNull(),
-        status: In([TaskStatus.WAITING, TaskStatus.RUNNING]),
-      },
-      order: { id: 'DESC' },
-      take: CANDIDATE_LIMIT,
-    });
-    for (const task of candidates) {
-      if (bound.has(task.id) || !task.projectId) continue;
-      await this.ensureForProjectTask(task.projectId, task.id);
-    }
+    // [自动建群已停用] 给未绑定群的交付任务补建；恢复时取消注释。
+    // if (!official) return;
+    // const bound = new Set(rows.map((row) => row.taskId));
+    // const candidates = await this.tasks.find({
+    //   where: {
+    //     templateId: SYSTEM_PROJECT_DELIVERY_TASK_TEMPLATE_ID,
+    //     parentId: IsNull(),
+    //     status: In([TaskStatus.WAITING, TaskStatus.RUNNING]),
+    //   },
+    //   order: { id: 'DESC' },
+    //   take: CANDIDATE_LIMIT,
+    // });
+    // for (const task of candidates) {
+    //   if (bound.has(task.id) || !task.projectId) continue;
+    //   await this.ensureForProjectTask(task.projectId, task.id);
+    // }
   }
+
+  // [自动建群已停用] 以下两个方法已无调用方，保留以便编译检查与恢复。
 
   /** 建群：相关方 + 可用执行机器人；机器人拉入失败时降级为仅拉用户 */
   private async createGroupChat(
