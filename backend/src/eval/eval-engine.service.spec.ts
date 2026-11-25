@@ -1,66 +1,105 @@
 import {
   EVAL_GLOBAL_CONCURRENCY,
+  EVAL_JUDGE_CONCURRENCY,
   EvalEngineService,
   RULE_ANSWER_MORE,
 } from './eval-engine.service';
-import type { EvalRun } from './eval-run.entity';
+import type { EvalRunItem } from './eval-run-item.entity';
 import {
   EvalEventType,
   EvalItemResult,
   EvalItemStatus,
   EvalRunStatus,
+  TaskStatus,
+  TaskSubStatus,
 } from '../common/enums';
 
-/** 仅实现 slotAvailable 依赖的 items.count 桩（识别 TypeORM In 运算符） */
-function engineWithItems(
-  rows: Array<{ runId: number; status: EvalItemStatus; superseded: boolean }>,
-): EvalEngineService {
+/**
+ * 并发占位测试桩：内存里的评估批次与评估项，
+ * dataSource.transaction 直接执行回调，用同一份内存数据实现 manager 的计数与条件更新。
+ */
+interface ItemRow {
+  id: number;
+  runId: number;
+  caseId: number;
+  status: EvalItemStatus;
+  superseded: boolean;
+  taskId?: number | null;
+  reworkCount?: number;
+}
+
+interface RunRow {
+  id: number;
+  concurrency: number;
+  status: EvalRunStatus;
+}
+
+function statusesOf(status: unknown): EvalItemStatus[] {
+  const value = Array.isArray(status)
+    ? (status as unknown[])
+    : ((status as { value?: unknown[] } | null)?.value ?? []);
+  return value.filter((s): s is EvalItemStatus => typeof s === 'string');
+}
+
+function admissionEngine(rows: ItemRow[], runs: RunRow[]) {
   const service = Object.create(
     EvalEngineService.prototype,
   ) as EvalEngineService;
-  const statusesOf = (status: unknown): EvalItemStatus[] => {
-    const op = status as { value?: unknown[] };
-    const list = Array.isArray(status)
-      ? (status as unknown[])
-      : (op?.value ?? []);
-    return list.filter((s): s is EvalItemStatus => typeof s === 'string');
+  const internals = service as unknown as {
+    dataSource: unknown;
+    progress: { emitRun(runId: number): void };
+    launching: Set<number>;
+    busy: Set<number>;
+    admitting: boolean;
+    launch(item: EvalRunItem): void;
+    admitPending(pending: EvalRunItem[]): Promise<void>;
   };
-  (
-    service as unknown as { items: { count(query: unknown): Promise<number> } }
-  ).items = {
-    count: (query: unknown) => {
-      const where = (
-        query as {
-          where: { runId?: number; status: unknown; superseded: boolean };
-        }
-      ).where;
-      const statuses = statusesOf(where.status);
+  const launched: number[] = [];
+  internals.launching = new Set();
+  internals.busy = new Set();
+  internals.admitting = false;
+  internals.progress = { emitRun: () => undefined };
+  internals.launch = (item) => {
+    launched.push(item.id);
+  };
+  const manager = {
+    query: () => Promise.resolve([{}]),
+    findOne: (_entity: unknown, query: { where: { id: number } }) =>
+      Promise.resolve(runs.find((run) => run.id === query.where.id) ?? null),
+    count: (_entity: unknown, query: { where: Record<string, unknown> }) => {
+      const where = query.where as {
+        runId?: number;
+        status: unknown;
+        superseded: boolean;
+      };
+      const list = statusesOf(where.status);
       return Promise.resolve(
         rows.filter(
-          (r) =>
-            r.superseded === where.superseded &&
-            statuses.includes(r.status) &&
-            (where.runId === undefined || r.runId === where.runId),
+          (row) =>
+            row.superseded === where.superseded &&
+            list.includes(row.status) &&
+            (where.runId === undefined || row.runId === where.runId),
         ).length,
       );
     },
+    update: (
+      _entity: unknown,
+      criteria: { id: number; status: EvalItemStatus },
+      patch: { status: EvalItemStatus },
+    ) => {
+      const row = rows.find(
+        (item) => item.id === criteria.id && item.status === criteria.status,
+      );
+      if (!row) return Promise.resolve({ affected: 0 });
+      row.status = patch.status;
+      return Promise.resolve({ affected: 1 });
+    },
   };
-  return service;
-}
-
-async function slotAvailable(
-  service: EvalEngineService,
-  run: Pick<EvalRun, 'id' | 'concurrency'>,
-  currentActive: number,
-): Promise<boolean> {
-  return (
-    service as unknown as {
-      slotAvailable(
-        run: Pick<EvalRun, 'id' | 'concurrency'>,
-        currentActive: number,
-      ): Promise<boolean>;
-    }
-  ).slotAvailable(run, currentActive);
+  internals.dataSource = {
+    transaction: (fn: (entityManager: unknown) => Promise<boolean>) =>
+      fn(manager),
+  };
+  return { service, internals, launched, rows };
 }
 
 describe('EvalEngineService 平台重启恢复（TECH_DESIGN 16）', () => {
@@ -82,27 +121,32 @@ describe('EvalEngineService 平台重启恢复（TECH_DESIGN 16）', () => {
         items: { find(query: unknown): Promise<unknown[]> };
       }
     ).items = {
-      find: () =>
-        Promise.resolve([
-          {
-            id: 2,
-            status: EvalItemStatus.PENDING,
-            taskId: null,
-            superseded: false,
-          },
-          {
-            id: 3,
-            status: EvalItemStatus.INVITED,
-            taskId: null,
-            superseded: false,
-          },
-          {
-            id: 4,
-            status: EvalItemStatus.RUNNING,
-            taskId: 9,
-            superseded: false,
-          },
-        ]),
+      find: (query: unknown) => {
+        const where = (query as { where: { status: unknown } }).where;
+        const statuses = statusesOf(where.status);
+        return Promise.resolve(
+          [
+            {
+              id: 2,
+              status: EvalItemStatus.PENDING,
+              taskId: null,
+              superseded: false,
+            },
+            {
+              id: 3,
+              status: EvalItemStatus.INVITED,
+              taskId: null,
+              superseded: false,
+            },
+            {
+              id: 4,
+              status: EvalItemStatus.RUNNING,
+              taskId: 9,
+              superseded: false,
+            },
+          ].filter((row) => statuses.includes(row.status)),
+        );
+      },
     };
     (
       service as unknown as {
@@ -118,57 +162,388 @@ describe('EvalEngineService 平台重启恢复（TECH_DESIGN 16）', () => {
   });
 });
 
-describe('EvalEngineService 并发槽位调度（TECH_DESIGN 15.3）', () => {
-  const run = (id: number, concurrency: number) => ({
+describe('EvalEngineService 并发占位（TECH_DESIGN 15.3）', () => {
+  const run = (id: number, concurrency: number): RunRow => ({
     id,
     concurrency,
     status: EvalRunStatus.RUNNING,
   });
+  const item = (
+    id: number,
+    runId: number,
+    status: EvalItemStatus,
+  ): ItemRow => ({
+    id,
+    runId,
+    caseId: 1,
+    status,
+    superseded: false,
+  });
 
-  it('仅有排队项且项数 ≥ 批次并发时应有空槽（排队不占槽，回归：批次永久排队死锁）', async () => {
-    // 本次事故场景：1 个 PENDING 项 + concurrency=1
-    const one = engineWithItems([
-      { runId: 1, status: EvalItemStatus.PENDING, superseded: false },
-    ]);
-    await expect(slotAvailable(one, run(1, 1), 1)).resolves.toBe(true);
-    // 6 个 PENDING 项 + concurrency=3：全局占用态为 0（排队不计入全局槽位）
-    const six = engineWithItems(
-      Array.from({ length: 6 }, () => ({
-        runId: 1,
-        status: EvalItemStatus.PENDING,
-        superseded: false,
-      })),
+  it('concurrency=1 的批次一次只启动 1 个排队项（回归：同轮全部放行）', async () => {
+    const rows = Array.from({ length: 10 }, (_, index) =>
+      item(index + 1, 1, EvalItemStatus.PENDING),
     );
-    await expect(slotAvailable(six, run(1, 3), 0)).resolves.toBe(true);
+    const { internals, launched } = admissionEngine(rows, [run(1, 1)]);
+    await internals.admitPending(rows as unknown as EvalRunItem[]);
+    expect(launched).toEqual([1]);
+    expect(rows[0]?.status).toBe(EvalItemStatus.PREPARING);
   });
 
-  it('占用态项达到批次并发上限时无空槽', async () => {
-    const service = engineWithItems([
-      { runId: 1, status: EvalItemStatus.RUNNING, superseded: false },
-      { runId: 1, status: EvalItemStatus.JUDGING, superseded: false },
-      { runId: 1, status: EvalItemStatus.PENDING, superseded: false },
-    ]);
-    await expect(slotAvailable(service, run(1, 2), 3)).resolves.toBe(false);
+  it('批次并发上限只放行剩余空位（执行中 1 个 + concurrency=3 → 再放 2 个）', async () => {
+    const rows = [
+      item(1, 1, EvalItemStatus.RUNNING),
+      ...Array.from({ length: 5 }, (_, index) =>
+        item(index + 2, 1, EvalItemStatus.PENDING),
+      ),
+    ];
+    const { internals, launched } = admissionEngine(rows, [run(1, 3)]);
+    await internals.admitPending(rows.slice(1) as unknown as EvalRunItem[]);
+    expect(launched).toEqual([2, 3]);
   });
 
-  it('全局占用达到上限时无空槽（即使批次内有空位）', async () => {
-    const service = engineWithItems([
-      { runId: 1, status: EvalItemStatus.PENDING, superseded: false },
+  it('全局上限跨批次生效（两个批次各 4 个排队项 → 总共只放 5 个）', async () => {
+    const rows = [
+      ...Array.from({ length: 4 }, (_, index) =>
+        item(index + 1, 1, EvalItemStatus.PENDING),
+      ),
+      ...Array.from({ length: 4 }, (_, index) =>
+        item(index + 5, 2, EvalItemStatus.PENDING),
+      ),
+    ];
+    const { internals, launched } = admissionEngine(rows, [
+      run(1, 4),
+      run(2, 4),
     ]);
-    await expect(
-      slotAvailable(service, run(1, 3), EVAL_GLOBAL_CONCURRENCY),
-    ).resolves.toBe(false);
+    await internals.admitPending(rows as unknown as EvalRunItem[]);
+    expect(launched).toHaveLength(EVAL_GLOBAL_CONCURRENCY);
+    expect(launched).toEqual([1, 2, 3, 4, 5]);
   });
 
-  it('占用态计数排除排队与被替代项', async () => {
-    const service = engineWithItems([
-      { runId: 1, status: EvalItemStatus.PENDING, superseded: false },
-      { runId: 1, status: EvalItemStatus.PENDING, superseded: true },
-      { runId: 1, status: EvalItemStatus.DONE, superseded: false },
-      { runId: 2, status: EvalItemStatus.RUNNING, superseded: false },
+  it('判定中占用槽位：69 个判定中 + 12 个排队项不再启动任何项', async () => {
+    const rows = [
+      ...Array.from({ length: 69 }, (_, index) =>
+        item(index + 1, 5, EvalItemStatus.JUDGING),
+      ),
+      ...Array.from({ length: 10 }, (_, index) =>
+        item(index + 100, 6, EvalItemStatus.PENDING),
+      ),
+      ...Array.from({ length: 2 }, (_, index) =>
+        item(index + 200, 7, EvalItemStatus.PENDING),
+      ),
+    ];
+    const { internals, launched } = admissionEngine(rows, [
+      run(5, 5),
+      run(6, 3),
+      run(7, 3),
     ]);
-    // 本批次无占用态项 → 有空槽；其它批次的占用项不计入 runId 过滤
-    await expect(slotAvailable(service, run(1, 1), 1)).resolves.toBe(true);
+    const pending = rows.filter((row) => row.status === EvalItemStatus.PENDING);
+    await internals.admitPending(pending as unknown as EvalRunItem[]);
+    expect(launched).toEqual([]);
+  });
+
+  it('同一轮 tick 只有一个启动流程（重入直接返回）', async () => {
+    const rows = [
+      item(1, 1, EvalItemStatus.PENDING),
+      item(2, 1, EvalItemStatus.PENDING),
+    ];
+    const { internals, launched } = admissionEngine(rows, [run(1, 5)]);
+    internals.admitting = true;
+    await internals.admitPending(rows as unknown as EvalRunItem[]);
+    expect(launched).toEqual([]);
+  });
+});
+
+/** 判定对账测试桩：只实现 reconcileJudging 依赖的仓储与方法 */
+interface JudgingStub {
+  items: { findOne(query: unknown): Promise<unknown> };
+  judgements: { findOne(query: unknown): Promise<unknown> };
+  tasks: { findOne(query: unknown): Promise<unknown> };
+  events: { find(query: unknown): Promise<unknown[]> };
+  logger: { log(): void; warn(): void; error(): void };
+  judging: Set<number>;
+  judgeStartedAt: Map<number, number>;
+  startJudge(...args: unknown[]): Promise<void>;
+  applyJudgement(...args: unknown[]): Promise<void>;
+  markItemError(id: number, message: string): Promise<void>;
+  addEvent(...args: unknown[]): Promise<void>;
+  reconcileJudging(item: unknown): Promise<void>;
+}
+
+function judgingStub(options: {
+  item: Record<string, unknown>;
+  task: Record<string, unknown> | null;
+  effective?: Record<string, unknown> | null;
+  judgeStarts?: number[];
+  live?: boolean;
+  startedAgoMs?: number;
+}) {
+  const engine = Object.create(
+    EvalEngineService.prototype,
+  ) as unknown as JudgingStub;
+  const state = {
+    started: [] as unknown[][],
+    applied: [] as unknown[][],
+    errors: [] as string[],
+    events: [] as unknown[][],
+  };
+  engine.items = { findOne: () => Promise.resolve({ ...options.item }) };
+  engine.logger = {
+    log: () => undefined,
+    warn: () => undefined,
+    error: () => undefined,
+  };
+  engine.judgements = {
+    findOne: () => Promise.resolve(options.effective ?? null),
+  };
+  engine.tasks = { findOne: () => Promise.resolve(options.task) };
+  engine.events = {
+    find: () =>
+      Promise.resolve(
+        (options.judgeStarts ?? []).map((round) => ({ payload: { round } })),
+      ),
+  };
+  engine.judging = new Set(options.live ? [Number(options.item.id)] : []);
+  engine.judgeStartedAt = new Map(
+    options.live
+      ? [
+          [
+            Number(options.item.id),
+            Date.now() - (options.startedAgoMs ?? 0),
+          ] as [number, number],
+        ]
+      : [],
+  );
+  engine.startJudge = (...args) => {
+    state.started.push(args);
+    return Promise.resolve();
+  };
+  engine.applyJudgement = (...args) => {
+    state.applied.push(args);
+    return Promise.resolve();
+  };
+  engine.markItemError = (id, message) => {
+    state.errors.push(message);
+    return Promise.resolve();
+  };
+  engine.addEvent = (...args) => {
+    state.events.push(args);
+    return Promise.resolve();
+  };
+  return { engine, state };
+}
+
+describe('评估项判定对账（判定中兜底）', () => {
+  const judgingItem = {
+    id: 7,
+    runId: 1,
+    caseId: 5,
+    taskId: 9,
+    status: EvalItemStatus.JUDGING,
+    reworkCount: 0,
+  };
+  const waitingAccept = {
+    id: 9,
+    status: TaskStatus.WAITING,
+    subStatus: TaskSubStatus.PENDING_ACCEPT,
+  };
+
+  it('没有在跑的判定会话且任务仍在待验收：重开判定', async () => {
+    const { engine, state } = judgingStub({
+      item: judgingItem,
+      task: waitingAccept,
+    });
+    await engine.reconcileJudging(judgingItem);
+    expect(state.started).toHaveLength(1);
+    expect(state.errors).toEqual([]);
+  });
+
+  it('本轮判定会话已达上限：判异常，不再无限重开', async () => {
+    const { engine, state } = judgingStub({
+      item: judgingItem,
+      task: waitingAccept,
+      judgeStarts: [1, 1, 1],
+    });
+    await engine.reconcileJudging(judgingItem);
+    expect(state.started).toEqual([]);
+    expect(state.errors).toEqual(['判定失败：判定重试耗尽']);
+  });
+
+  it('已有生效判定（提交后进程异常）：补推进状态机', async () => {
+    const { engine, state } = judgingStub({
+      item: judgingItem,
+      task: waitingAccept,
+      effective: { id: 3, score: 90, pass: true },
+    });
+    await engine.reconcileJudging(judgingItem);
+    expect(state.applied).toHaveLength(1);
+    expect(state.started).toEqual([]);
+  });
+
+  it('任务已不在待验收：判异常，避免永久占槽', async () => {
+    const { engine, state } = judgingStub({
+      item: judgingItem,
+      task: {
+        id: 9,
+        status: TaskStatus.FINISHED,
+        subStatus: TaskSubStatus.COMPLETED,
+      },
+    });
+    await engine.reconcileJudging(judgingItem);
+    expect(state.errors).toEqual(['评估任务已不在待验收，判定无法继续']);
+  });
+
+  it('判定会话长时间没结束：按超时判异常', async () => {
+    const { engine, state } = judgingStub({
+      item: judgingItem,
+      task: waitingAccept,
+      live: true,
+      startedAgoMs: 7 * 60_000,
+    });
+    await engine.reconcileJudging(judgingItem);
+    expect(state.errors).toEqual(['判定会话超时未结束（执行器无响应）']);
+    expect(engine.judging.has(7)).toBe(false);
+  });
+
+  it('判定并发达到上限时 startJudge 直接返回（不查批次、不建会话）', async () => {
+    const engine = Object.create(EvalEngineService.prototype) as unknown as {
+      judging: Set<number>;
+      logger: { log(): void; warn(): void; error(): void };
+      runs: { findOne(query: unknown): Promise<unknown> };
+      startJudge(item: unknown, task: unknown, round: number): Promise<void>;
+    };
+    engine.judging = new Set(
+      Array.from({ length: EVAL_JUDGE_CONCURRENCY }, (_, index) => index + 100),
+    );
+    engine.logger = {
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    };
+    let touched = false;
+    engine.runs = {
+      findOne: () => {
+        touched = true;
+        return Promise.resolve(null);
+      },
+    };
+    await engine.startJudge({ id: 7, runId: 1 }, { id: 9 }, 1);
+    expect(touched).toBe(false);
+  });
+});
+
+/** 会话失败续跑测试桩 */
+interface TurnFailureStub {
+  items: { findOne(query: unknown): Promise<unknown> };
+  runs: { findOne(query: unknown): Promise<unknown> };
+  workers: { findOne(query: unknown): Promise<unknown> };
+  tasks: { findOne(query: unknown): Promise<unknown> };
+  tasksService: { cancel(...args: unknown[]): Promise<unknown> };
+  turnFailures: Map<number, number>;
+  resumeTimers: Map<number, NodeJS.Timeout>;
+  addEvent(...args: unknown[]): Promise<void>;
+  markItemError(id: number, message: string): Promise<void>;
+  scheduleResume(...args: unknown[]): void;
+  failEvalItem(...args: unknown[]): Promise<void>;
+  onEvalTurnFailed(task: unknown, reason: string): Promise<void>;
+}
+
+function turnFailureStub(options: {
+  itemStatus?: EvalItemStatus;
+  runStatus?: EvalRunStatus;
+}) {
+  const engine = Object.create(
+    EvalEngineService.prototype,
+  ) as unknown as TurnFailureStub;
+  const state = {
+    scheduled: [] as unknown[][],
+    errors: [] as string[],
+    cancelled: [] as unknown[][],
+    events: [] as unknown[][],
+  };
+  engine.items = {
+    findOne: () =>
+      Promise.resolve({
+        id: 7,
+        runId: 1,
+        caseId: 5,
+        taskId: 9,
+        superseded: false,
+        status: options.itemStatus ?? EvalItemStatus.RUNNING,
+      }),
+  };
+  engine.runs = {
+    findOne: () =>
+      Promise.resolve({
+        id: 1,
+        evaluatorWorkerId: 2,
+        status: options.runStatus ?? EvalRunStatus.RUNNING,
+      }),
+  };
+  engine.workers = {
+    findOne: () => Promise.resolve({ id: 2, name: '评估机器人' }),
+  };
+  engine.tasks = {
+    findOne: () =>
+      Promise.resolve({
+        id: 9,
+        status: TaskStatus.RUNNING,
+        subStatus: TaskSubStatus.EXECUTING,
+      }),
+  };
+  engine.tasksService = {
+    cancel: (...args) => {
+      state.cancelled.push(args);
+      return Promise.resolve({});
+    },
+  };
+  engine.turnFailures = new Map();
+  engine.resumeTimers = new Map();
+  engine.addEvent = (...args) => {
+    state.events.push(args);
+    return Promise.resolve();
+  };
+  engine.markItemError = (id, message) => {
+    state.errors.push(message);
+    return Promise.resolve();
+  };
+  engine.scheduleResume = (...args) => {
+    state.scheduled.push(args);
+  };
+  return { engine, state };
+}
+
+describe('评估任务会话失败续跑（自动续跑 → 判异常）', () => {
+  const task = { id: 9, evalItemId: 7, isEval: true };
+
+  it('第一次失败先安排自动续跑，不判异常', async () => {
+    const { engine, state } = turnFailureStub({});
+    await engine.onEvalTurnFailed(task, '对账补偿：会话执行失败');
+    expect(state.scheduled).toEqual([[7, 9, 1, 30_000]]);
+    expect(state.errors).toEqual([]);
+    expect(engine.turnFailures.get(7)).toBe(1);
+  });
+
+  it('连续失败超过续跑上限（2 次）后判异常并结束评估任务', async () => {
+    const { engine, state } = turnFailureStub({});
+    engine.turnFailures.set(7, 2);
+    await engine.onEvalTurnFailed(task, '执行失败：HTTP 429');
+    expect(state.errors).toEqual([
+      '会话执行失败（已续跑 2 次）：执行失败：HTTP 429',
+    ]);
+    expect(state.cancelled).toEqual([[9, '评估机器人']]);
+  });
+
+  it('评估项已终态或批次已取消：不再续跑也不再判异常', async () => {
+    const terminal = turnFailureStub({ itemStatus: EvalItemStatus.DONE });
+    await terminal.engine.onEvalTurnFailed(task, '失败');
+    expect(terminal.state.scheduled).toEqual([]);
+    expect(terminal.state.errors).toEqual([]);
+
+    const canceled = turnFailureStub({ runStatus: EvalRunStatus.CANCELED });
+    await canceled.engine.onEvalTurnFailed(task, '失败');
+    expect(canceled.state.scheduled).toEqual([]);
+    expect(canceled.state.errors).toEqual([]);
   });
 });
 

@@ -42,6 +42,8 @@ interface Session {
   /** 最近一回合失败的真实原因（内核 result.error；成功回合清空） */
   lastError: string | null;
   idleAt: number;
+  /** 创建时间（空闲会话淘汰用） */
+  createdAt: number;
   messages: Message[];
   turnBuffer: string;
   deleted: boolean;
@@ -49,11 +51,17 @@ interface Session {
 
 export class SessionManager {
   private readonly sessions = new Map<string, Session>();
+  /** 等待并发上限的会话 id（FIFO）：执行器不能被一次涌入的回合压垮 */
+  private readonly waiting: string[] = [];
+  /** 正在运行的回合数 */
+  private activeTurns = 0;
 
   constructor(
     private readonly kernel: Kernel,
     private readonly emit: EventSink,
     private readonly defaultDirectory: string,
+    /** 同时运行的回合上限（BRIDGE_MAX_TURNS，缺省 10） */
+    readonly maxTurns = 10,
   ) {}
 
   create(input: CreateSessionInput): SessionInfo {
@@ -72,6 +80,7 @@ export class SessionManager {
       outcome: null,
       lastError: null,
       idleAt: 0,
+      createdAt: Date.now(),
       messages: [],
       turnBuffer: '',
       deleted: false,
@@ -201,6 +210,39 @@ export class SessionManager {
     session.deleted = true;
     session.abort?.abort();
     this.sessions.delete(sessionId);
+    this.dropWaiting(sessionId);
+  }
+
+  /** 空闲会话淘汰：长时间没有回合的会话回收内存（平台按 404 对账重建） */
+  startEviction(ttlMs = 24 * 3600_000, intervalMs = 10 * 60_000): void {
+    const timer = setInterval(() => this.evictIdle(ttlMs), intervalMs);
+    timer.unref();
+  }
+
+  private evictIdle(ttlMs: number): void {
+    const deadline = Date.now() - ttlMs;
+    for (const [id, session] of this.sessions) {
+      if (session.running || session.queue.length > 0) continue;
+      if (Math.max(session.idleAt, session.createdAt) > deadline) continue;
+      this.sessions.delete(id);
+      this.dropWaiting(id);
+    }
+  }
+
+  private dropWaiting(sessionId: string): void {
+    const index = this.waiting.indexOf(sessionId);
+    if (index >= 0) this.waiting.splice(index, 1);
+  }
+
+  /** 回合结束后按下发顺序补位（drain 同步占住并发名额后才返回） */
+  private pumpWaiting(): void {
+    while (this.activeTurns < this.maxTurns && this.waiting.length > 0) {
+      const sessionId = this.waiting.shift();
+      if (!sessionId) return;
+      const session = this.sessions.get(sessionId);
+      if (!session || session.deleted) continue;
+      void this.drain(session);
+    }
   }
 
   private getOrFail(sessionId: string): Session {
@@ -211,10 +253,17 @@ export class SessionManager {
 
   private async drain(session: Session): Promise<void> {
     if (session.running || session.deleted) return;
+    if (session.queue.length === 0) return;
+    // 并发上限：超出的回合保持排队，回合结束后由 pumpWaiting 按序补上
+    if (this.activeTurns >= this.maxTurns) {
+      if (!this.waiting.includes(session.id)) this.waiting.push(session.id);
+      return;
+    }
     const item = session.queue.shift();
     if (!item) return;
     session.running = true;
     session.abort = new AbortController();
+    this.activeTurns += 1;
     session.turnBuffer = '';
     const turnModel = session.model;
     const assistantId = KiroKernel.messageId();
@@ -284,6 +333,9 @@ export class SessionManager {
         externalId: session.externalId,
         error: (error as Error).message,
       };
+    } finally {
+      // 无论内核怎么失败，并发名额必须归还，否则后续回合永久排队
+      this.activeTurns -= 1;
     }
     // 回合终态：关闭未闭合的思考/正文块（消费侧据此收尾气泡与实时行）
     endBlock();
@@ -308,6 +360,25 @@ export class SessionManager {
     session.running = false;
     session.abort = null;
     session.turnBuffer = '';
+    // 回合终态事件：平台据此立即收尾本轮（不用等两分钟对账）；time.idle 供平台判断是否属于最新一轮
+    this.emit(
+      result.outcome === 'succeeded'
+        ? 'session.execution.succeeded'
+        : 'session.execution.failed',
+      {
+        sessionID: session.id,
+        ...(result.outcome === 'failed'
+          ? {
+              error: {
+                type: 'turn-failed',
+                message: session.lastError ?? '执行失败',
+              },
+            }
+          : {}),
+        time: { idle: session.idleAt },
+      },
+    );
+    this.pumpWaiting();
     void this.drain(session);
   }
 }

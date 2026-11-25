@@ -5,6 +5,8 @@
  * - BRIDGE_TOKEN：Bearer 令牌（空 = 不鉴权，仅限本机回环）
  * - KERNEL：执行内核（kiro / devin / droid，后续 codex / claude）
  * - BRIDGE_ROOT：工位根目录（文件端点路径限定范围；默认 WORKER_BASE_DIR 或当前目录）
+ * - BRIDGE_MAX_TURNS：同时运行的回合上限（默认 10，超出的回合按序排队）
+ * - BRIDGE_SESSION_TTL_MS：空闲会话回收时间（默认 24 小时）
  */
 import { resolve } from 'path';
 import { SessionManager } from './core/sessions.js';
@@ -54,6 +56,10 @@ const sessions = new SessionManager(
   kernel,
   (type, data) => bus.publish(type, data),
   files.directory(),
+  Math.max(1, Number(process.env.BRIDGE_MAX_TURNS ?? 10) || 10),
+);
+sessions.startEviction(
+  Math.max(60_000, Number(process.env.BRIDGE_SESSION_TTL_MS ?? 24 * 3600_000)),
 );
 
 startBridgeServer({

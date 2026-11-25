@@ -19,7 +19,7 @@ import {
   type OpencodeCreateSessionInput,
   type OpencodePromptInput,
 } from './opencode-client';
-import type { ModelErrorLike } from './model-availability';
+import { toModelError, type ModelErrorLike } from './model-availability';
 import type { OpencodeTodo } from './opencode-todos';
 
 interface BridgeHealth {
@@ -275,9 +275,11 @@ export class BridgeClient implements ExecutorClient {
     return null;
   }
 
-  lastAssistantError(): Promise<ModelErrorLike | null> {
-    // bridge v1 不上报结构化模型错误（内核失败原因在 outcome/error 文案中）
-    return Promise.resolve(null);
+  lastAssistantError(sessionId: string): Promise<ModelErrorLike | null> {
+    // bridge 不在消息里带结构化模型错误：回合失败原因由 GET /sessions/:id 的 error 字段返回
+    return this.session(sessionId)
+      .then((info) => (info.error ? toModelError(info.error) : null))
+      .catch(() => null);
   }
 
   async lastUserMessageCreatedAt(sessionId: string): Promise<number> {

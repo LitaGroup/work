@@ -42,6 +42,7 @@ import {
   isModelQuotaError,
   markModelExhausted,
   resolveWorkerModel,
+  toModelError,
   type ModelErrorLike,
 } from '../executors/model-availability';
 import {
@@ -204,6 +205,16 @@ export class TaskDispatchService
 
   /** taskId → 本轮已因主模型限额切换过备用模型（每轮最多切换一次） */
   private readonly backupSwitched = new Set<number>();
+
+  /** taskId → 本轮 prompt 的创建时间（执行器时钟，判断终态事件是否属于本轮） */
+  private readonly turnStartedAt = new Map<number, number>();
+
+  /**
+   * 评估任务会话失败的收尾回调：由评估引擎在启动时注入（避免模块循环依赖）。
+   * 派发侧只负责结束本轮，续跑/判异常由评估引擎决定。
+   */
+  evalTurnFailedHook: ((task: Task, reason: string) => Promise<void>) | null =
+    null;
 
   /** 启动时先对账一次：恢复执行中任务的事件流订阅并补推进漏收终态 */
   async onApplicationBootstrap(): Promise<void> {
@@ -598,7 +609,14 @@ export class TaskDispatchService
           : `${prompt}\n\n# 用户消息\n\n${userMessage!.trim()}`
         : prompt;
       task.offerAttemptAt = offering ? new Date() : task.offerAttemptAt;
-      await client.prompt(sessionId, { text });
+      const promptResult = await client.prompt(sessionId, { text });
+      // 终态事件的新鲜度基准：执行器返回的本轮用户消息时间（bridge 每回合都会发终态事件）
+      const turnCreated = promptResult?.time?.created;
+      if (typeof turnCreated === 'number' && turnCreated > 0) {
+        this.turnStartedAt.set(task.id, turnCreated);
+      } else {
+        this.turnStartedAt.delete(task.id);
+      }
       // 执行记录：平台派发轮次与消息正文
       void this.trace
         .recordTurnStart(
@@ -1358,10 +1376,12 @@ export class TaskDispatchService
       }
       case event.type === 'session.execution.succeeded':
       case event.type === 'session.execution.completed': {
+        if (this.isStaleTurnTerminal(taskId, data)) break;
         await this.finalizeSuccess(taskId);
         break;
       }
       case event.type === 'session.execution.failed': {
+        if (this.isStaleTurnTerminal(taskId, data)) break;
         const error = data.error as
           { type?: string; message?: string } | undefined;
         this.pushLine(taskId, `✗ 执行失败：${error?.message ?? event.type}`);
@@ -1395,6 +1415,23 @@ export class TaskDispatchService
       this.textBuffers.set(taskId, buffers);
     }
     return buffers;
+  }
+
+  /**
+   * 终态事件是否属于更早的一轮：bridge 每个回合结束都会推终态事件，
+   * 会话里还排着后续 prompt 时，前面回合的终态不能算到本轮头上。
+   * 事件不带执行器时间（opencode 单轮模式）时按既有行为直接采信。
+   */
+  private isStaleTurnTerminal(
+    taskId: number,
+    data: Record<string, unknown>,
+  ): boolean {
+    const time = data.time as { idle?: unknown } | undefined;
+    const idle = typeof time?.idle === 'number' ? time.idle : null;
+    const startedAt = this.turnStartedAt.get(taskId) ?? 0;
+    if (idle === null || startedAt <= 0) return false;
+    // 两个时间都来自执行器时钟（prompt 返回值与事件 idle），直接比较即可
+    return idle < startedAt;
   }
 
   /** question.asked：生成问答卡片 + 提醒责任人 */
@@ -1810,6 +1847,14 @@ export class TaskDispatchService
             { fallbackToTicketOwner: true },
           );
         }
+        // 评估任务：续跑/判异常由评估引擎决定（派发侧只结束本轮）
+        if (task.isEval && this.evalTurnFailedHook) {
+          await this.evalTurnFailedHook(task, content).catch((error: Error) =>
+            this.logger.warn(
+              `任务 #${taskId} 评估失败收尾回调失败: ${error.message}`,
+            ),
+          );
+        }
       }
     } catch (error) {
       this.failedReconciled.delete(taskId);
@@ -2133,6 +2178,9 @@ export class TaskDispatchService
     for (const taskId of [...this.stallNotifiedAt.keys()]) {
       if (!executingIds.has(taskId)) this.stallNotifiedAt.delete(taskId);
     }
+    for (const taskId of [...this.turnStartedAt.keys()]) {
+      if (!activeIds.has(taskId)) this.turnStartedAt.delete(taskId);
+    }
     // 待申请验收不占用机器人；服务重启后重建内存催办状态。
     for (const task of pendingApply) {
       if (!this.applyReminders.has(task.id)) {
@@ -2178,10 +2226,19 @@ export class TaskDispatchService
           );
           await this.finalizeSuccess(task.id);
         } else if (info.outcome === 'failed') {
-          this.pushLine(task.id, '↻ 对账补偿：会话执行失败');
-          const error = await client
-            .lastAssistantError(task.opencodeSessionId)
-            .catch(() => null);
+          // bridge 会话的失败原因由 GET /sessions/:id 的 error 字段返回（旧 bridge 为空）
+          const detail = info.error?.trim() || '';
+          this.pushLine(
+            task.id,
+            detail
+              ? `↻ 对账补偿：会话执行失败（${detail}）`
+              : '↻ 对账补偿：会话执行失败',
+          );
+          const error = detail
+            ? toModelError(detail)
+            : await client
+                .lastAssistantError(task.opencodeSessionId)
+                .catch(() => null);
           if (
             await this.continueWithBackupModel(
               task.id,
@@ -2194,8 +2251,8 @@ export class TaskDispatchService
           }
           await this.finalizeFailedTurn(
             task.id,
-            '对账补偿：会话执行失败，可重新派发后继续处理',
-            '对账补偿：会话执行失败（已结束本轮并重新排队未处理的子任务事件）',
+            `对账补偿：会话执行失败${detail ? `（${detail}）` : ''}，可重新派发后继续处理`,
+            `对账补偿：会话执行失败${detail ? `：${detail}` : ''}（已结束本轮并重新排队未处理的子任务事件）`,
           );
         }
       } catch (e) {

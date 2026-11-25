@@ -89,7 +89,11 @@ async function handle(
       kernel: ctx.kernel.name,
       pid: process.pid,
       urls: [],
-      capabilities: ctx.kernel.capabilities(),
+      // 并发回合上限由 bridge 统一执行（内核实现不感知），上报实际生效值
+      capabilities: {
+        ...ctx.kernel.capabilities(),
+        maxSessions: ctx.sessions.maxTurns,
+      },
     });
     return;
   }

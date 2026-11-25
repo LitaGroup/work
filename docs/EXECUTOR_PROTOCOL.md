@@ -1,6 +1,6 @@
 ---
 description: "> AI 助手提示：本文件定义平台与工位侧 executor-bridge 之间的执行器桥接协议（HTTP + SSE，protocol 1）。实现 bridge、新增执行内核或调用 bridge 端点前，必须先阅读本协议。"
-version: 1.3.0
+version: 1.4.0
 type: docs
 ---
 
@@ -27,6 +27,8 @@ type: docs
 - **一个工位（一条 executors 记录）一个 bridge 实例**：独立端口 + Bearer 令牌，内核子进程 `cwd` 为该工位目录。
 - opencode 执行器不经 bridge（平台直连 opencode server）。
 - bridge 无状态持久化要求：会话状态在内存，进程重启后会话失效（平台按离线对账重建）。
+- **并发回合上限**：`BRIDGE_MAX_TURNS`（缺省 10）。同一执行器同时运行的回合不超过上限，超出的回合按 `prompt` 下发顺序排队，回合结束后由 bridge 补位；`/health` 的 `capabilities.maxSessions` 上报该值。会话内仍严格串行（`promptQueueing`）。
+- **会话回收**：`BRIDGE_SESSION_TTL_MS`（缺省 24 小时）无回合且队列为空的会话由 bridge 定期淘汰，平台按 404 对账重建；`DELETE /sessions/:id` 立即丢弃会话及其排队回合。
 
 ---
 
@@ -59,7 +61,7 @@ opencode 执行器不经 bridge，端口不受本规范约束（当前本机 409
 
 | 方法 | 路径 | 说明 |
 |:---|:---|:---|
-| GET | `/health` | `{ version, bridgeVersion, protocol, kernel, capabilities }`，健康检查与能力协商；`version` 为内核（Agent CLI）自身版本（平台执行器「版本」展示），`bridgeVersion` 为 bridge 版本 |
+| GET | `/health` | `{ version, bridgeVersion, protocol, kernel, capabilities }`，健康检查与能力协商；`version` 为内核（Agent CLI）自身版本（平台执行器「版本」展示），`bridgeVersion` 为 bridge 版本；`capabilities.maxSessions` 为并发回合上限 |
 | GET | `/location` | `{ directory }` 默认工作目录 |
 | GET | `/providers` | 供应商清单 `[{id,name}]` |
 | GET | `/models` | 模型清单（含 `providerID/modelID/variants`） |
@@ -100,6 +102,8 @@ bridge 不提供 shell（`capabilities.exec=false`）；令牌与 MCP 配置写�
 3. **幂等查询**：`/sessions/:id`、`/sessions/:id/questions` 可重复调用且无副作用，供平台断线重连后对账。
 4. **中断**：interrupt 终止当前回合（outcome=failed），会话与队列保留，可继续投递。
 5. **消息时间**：`prompt` 返回的 `time.created` 与消息列表时间同源（bridge 时钟，毫秒）。
+6. **回合终态事件（强制）**：每个回合结束都要发 `session.execution.succeeded` 或 `session.execution.failed`，带 `sessionID`、`time.idle`（本回合结束时间）与失败时的 `error`。平台以 `time.idle` 与「本轮 prompt 的 `time.created`」比较判断终态是否属于最新一轮，更早回合的终态（会话里还排着后续 prompt）不得被采信。
+7. **并发与排队（强制）**：跨会话并行受 `BRIDGE_MAX_TURNS` 限制，排队会话不是「运行中」（`/sessions/active` 不返回），`wait` 在队列清空且无运行回合前不返回。
 
 ---
 
@@ -117,6 +121,8 @@ bridge 不提供 shell（`capabilities.exec=false`）；令牌与 MCP 配置写�
 | `session.text.ended` | `{sessionID, assistantMessageID}` | 正文块结束 |
 | `question.asked` / `question.replied` / `question.rejected` | 同平台 `OpencodeQuestionRequest` 形态 | v1 未触发（questions=false），预留 |
 | `session.deleted` | `{sessionID}` | 会话删除 |
+| `session.execution.succeeded` | `{sessionID, time:{idle}}` | 回合成功结束 |
+| `session.execution.failed` | `{sessionID, error:{type,message}, time:{idle}}` | 回合失败结束；`error.message` 为内核失败原因（含 interrupted） |
 
 同一回合内思考与正文可能多次交错：每次切换先补发旧块 `ended`、再发新块 `started`；回合终态关闭未闭合的块。最终产出语义不变，仍取 `runFinished` 的 `finalText`（缺省回退 bridge 消息日志的 `turnBuffer`）。
 
@@ -126,9 +132,9 @@ bridge 不提供 shell（`capabilities.exec=false`）；令牌与 MCP 配置写�
 
 ## 六、能力协商
 
-`/health` 返回 `protocol`（当前 1）与 `capabilities`（字段与 `backend/src/executors/executor-capabilities.ts` 一致）。平台按能力降级：`questions=false` 时提问回路整体不启用（飞书审批卡片不渲染按钮）；`switchModel=false` 时调试页提示「重置会话后生效」；`maxSessions` 限制并发会话上限（null = 未提供）。
+`/health` 返回 `protocol`（当前 1）与 `capabilities`（字段与 `backend/src/executors/executor-capabilities.ts` 一致）。平台按能力降级：`questions=false` 时提问回路整体不启用（飞书审批卡片不渲染按钮）；`switchModel=false` 时调试页提示「重置会话后生效」；`maxSessions` 为 bridge 实际生效的并发回合上限（`BRIDGE_MAX_TURNS`，缺省 10）。
 
-kiro / devin / droid 内核 v1 均上报：`questions=false, interrupt=true, switchModel=true（下一回合生效）, agents=false, exec=false, maxSessions=null`。
+kiro / devin / droid 内核 v1 均上报：`questions=false, interrupt=true, switchModel=true（下一回合生效）, agents=false, exec=false`，`maxSessions` 由 bridge 按 `BRIDGE_MAX_TURNS` 覆盖上报。
 
 ---
 
@@ -148,6 +154,12 @@ kiro / devin / droid 内核 v1 均上报：`questions=false, interrupt=true, swi
 - `KIRO_CLI_PATH`（默认 `kiro-cli`）
 - `DEVIN_CLI_PATH`（默认 `devin`）、`DEVIN_SESSION_MODE`（默认 `bypass`，无人值守工位全自治）
 - `DROID_CLI_PATH`（默认 `droid`）、`DROID_PERMISSION_MODE`（默认 `unsafe`；`low`/`medium`/`high` 走 `--auto`）
+
+bridge 环境变量：
+
+- `BRIDGE_PORT` / `BRIDGE_TOKEN` / `BRIDGE_ROOT`：监听端口、Bearer 令牌、工位根目录
+- `BRIDGE_MAX_TURNS`（默认 10）：同一执行器同时运行的回合上限
+- `BRIDGE_SESSION_TTL_MS`（默认 86400000，即 24 小时）：空闲会话回收时间
 
 ---
 

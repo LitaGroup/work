@@ -130,6 +130,8 @@ export class EvalJudgeService {
     appUrl: string;
     denyExternalDirectory: boolean;
     mcpServers: Record<string, unknown>;
+    /** 判定会话创建后回调（评估项结束时销毁会话用） */
+    onSessionCreated?: (sessionId: string) => void;
     onSessionEnd: (itemId: number, round: number) => void;
   }): Promise<void> {
     const {
@@ -143,6 +145,7 @@ export class EvalJudgeService {
       appUrl,
       denyExternalDirectory,
       mcpServers,
+      onSessionCreated,
       onSessionEnd,
     } = options;
     const client = createExecutorClient(executor);
@@ -186,6 +189,7 @@ export class EvalJudgeService {
         location: { directory: judgeSandbox },
         prompt: buildJudgePrompt(input),
         timeoutMs: JUDGE_SESSION_TIMEOUT_MS,
+        onSessionCreated,
       });
     } catch (error) {
       this.logger.warn(

@@ -7,7 +7,7 @@ import {
   type OnModuleInit,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { DataSource, In, MoreThan, Repository } from 'typeorm';
 import { createExecutorClient } from '../executors/executor-client';
 import { Executor } from '../executors/executor.entity';
 import { TaskStatus, TaskSubStatus, WorkerRuntime } from '../common/enums';
@@ -25,6 +25,7 @@ import { Task } from '../tasks/task.entity';
 import { TaskMessage } from '../tasks/task-message.entity';
 import { TaskEvent } from '../tasks/task-event.entity';
 import { TasksService } from '../tasks/tasks.service';
+import { TaskDispatchService } from '../tasks/task-dispatch.service';
 import { TaskCollaborationService } from '../tasks/task-collaboration.service';
 import { TaskDocumentService } from '../tasks/task-document.service';
 import { workerRequesterActor } from '../tasks/task-requester';
@@ -48,6 +49,21 @@ const JUDGE_MAX_ATTEMPTS = 3;
 const ANSWER_MAX_ATTEMPTS = 3;
 /** 单个批次评估项数量上限（15.3） */
 const RUN_ITEM_LIMIT = 200;
+/** 同一时刻最多启动几个判定会话（判定与执行分开计数） */
+export const EVAL_JUDGE_CONCURRENCY = 3;
+/** 单个判定会话最长存活：判定会话自身 5 分钟超时 + 沙箱构建余量 */
+const JUDGE_SESSION_DEADLINE_MS = 6 * 60_000;
+/** 判定阶段整体兜底：每轮最多 JUDGE_MAX_ATTEMPTS 个会话，仍无结果即异常 */
+const JUDGE_ITEM_TIMEOUT_MS =
+  JUDGE_SESSION_DEADLINE_MS * JUDGE_MAX_ATTEMPTS + 5 * 60_000;
+/** 会话执行失败后的自动续跑次数与退避 */
+const TURN_FAILURE_MAX_RESUME = 2;
+const TURN_FAILURE_RESUME_DELAYS_MS = [30_000, 3 * 60_000];
+/** 每轮 tick 最多尝试启动的排队项、最多推进的活跃项 */
+const PENDING_ADMISSION_BATCH = 50;
+const ACTIVE_ITEM_LIMIT = 200;
+/** 超时检查分页大小（避免只检查 id 最小的一批） */
+const TIMEOUT_SCAN_PAGE = 100;
 
 export const RULE_ANSWER_MORE =
   '补充信息已全部提供，请按你的理解继续完成并交付。';
@@ -65,7 +81,9 @@ export interface CreateEvalRunInput {
   createdByName?: string | null;
 }
 
-/** 非终态评估项状态（调度/推进遍历用） */
+/**
+ * 非终态评估项状态（调度/推进遍历用；排队项由启动流程单独处理）
+ */
 const ACTIVE_ITEM_STATUSES = [
   EvalItemStatus.PENDING,
   EvalItemStatus.PREPARING,
@@ -75,6 +93,11 @@ const ACTIVE_ITEM_STATUSES = [
   EvalItemStatus.JUDGING,
   EvalItemStatus.REWORKING,
 ];
+
+/** 排队之外的非终态状态（每轮 tick 逐个推进） */
+const IN_FLIGHT_ITEM_STATUSES = ACTIVE_ITEM_STATUSES.filter(
+  (status) => status !== EvalItemStatus.PENDING,
+);
 
 /**
  * 占用并发槽位的评估项状态（15.3）：
@@ -115,6 +138,20 @@ export class EvalEngineService implements OnModuleInit {
   private readonly busy = new Set<number>();
   /** 正在判定中（等待提交或会话结束）的评估项 */
   private readonly judging = new Set<number>();
+  /** 判定会话开始时间（itemId → 毫秒，判定会话超时兜底用） */
+  private readonly judgeStartedAt = new Map<number, number>();
+  /** 判定会话 id（itemId → sessionId，评估项结束时销毁） */
+  private readonly judgeSessions = new Map<number, string>();
+  /** 正在启动（准备中 → 已邀约）的评估项，重启后需要重新进入启动流程 */
+  private readonly launching = new Set<number>();
+  /** 同一时刻只跑一个启动流程：占位计数与占位写入之间不允许并发穿透 */
+  private admitting = false;
+  /** 正在推进判定的评估项（提交与会话结束回调可能同时触发，防重复推进） */
+  private readonly applying = new Set<number>();
+  /** 会话执行失败后的自动续跑次数（itemId → 次数） */
+  private readonly turnFailures = new Map<number, number>();
+  /** 自动续跑定时器（itemId → timer） */
+  private readonly resumeTimers = new Map<number, NodeJS.Timeout>();
 
   constructor(
     @InjectRepository(EvalRun)
@@ -142,6 +179,7 @@ export class EvalEngineService implements OnModuleInit {
     @InjectRepository(TaskEvent)
     private readonly taskEvents: Repository<TaskEvent>,
     private readonly tasksService: TasksService,
+    private readonly dispatch: TaskDispatchService,
     private readonly collaboration: TaskCollaborationService,
     private readonly taskDocuments: TaskDocumentService,
     private readonly workersService: WorkersService,
@@ -149,6 +187,7 @@ export class EvalEngineService implements OnModuleInit {
     private readonly token: EvalTokenService,
     private readonly judgeService: EvalJudgeService,
     private readonly progress: EvalProgressService,
+    private readonly dataSource: DataSource,
   ) {
     this.appUrl = (process.env.APP_URL ?? 'http://localhost:5273').replace(
       /\/$/,
@@ -161,6 +200,9 @@ export class EvalEngineService implements OnModuleInit {
 
   /** 启动定时扫描（每 2 秒推进评估项） */
   onModuleInit(): void {
+    // 评估任务的会话失败由引擎收尾（派发侧只结束本轮）：回调注入避免模块循环依赖
+    this.dispatch.evalTurnFailedHook = (task, reason) =>
+      this.onEvalTurnFailed(task, reason);
     this.startTicker();
   }
 
@@ -176,11 +218,15 @@ export class EvalEngineService implements OnModuleInit {
 
   /** 引擎主循环：推进活跃项 → 启动排队项 → 超时检查 */
   async tick(): Promise<void> {
-    // 1. 推进活跃评估项
-    const active = await this.items.find({
-      where: { status: In(ACTIVE_ITEM_STATUSES), superseded: false },
+    const pending = await this.items.find({
+      where: { status: EvalItemStatus.PENDING, superseded: false },
       order: { id: 'ASC' },
-      take: 100,
+      take: PENDING_ADMISSION_BATCH,
+    });
+    const active = await this.items.find({
+      where: { status: In(IN_FLIGHT_ITEM_STATUSES), superseded: false },
+      order: { id: 'ASC' },
+      take: ACTIVE_ITEM_LIMIT,
     });
     for (const item of active) {
       if (this.busy.has(item.id)) continue;
@@ -192,25 +238,93 @@ export class EvalEngineService implements OnModuleInit {
         .finally(() => this.busy.delete(item.id));
     }
     await this.checkTimeouts();
+    await this.admitPending(pending);
   }
 
-  /** 并发槽位：全局评估并发上限 + 批次并发上限（仅占用态计数，排队不占槽） */
-  private async slotAvailable(
-    run: EvalRun,
-    currentActive: number,
-  ): Promise<boolean> {
-    if (currentActive >= EVAL_GLOBAL_CONCURRENCY) return false;
-    const runOccupying = await this.items.count({
-      where: {
-        runId: run.id,
-        status: In(OCCUPYING_ITEM_STATUSES),
-        superseded: false,
-      },
+  /**
+   * 排队项启动：同一时刻只有一个启动流程，逐个「先计数、再原子占位」。
+   * 占位成功的项已经是「准备中」并计入占用，后一个项看到的一定是最新占用数，
+   * 因此不会出现同一轮把所有排队项都判为「有空位」一起放出去。
+   */
+  private async admitPending(pending: EvalRunItem[]): Promise<void> {
+    if (this.admitting || pending.length === 0) return;
+    this.admitting = true;
+    try {
+      for (const item of pending) {
+        if (this.busy.has(item.id) || this.launching.has(item.id)) continue;
+        const claim = await this.claimSlot(item);
+        if (claim === 'claimed') {
+          this.launch(item);
+          continue;
+        }
+        // 全局已满：后面的排队项这轮也拿不到槽位，不必逐项再开事务
+        if (claim === 'global-full') break;
+      }
+    } catch (error) {
+      this.logger.warn(`评估项启动流程异常: ${(error as Error).message}`);
+    } finally {
+      this.admitting = false;
+    }
+  }
+
+  /**
+   * 原子占位：事务内加 advisory 锁后重新计数，再条件更新「排队 → 准备中」。
+   * 只有更新成功的项才真正占到槽位，随后才建沙箱与任务。
+   */
+  private async claimSlot(
+    item: EvalRunItem,
+  ): Promise<'claimed' | 'run-full' | 'global-full' | 'skipped'> {
+    const claimed = await this.dataSource.transaction(async (manager) => {
+      // 全局槽位跨批次，行锁无法串行化，用常量 advisory 锁保证多实例下也只放行一个
+      await manager.query(
+        "SELECT pg_advisory_xact_lock(hashtext('eval:admission'))",
+      );
+      const run = await manager.findOne(EvalRun, { where: { id: item.runId } });
+      if (!run || run.status === EvalRunStatus.CANCELED) return 'skipped';
+      const runOccupying = await manager.count(EvalRunItem, {
+        where: {
+          runId: run.id,
+          status: In(OCCUPYING_ITEM_STATUSES),
+          superseded: false,
+        },
+      });
+      if (runOccupying >= Math.max(1, run.concurrency)) return 'run-full';
+      const globalOccupying = await manager.count(EvalRunItem, {
+        where: { status: In(OCCUPYING_ITEM_STATUSES), superseded: false },
+      });
+      if (globalOccupying >= EVAL_GLOBAL_CONCURRENCY) return 'global-full';
+      const updated = await manager.update(
+        EvalRunItem,
+        {
+          id: item.id,
+          status: EvalItemStatus.PENDING,
+          superseded: false,
+        },
+        { status: EvalItemStatus.PREPARING },
+      );
+      return (updated.affected ?? 0) === 1 ? 'claimed' : 'skipped';
     });
-    return runOccupying < Math.max(1, run.concurrency);
+    if (claimed === 'claimed') this.progress.emitRun(item.runId);
+    return claimed;
   }
 
-  /** 启动评估项：建沙箱 → 建评估任务 → 写评估令牌 → 进入已邀约 */
+  /** 启动已占位的评估项：失败转异常并释放槽位 */
+  private launch(item: EvalRunItem): void {
+    this.launching.add(item.id);
+    void this.startItem(item)
+      .catch(async (error: Error) => {
+        this.logger.warn(
+          `评估项 #${item.id} 启动失败：${error.message}，转为异常`,
+        );
+        await this.markItemError(item.id, error.message);
+      })
+      .finally(() => this.launching.delete(item.id));
+  }
+
+  /**
+   * 启动已占位的评估项（可重入）：建任务 → 建沙箱 → 推进到「待接受」。
+   * 服务重启时停在「准备中」的项由 tick 重新进入这里，已创建的任务与已就绪的沙箱直接复用。
+   */
   private async startItem(item: EvalRunItem): Promise<void> {
     const run = await this.runs.findOne({ where: { id: item.runId } });
     if (!run) throw new NotFoundException(`评估批次 #${item.runId} 不存在`);
@@ -219,6 +333,7 @@ export class EvalEngineService implements OnModuleInit {
         status: EvalItemStatus.CANCELED,
         endedAt: new Date(),
       });
+      await this.refreshRunSummary(item.runId);
       return;
     }
     const target = await this.workers.findOne({
@@ -240,66 +355,67 @@ export class EvalEngineService implements OnModuleInit {
     if (!caseFrozen) {
       throw new NotFoundException(`用例 #${item.caseId} 不在批次冻结范围内`);
     }
-
-    await this.updateItem(item.id, { status: EvalItemStatus.PREPARING });
-    const sandboxId = `${run.id}/${item.id}`;
+    const sandboxId = item.sandboxId ?? `${run.id}/${item.id}`;
     const sandbox = this.workersService.evalSandboxWorkdir(sandboxId);
     if (!sandbox) {
       throw new ConflictException('未配置 WORKER_BASE_DIR，无法创建评估沙箱');
     }
-    await this.updateItem(item.id, { sandboxId });
+    if (!item.sandboxId) await this.updateItem(item.id, { sandboxId });
 
-    // 1. 创建评估任务（需求方=评估机器人，执行方=被测机器人），创建后为「待分配」
-    const task = await this.tasksService.create({
-      title: caseFrozen.title,
-      description: caseFrozen.prompt,
-      input: null,
-      outputSpec: null,
-      requesterType: 'worker',
-      requesterId: run.evaluatorWorkerId,
-      agentId: target.id,
-      isEval: true,
-      evalItemId: item.id,
-      createdById: run.createdById ?? null,
-      operatorName: run.createdByName ?? undefined,
-    });
-    await this.updateItem(item.id, {
-      taskId: task.id,
-      status: EvalItemStatus.INVITED,
-    });
-    await this.addEvent(item.id, EvalEventType.TASK_CREATED, {
-      taskId: task.id,
-    });
-
-    // 2. 评估令牌（作用域=评估任务；协议层按 9.3 校验）
-    const evalToken = this.token.sign({
-      kind: 'eval',
-      workerId: target.id,
-      evalItemId: item.id,
-      taskId: task.id,
-      judge: false,
-    });
-
-    // 3. 构建沙箱：复制真实工位 → 剔除 docs/ 与凭据 → 注入评估令牌与过滤后的 MCP
-    const client = createExecutorClient(executor);
-    const workdir = this.workersService.workdirOf(target.id);
-    if (!workdir) {
-      throw new ConflictException('未配置 WORKER_BASE_DIR，无法确定工位目录');
+    // 1. 评估任务（需求方=评估机器人，执行方=被测机器人）：重启重入时复用
+    let task = item.taskId
+      ? await this.tasks.findOne({ where: { id: item.taskId } })
+      : null;
+    if (!task) {
+      task = await this.tasksService.create({
+        title: caseFrozen.title,
+        description: caseFrozen.prompt,
+        input: null,
+        outputSpec: null,
+        requesterType: 'worker',
+        requesterId: run.evaluatorWorkerId,
+        agentId: target.id,
+        isEval: true,
+        evalItemId: item.id,
+        createdById: run.createdById ?? null,
+        operatorName: run.createdByName ?? undefined,
+      });
+      await this.updateItem(item.id, { taskId: task.id });
+      await this.addEvent(item.id, EvalEventType.TASK_CREATED, {
+        taskId: task.id,
+      });
     }
-    const mcpServers = this.buildSandboxMcpServers(run, target, evalToken);
-    await this.sandbox.buildSandbox(
-      client,
-      workdir,
-      sandbox,
-      executor.type,
-      mcpServers,
-      evalToken,
-      this.appUrl,
-      this.denyExternalDirectory,
-    );
-    await this.addEvent(item.id, EvalEventType.SANDBOX_READY, { sandboxId });
 
-    // 4. 直接推进到「待接受」，由 LOOP offerPending 发送邀约（评估任务不占用真实容量）
+    // 2. 沙箱：复制真实工位 → 剔除 docs/ 与凭据 → 注入评估令牌与过滤后的 MCP
+    if (!(await this.hasAnyEvent(item.id, EvalEventType.SANDBOX_READY))) {
+      // 评估令牌（作用域=评估任务；协议层按 9.3 校验）
+      const evalToken = this.token.sign({
+        kind: 'eval',
+        workerId: target.id,
+        evalItemId: item.id,
+        taskId: task.id,
+        judge: false,
+      });
+      const client = createExecutorClient(executor);
+      const workdir = this.workersService.workdirOf(target.id);
+      if (!workdir) {
+        throw new ConflictException('未配置 WORKER_BASE_DIR，无法确定工位目录');
+      }
+      const mcpServers = this.buildSandboxMcpServers(run, target, evalToken);
+      await this.sandbox.buildSandbox(
+        client,
+        workdir,
+        sandbox,
+        executor.type,
+        mcpServers,
+        evalToken,
+        this.appUrl,
+        this.denyExternalDirectory,
+      );
+      await this.addEvent(item.id, EvalEventType.SANDBOX_READY, { sandboxId });
+    }
+
+    // 3. 直接推进到「待接受」，由 LOOP offerPending 发送邀约（评估任务不占用真实容量）
     await this.tasks.update(
       {
         id: task.id,
@@ -315,6 +431,7 @@ export class EvalEngineService implements OnModuleInit {
         lastRemindedAt: null,
       },
     );
+    await this.updateItem(item.id, { status: EvalItemStatus.INVITED });
     this.logger.log(
       `评估项 #${item.id} 已就绪：任务 #${task.id} 沙箱 ${sandboxId}`,
     );
@@ -352,36 +469,24 @@ export class EvalEngineService implements OnModuleInit {
   /** 处理单个评估项的状态机推进 */
   private async processItem(item: EvalRunItem): Promise<void> {
     switch (item.status) {
-      case EvalItemStatus.PENDING: {
-        const run = await this.runs.findOne({ where: { id: item.runId } });
-        if (!run || run.status === EvalRunStatus.CANCELED) return;
-        const occupyingCount = await this.items.count({
-          where: {
-            status: In(OCCUPYING_ITEM_STATUSES),
-            superseded: false,
-          },
-        });
-        if (!(await this.slotAvailable(run, occupyingCount))) return;
-        await this.startItem(item).catch(async (error: Error) => {
-          this.logger.warn(
-            `评估项 #${item.id} 启动失败：${error.message}，转为异常`,
-          );
-          await this.markItemError(item.id, error.message);
-        });
-        break;
-      }
+      case EvalItemStatus.PENDING:
+        // 排队项统一由 admitPending 原子占位后启动，这里不再各自查槽位
+        return;
       case EvalItemStatus.PREPARING:
+        // 启动流程中断（服务重启/进程异常）：没有在跑的启动就重新进入
+        if (!this.launching.has(item.id)) this.launch(item);
+        return;
       case EvalItemStatus.INVITED:
       case EvalItemStatus.RUNNING:
       case EvalItemStatus.WAITING_ANSWER:
       case EvalItemStatus.REWORKING:
         await this.progressTaskRelation(item);
-        break;
+        return;
       case EvalItemStatus.JUDGING:
-        // 判定会话异步进行，等待提交或会话结束回调
-        break;
+        await this.reconcileJudging(item);
+        return;
       default:
-        break;
+        return;
     }
   }
 
@@ -435,17 +540,25 @@ export class EvalEngineService implements OnModuleInit {
       case TaskSubStatus.PENDING_RESUME:
       case TaskSubStatus.PENDING_APPLY:
         // 待继续：LOOP 会恢复执行；待申请验收：LOOP 会重新唤醒。引擎等待。
+        // 会话成功推进到这两个状态即视为本轮成功，清除失败续跑计数。
+        this.turnFailures.delete(item.id);
         return;
       case TaskSubStatus.PENDING_ACCEPT: {
-        // 交付完成 → 判定（第 1 轮 / 第 2 轮）
+        // 交付完成 → 判定（第 1 轮 / 第 2 轮）：先进入判定中，
+        // 判定会话由 tick 的判定对账启动（受判定并发上限约束，重启后自动接上）
         if (item.status === EvalItemStatus.JUDGING) return;
         const round = item.firstApplyAt ? 2 : 1;
         if (round === 1) {
-          await this.updateItem(item.id, { firstApplyAt: new Date() });
+          await this.updateItem(item.id, {
+            firstApplyAt: new Date(),
+            status: EvalItemStatus.JUDGING,
+          });
         } else {
-          await this.updateItem(item.id, { finalApplyAt: new Date() });
+          await this.updateItem(item.id, {
+            finalApplyAt: new Date(),
+            status: EvalItemStatus.JUDGING,
+          });
         }
-        await this.startJudge(item, task, round);
         return;
       }
       default:
@@ -664,6 +777,9 @@ export class EvalEngineService implements OnModuleInit {
     task: Task,
     round: number,
   ): Promise<void> {
+    if (this.judging.has(item.id)) return;
+    // 判定会话与服务并发分开：超过上限时保持「判定中」，由 tick 下一轮再启动
+    if (this.judging.size >= EVAL_JUDGE_CONCURRENCY) return;
     const run = await this.runs.findOne({ where: { id: item.runId } });
     if (!run) return;
     const evaluator = await this.workers.findOne({
@@ -710,6 +826,7 @@ export class EvalEngineService implements OnModuleInit {
       this.workersService.workdirOf(workerId);
     const mcpServers = this.judgeMcpServers(judgeToken);
     this.judging.add(item.id);
+    this.judgeStartedAt.set(item.id, Date.now());
     void this.judgeService
       .runJudge({
         item,
@@ -722,13 +839,17 @@ export class EvalEngineService implements OnModuleInit {
         appUrl: this.appUrl,
         denyExternalDirectory: this.denyExternalDirectory,
         mcpServers,
+        onSessionCreated: (sessionId) =>
+          this.judgeSessions.set(item.id, sessionId),
         onSessionEnd: (itemId, endedRound) => {
           void this.onJudgeSessionEnd(itemId, endedRound);
         },
       })
       .catch((error: Error) => {
         this.logger.error(`评估项 #${item.id} 判定会话异常: ${error.message}`);
-        void this.onJudgeFailed(item.id, round, error.message);
+        // 判定沙箱/会话没跑起来：释放判定占用，交给 tick 的判定对账重试或判异常
+        this.judging.delete(item.id);
+        this.judgeStartedAt.delete(item.id);
       });
   }
 
@@ -764,55 +885,181 @@ export class EvalEngineService implements OnModuleInit {
   }
 
   /**
-   * 判定会话结束回调：未提交有效判定时重试（最多 JUDGE_MAX_ATTEMPTS 次），
-   * 仍失败 → JUDGE_FAILED + 评估项 ERROR（16 节）。
+   * 判定会话结束回调：只负责释放判定占用。
+   * 未提交有效判定时由 tick 的判定对账决定重开还是判异常（重启、并发上限都在那里统一处理）。
    */
   private async onJudgeSessionEnd(
     itemId: number,
     round: number,
   ): Promise<void> {
     this.judging.delete(itemId);
-    const item = await this.items.findOne({ where: { id: itemId } });
-    if (!item || item.status !== EvalItemStatus.JUDGING) return;
-    // 已提交有效判定（由 submit_eval_judgement 处理并推进）则无需重试
-    const effective = await this.judgements.findOne({
-      where: { itemId, round, effective: true },
-    });
-    if (effective) return;
-    const attempts = item.attempt ?? 1;
-    if (attempts < JUDGE_MAX_ATTEMPTS) {
-      await this.updateItem(itemId, { attempt: attempts + 1 });
-      void this.onJudgeFailed(itemId, round, '判定会话未提交有效结果');
-      return;
-    }
-    await this.onJudgeFailed(itemId, round, '判定重试耗尽');
-  }
-
-  /** 判定失败统一处理：更新重试或终止 */
-  private async onJudgeFailed(
-    itemId: number,
-    round: number,
-    message: string,
-  ): Promise<void> {
+    this.judgeStartedAt.delete(itemId);
     const item = await this.items.findOne({ where: { id: itemId } });
     if (!item) return;
-    const attempts = item.attempt ?? 1;
-    if (attempts < JUDGE_MAX_ATTEMPTS) {
-      // 未到上限：重开判定会话（同一轮）
-      await this.updateItem(itemId, { attempt: attempts + 1 });
-      const task = item.taskId
-        ? await this.tasks.findOne({ where: { id: item.taskId } })
-        : null;
-      if (task && task.subStatus === TaskSubStatus.PENDING_ACCEPT) {
-        await this.startJudge(item, task, round);
+    // 判定已结束时顺手销毁本项的会话（判定会话在此刻才真正空闲）
+    if (TERMINAL_ITEM_STATUSES.includes(item.status)) {
+      await this.destroyItemSessions(item);
+      return;
+    }
+    if (item.status !== EvalItemStatus.JUDGING) return;
+    const effective = await this.judgements.findOne({
+      where: { itemId, round, effective: true },
+      order: { id: 'DESC' },
+    });
+    if (effective) {
+      // 判定已提交但状态机未推进（提交后进程异常等）：直接补推进
+      await this.applyJudgement(item, round, effective);
+      return;
+    }
+    this.logger.warn(
+      `评估项 #${itemId} 第 ${round} 轮判定会话结束但未提交有效判定，等待对账重试`,
+    );
+  }
+
+  /**
+   * 判定中的每轮对账：判定会话在跑时只做超时兜底；没有会话在跑时按「已有生效判定 → 补推进 /
+   * 任务仍在待验收 → 重开判定 / 其它 → 判异常」收口，重启后遗留的判定中项由此自动恢复。
+   */
+  private async reconcileJudging(item: EvalRunItem): Promise<void> {
+    if (this.judging.has(item.id)) {
+      const startedAt = this.judgeStartedAt.get(item.id) ?? 0;
+      if (startedAt > 0 && Date.now() - startedAt > JUDGE_SESSION_DEADLINE_MS) {
+        this.logger.warn(`评估项 #${item.id} 判定会话超时未结束，转异常`);
+        this.judging.delete(item.id);
+        this.judgeStartedAt.delete(item.id);
+        await this.markItemError(item.id, '判定会话超时未结束（执行器无响应）');
       }
       return;
     }
-    await this.addEvent(itemId, EvalEventType.JUDGE_FAILED, {
-      round,
-      message,
+    const round = item.reworkCount > 0 ? 2 : 1;
+    const effective = await this.judgements.findOne({
+      where: { itemId: item.id, round, effective: true },
+      order: { id: 'DESC' },
     });
-    await this.markItemError(itemId, `判定失败：${message}`);
+    if (effective) {
+      await this.applyJudgement(item, round, effective);
+      return;
+    }
+    const task = item.taskId
+      ? await this.tasks.findOne({ where: { id: item.taskId } })
+      : null;
+    if (
+      !task ||
+      task.status !== TaskStatus.WAITING ||
+      task.subStatus !== TaskSubStatus.PENDING_ACCEPT
+    ) {
+      await this.markItemError(item.id, '评估任务已不在待验收，判定无法继续');
+      return;
+    }
+    const started = await this.judgeSessionStarts(item.id, round);
+    if (started >= JUDGE_MAX_ATTEMPTS) {
+      await this.addEvent(item.id, EvalEventType.JUDGE_FAILED, {
+        round,
+        message: '判定重试耗尽',
+      });
+      await this.markItemError(item.id, '判定失败：判定重试耗尽');
+      return;
+    }
+    await this.startJudge(item, task, round);
+  }
+
+  /** 本轮已开启的判定会话数（按事件流统计，重启后仍准确，也不再与重跑次数混用） */
+  private async judgeSessionStarts(
+    itemId: number,
+    round: number,
+  ): Promise<number> {
+    const rows = await this.events.find({
+      where: { itemId, type: EvalEventType.JUDGE_STARTED },
+      select: { id: true, payload: true },
+    });
+    return rows.filter(
+      (row) => (row.payload as { round?: number } | null)?.round === round,
+    ).length;
+  }
+
+  /**
+   * 按生效判定推进状态机：提交后推进与重启后补推进共用（幂等）。
+   */
+  private async applyJudgement(
+    item: EvalRunItem,
+    round: number,
+    judged: Pick<EvalJudgement, 'score' | 'pass' | 'pointsResult' | 'reason'>,
+  ): Promise<void> {
+    // 提交与「判定会话结束」可能同时触发推进，同一项只允许一个推进流程
+    if (this.applying.has(item.id)) return;
+    this.applying.add(item.id);
+    try {
+      await this.applyJudgementOnce(item, round, judged);
+    } finally {
+      this.applying.delete(item.id);
+    }
+  }
+
+  private async applyJudgementOnce(
+    item: EvalRunItem,
+    round: number,
+    judged: Pick<EvalJudgement, 'score' | 'pass' | 'pointsResult' | 'reason'>,
+  ): Promise<void> {
+    const fresh = await this.items.findOne({ where: { id: item.id } });
+    if (!fresh || fresh.status !== EvalItemStatus.JUDGING) return;
+    const run = await this.runs.findOne({ where: { id: fresh.runId } });
+    if (!run) return;
+    const caseFrozen = this.frozenCase(run, fresh.caseId);
+    const task = fresh.taskId
+      ? await this.tasks.findOne({ where: { id: fresh.taskId } })
+      : null;
+    if (round === 1) {
+      await this.updateItem(fresh.id, { firstScore: judged.score });
+      if (judged.pass) {
+        await this.acceptAndFinish(fresh, EvalItemResult.FIRST_PASS);
+        return;
+      }
+      const feedback = caseFrozen
+        ? this.buildReworkFeedback(
+            caseFrozen,
+            (judged.pointsResult ?? []) as Array<{ idx: number; hit: number }>,
+          )
+        : '本次交付未通过验收，请自查是否完整满足任务要求后重新交付。';
+      if (task) {
+        await this.collaboration
+          .refuseHandoff(
+            task.id,
+            workerRequesterActor(await this.requireEvaluator(run)),
+            feedback,
+          )
+          .catch((error: Error) =>
+            this.logger.warn(
+              `评估项 #${fresh.id} 返工退回失败: ${error.message}`,
+            ),
+          );
+      }
+      await this.updateItem(fresh.id, {
+        status: EvalItemStatus.REWORKING,
+        reworkCount: 1,
+      });
+      await this.addEvent(fresh.id, EvalEventType.REWORK_SENT, { feedback });
+      return;
+    }
+    await this.updateItem(fresh.id, { finalScore: judged.score });
+    if (judged.pass) {
+      await this.acceptAndFinish(fresh, EvalItemResult.PASS_AFTER_REWORK);
+      return;
+    }
+    if (task) {
+      await this.collaboration
+        .fail(
+          task.id,
+          workerRequesterActor(await this.requireEvaluator(run)),
+          '评估未通过，判定为不满足期望。',
+        )
+        .catch((error: Error) =>
+          this.logger.warn(`评估项 #${fresh.id} 判失败失败: ${error.message}`),
+        );
+    }
+    await this.finishItem(fresh, {
+      status: EvalItemStatus.DONE,
+      result: EvalItemResult.FAILED,
+    });
   }
 
   /** MCP submit_eval_judgement 入口：校验 → 证据 → 算分 → 落库 → 推进 */
@@ -871,65 +1118,8 @@ export class EvalEngineService implements OnModuleInit {
     });
     this.judgeService.clearInput(itemId);
 
-    // 推进状态机
-    if (round === 1) {
-      await this.updateItem(item.id, { firstScore: result.score });
-      if (result.pass) {
-        await this.acceptAndFinish(item, EvalItemResult.FIRST_PASS);
-      } else {
-        const feedback = this.buildReworkFeedback(
-          caseFrozen,
-          result.points ?? [],
-        );
-        const task = item.taskId
-          ? await this.tasks.findOne({ where: { id: item.taskId } })
-          : null;
-        if (task) {
-          await this.collaboration
-            .refuseHandoff(
-              task.id,
-              workerRequesterActor(await this.requireEvaluator(run)),
-              feedback,
-            )
-            .catch((error: Error) =>
-              this.logger.warn(
-                `评估项 #${item.id} 返工退回失败: ${error.message}`,
-              ),
-            );
-        }
-        await this.updateItem(item.id, {
-          status: EvalItemStatus.REWORKING,
-          reworkCount: 1,
-        });
-        await this.addEvent(item.id, EvalEventType.REWORK_SENT, { feedback });
-      }
-    } else {
-      await this.updateItem(item.id, { finalScore: result.score });
-      if (result.pass) {
-        await this.acceptAndFinish(item, EvalItemResult.PASS_AFTER_REWORK);
-      } else {
-        const task = item.taskId
-          ? await this.tasks.findOne({ where: { id: item.taskId } })
-          : null;
-        if (task) {
-          await this.collaboration
-            .fail(
-              task.id,
-              workerRequesterActor(await this.requireEvaluator(run)),
-              '评估未通过，判定为不满足期望。',
-            )
-            .catch((error: Error) =>
-              this.logger.warn(
-                `评估项 #${item.id} 判失败失败: ${error.message}`,
-              ),
-            );
-        }
-        await this.finishItem(item, {
-          status: EvalItemStatus.DONE,
-          result: EvalItemResult.FAILED,
-        });
-      }
-    }
+    // 推进状态机（与重启后补推进共用同一入口）
+    await this.applyJudgement(item, round, saved);
     return {
       ok: true,
       message: `判定已提交：${result.pass ? '通过' : '未通过'}（得分 ${result.score}）`,
@@ -992,6 +1182,7 @@ export class EvalEngineService implements OnModuleInit {
     item: EvalRunItem,
     terminal: { status: EvalItemStatus; result: EvalItemResult | null },
   ): Promise<void> {
+    this.releaseItemRuntime(item.id);
     const endedAt = new Date();
     await this.updateItem(item.id, {
       status: terminal.status,
@@ -1022,6 +1213,8 @@ export class EvalEngineService implements OnModuleInit {
     }
     // 人工介入累计（10.2 human_count）
     await this.accumulateHumanActions(item);
+    // 任务会话此时已空闲；判定会话仍可能在跑（回合结束回调里再销毁）
+    await this.destroyItemSessions(item, { judge: false });
     await this.refreshRunSummary(item.runId);
   }
 
@@ -1328,6 +1521,7 @@ export class EvalEngineService implements OnModuleInit {
   }
 
   private async cancelItem(item: EvalRunItem): Promise<void> {
+    this.releaseItemRuntime(item.id);
     // 中断执行中的评估会话
     if (item.taskId) {
       const task = await this.tasks.findOne({ where: { id: item.taskId } });
@@ -1361,6 +1555,7 @@ export class EvalEngineService implements OnModuleInit {
     });
     await this.addEvent(item.id, EvalEventType.CANCELED, {});
     await this.destroyItemSandbox(item);
+    await this.destroyItemSessions(item);
   }
 
   /** 重跑评估项（仅 ERROR/TIMEOUT；旧记录标记被替代） */
@@ -1424,34 +1619,58 @@ export class EvalEngineService implements OnModuleInit {
     return latest;
   }
 
-  /** 超时检查（7.5）：从 SANDBOX_READY 起计时，超过 timeout_sec 判超时 */
+  /** 超时检查（7.5）：按执行阶段分别计时，分页扫描避免只检查 id 最小的一批 */
   private async checkTimeouts(): Promise<void> {
-    const rows = await this.items.find({
-      where: {
-        status: In([
-          EvalItemStatus.PREPARING,
-          EvalItemStatus.INVITED,
-          EvalItemStatus.RUNNING,
-          EvalItemStatus.WAITING_ANSWER,
-          EvalItemStatus.REWORKING,
-        ]),
-        superseded: false,
-      },
-      order: { id: 'ASC' },
-      take: 50,
-    });
-    const now = Date.now();
-    for (const item of rows) {
-      const run = await this.runs.findOne({ where: { id: item.runId } });
-      if (!run) continue;
-      const caseFrozen = this.frozenCase(run, item.caseId);
-      const timeoutSec =
-        caseFrozen?.timeoutSec ?? run.suiteSnapshot?.defaultTimeoutSec ?? 1800;
-      const started = await this.sandboxReadyAt(item.id);
-      const begin = started ?? item.updatedAt ?? item.createdAt;
-      if (now - begin.getTime() > timeoutSec * 1000) {
-        await this.timeoutItem(item, timeoutSec);
+    let cursor = 0;
+    for (;;) {
+      const rows = await this.items.find({
+        where: {
+          id: MoreThan(cursor),
+          status: In([
+            EvalItemStatus.PREPARING,
+            EvalItemStatus.INVITED,
+            EvalItemStatus.RUNNING,
+            EvalItemStatus.WAITING_ANSWER,
+            EvalItemStatus.REWORKING,
+            EvalItemStatus.JUDGING,
+          ]),
+          superseded: false,
+        },
+        order: { id: 'ASC' },
+        take: TIMEOUT_SCAN_PAGE,
+      });
+      for (const item of rows) {
+        await this.checkItemTimeout(item);
       }
+      if (rows.length < TIMEOUT_SCAN_PAGE) return;
+      cursor = rows[rows.length - 1]?.id ?? 0;
+      if (!cursor) return;
+    }
+  }
+
+  private async checkItemTimeout(item: EvalRunItem): Promise<void> {
+    const now = Date.now();
+    if (item.status === EvalItemStatus.JUDGING) {
+      // 判定阶段：从本轮第一次开启判定会话计时，超过「单会话上限 × 重试次数」仍无结果即超时
+      const round = (item.reworkCount ?? 0) > 0 ? 2 : 1;
+      const begin =
+        (await this.judgeRoundStartedAt(item.id, round)) ??
+        item.updatedAt ??
+        item.createdAt;
+      if (now - begin.getTime() > JUDGE_ITEM_TIMEOUT_MS) {
+        await this.timeoutItem(item, Math.round(JUDGE_ITEM_TIMEOUT_MS / 1000));
+      }
+      return;
+    }
+    const run = await this.runs.findOne({ where: { id: item.runId } });
+    if (!run) return;
+    const caseFrozen = this.frozenCase(run, item.caseId);
+    const timeoutSec =
+      caseFrozen?.timeoutSec ?? run.suiteSnapshot?.defaultTimeoutSec ?? 1800;
+    const started = await this.sandboxReadyAt(item.id);
+    const begin = started ?? item.updatedAt ?? item.createdAt;
+    if (now - begin.getTime() > timeoutSec * 1000) {
+      await this.timeoutItem(item, timeoutSec);
     }
   }
 
@@ -1463,10 +1682,27 @@ export class EvalEngineService implements OnModuleInit {
     return ev?.at ?? null;
   }
 
+  /** 本项本轮第一次开启判定会话的时间（判定阶段整体兜底） */
+  private async judgeRoundStartedAt(
+    itemId: number,
+    round: number,
+  ): Promise<Date | null> {
+    const rows = await this.events.find({
+      where: { itemId, type: EvalEventType.JUDGE_STARTED },
+      order: { id: 'ASC' },
+      select: { id: true, at: true, payload: true },
+    });
+    const matched = rows.find(
+      (row) => (row.payload as { round?: number } | null)?.round === round,
+    );
+    return matched?.at ?? null;
+  }
+
   private async timeoutItem(
     item: EvalRunItem,
     timeoutSec: number,
   ): Promise<void> {
+    this.releaseItemRuntime(item.id);
     this.logger.warn(`评估项 #${item.id} 超时（${timeoutSec}s）`);
     await this.addEvent(item.id, EvalEventType.TIMEOUT, { timeoutSec });
     if (item.taskId) {
@@ -1503,6 +1739,7 @@ export class EvalEngineService implements OnModuleInit {
       endedAt: new Date(),
     });
     await this.destroyItemSandbox(item);
+    await this.destroyItemSessions(item);
     await this.refreshRunSummary(item.runId);
   }
 
@@ -1559,6 +1796,7 @@ export class EvalEngineService implements OnModuleInit {
   async markItemError(itemId: number, message: string): Promise<void> {
     const item = await this.items.findOne({ where: { id: itemId } });
     if (!item || TERMINAL_ITEM_STATUSES.includes(item.status)) return;
+    this.releaseItemRuntime(itemId);
     await this.updateItem(itemId, {
       status: EvalItemStatus.ERROR,
       errorMessage: message.slice(0, 1024),
@@ -1566,7 +1804,73 @@ export class EvalEngineService implements OnModuleInit {
     });
     await this.addEvent(itemId, EvalEventType.ERROR, { message });
     await this.destroyItemSandbox(item);
+    await this.destroyItemSessions(item);
     await this.refreshRunSummary(item.runId);
+  }
+
+  /** 释放评估项的内存运行时（判定会话、续跑定时器、失败计数） */
+  private releaseItemRuntime(itemId: number): void {
+    this.judging.delete(itemId);
+    this.judgeStartedAt.delete(itemId);
+    this.turnFailures.delete(itemId);
+    const timer = this.resumeTimers.get(itemId);
+    if (timer) {
+      clearTimeout(timer);
+      this.resumeTimers.delete(itemId);
+    }
+  }
+
+  /** 评估项结束时销毁执行器侧会话（任务会话 + 判定会话），避免工位内存只增不减 */
+  private async destroyItemSessions(
+    item: EvalRunItem,
+    options?: { judge?: boolean },
+  ): Promise<void> {
+    const task = item.taskId
+      ? await this.tasks.findOne({ where: { id: item.taskId } })
+      : null;
+    if (task?.opencodeSessionId && task.executorId) {
+      const executor = await this.executors.findOne({
+        where: { id: task.executorId },
+      });
+      if (executor) {
+        await createExecutorClient(executor)
+          .deleteSession(task.opencodeSessionId)
+          .catch((error: Error) =>
+            this.logger.warn(
+              `评估项 #${item.id} 销毁任务会话失败: ${error.message}`,
+            ),
+          );
+        await this.tasks
+          .update({ id: task.id }, { opencodeSessionId: null })
+          .catch(() => undefined);
+      }
+    }
+    const judgeSessionId = this.judgeSessions.get(item.id);
+    if (!judgeSessionId || options?.judge === false) return;
+    this.judgeSessions.delete(item.id);
+    const run = await this.runs.findOne({ where: { id: item.runId } });
+    const evaluator = run
+      ? await this.workers.findOne({ where: { id: run.evaluatorWorkerId } })
+      : null;
+    const executor = evaluator?.executorId
+      ? await this.executors.findOne({ where: { id: evaluator.executorId } })
+      : null;
+    if (!executor) return;
+    await createExecutorClient(executor)
+      .deleteSession(judgeSessionId)
+      .catch((error: Error) =>
+        this.logger.warn(
+          `评估项 #${item.id} 销毁判定会话失败: ${error.message}`,
+        ),
+      );
+  }
+
+  /** 是否已写过某类事件（沙箱就绪判定等，按有无判断即可） */
+  private async hasAnyEvent(
+    itemId: number,
+    type: EvalEventType,
+  ): Promise<boolean> {
+    return (await this.events.count({ where: { itemId, type } })) > 0;
   }
 
   private async updateItem(
@@ -1613,16 +1917,161 @@ export class EvalEngineService implements OnModuleInit {
       .catch(() => {});
   }
 
-  /** 平台重启恢复：非终态项 → 任务丢失/执行器会话丢失标 ERROR（16 节） */
+  /**
+   * 会话执行失败（SSE 与两分钟对账共用入口）：先自动续跑，超过上限才判异常。
+   * 续跑以评估机器人（需求方）身份在同一会话投递，不影响人工介入统计。
+   */
+  private async onEvalTurnFailed(task: Task, reason: string): Promise<void> {
+    if (!task.evalItemId) return;
+    const item = await this.items.findOne({ where: { id: task.evalItemId } });
+    if (
+      !item ||
+      item.superseded ||
+      TERMINAL_ITEM_STATUSES.includes(item.status)
+    ) {
+      return;
+    }
+    const run = await this.runs.findOne({ where: { id: item.runId } });
+    if (!run || run.status === EvalRunStatus.CANCELED) return;
+    const failures = this.turnFailures.get(item.id) ?? 0;
+    const message = reason.trim().slice(0, 400) || '未知原因';
+    if (failures >= TURN_FAILURE_MAX_RESUME) {
+      await this.addEvent(item.id, EvalEventType.ERROR, {
+        stage: 'turn',
+        failures,
+        message,
+      });
+      await this.failEvalItem(
+        item,
+        task.id,
+        `会话执行失败（已续跑 ${failures} 次）：${message}`,
+      );
+      return;
+    }
+    const attempt = failures + 1;
+    this.turnFailures.set(item.id, attempt);
+    const delay =
+      TURN_FAILURE_RESUME_DELAYS_MS[
+        Math.min(failures, TURN_FAILURE_RESUME_DELAYS_MS.length - 1)
+      ] ?? 30_000;
+    await this.addEvent(item.id, EvalEventType.ERROR, {
+      stage: 'turn-resume',
+      attempt,
+      message,
+    });
+    this.scheduleResume(item.id, task.id, attempt, delay);
+  }
+
+  /** 评估项判异常并结束评估任务（任务已结束则只标评估项） */
+  private async failEvalItem(
+    item: EvalRunItem,
+    taskId: number,
+    message: string,
+  ): Promise<void> {
+    await this.markItemError(item.id, message);
+    const task = await this.tasks.findOne({ where: { id: taskId } });
+    if (!task || task.status === TaskStatus.FINISHED) return;
+    const run = await this.runs.findOne({ where: { id: item.runId } });
+    const evaluator = run
+      ? await this.workers.findOne({ where: { id: run.evaluatorWorkerId } })
+      : null;
+    await this.tasksService
+      .cancel(task.id, evaluator?.name ?? null)
+      .catch((error: Error) =>
+        this.logger.warn(
+          `评估项 #${item.id} 结束评估任务失败: ${error.message}`,
+        ),
+      );
+  }
+
+  /** 退避后自动续跑（定时器不阻止进程退出；重启后由对账重新触发） */
+  private scheduleResume(
+    itemId: number,
+    taskId: number,
+    attempt: number,
+    delayMs: number,
+  ): void {
+    const existing = this.resumeTimers.get(itemId);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => {
+      this.resumeTimers.delete(itemId);
+      void this.resumeTurn(itemId, taskId, attempt).catch(
+        async (error: Error) => {
+          this.logger.warn(`评估项 #${itemId} 自动续跑失败: ${error.message}`);
+          const item = await this.items.findOne({ where: { id: itemId } });
+          if (item) {
+            await this.failEvalItem(
+              item,
+              taskId,
+              `自动续跑失败：${error.message}`,
+            );
+          }
+        },
+      );
+    }, delayMs);
+    timer.unref();
+    this.resumeTimers.set(itemId, timer);
+    this.logger.log(
+      `评估项 #${itemId} 会话失败，${Math.round(delayMs / 1000)} 秒后第 ${attempt} 次自动续跑`,
+    );
+  }
+
+  /** 在同一会话继续执行（不打断会话、沿用上下文），完成后仍需机器人显式申请验收 */
+  private async resumeTurn(
+    itemId: number,
+    taskId: number,
+    attempt: number,
+  ): Promise<void> {
+    const item = await this.items.findOne({ where: { id: itemId } });
+    if (
+      !item ||
+      item.superseded ||
+      TERMINAL_ITEM_STATUSES.includes(item.status)
+    ) {
+      return;
+    }
+    const task = await this.tasks.findOne({ where: { id: taskId } });
+    if (
+      !task ||
+      task.status !== TaskStatus.RUNNING ||
+      task.subStatus !== TaskSubStatus.EXECUTING
+    ) {
+      return;
+    }
+    const run = await this.runs.findOne({ where: { id: item.runId } });
+    if (!run || run.status === EvalRunStatus.CANCELED) return;
+    const evaluator = await this.requireEvaluator(run);
+    const text = [
+      '# 上一轮执行中断',
+      '',
+      '执行器会话上一轮失败，平台已恢复执行。请在当前任务中继续完成剩余工作，不要重复已完成的部分；完成后必须调用验收申请接口。',
+      '',
+      `（第 ${attempt} 次自动续跑）`,
+    ].join('\n');
+    await this.dispatch.continueConversation(task.id, text, evaluator.name, {
+      modelContent: text,
+      actorWorkerId: evaluator.id,
+      perspective: 'requester',
+    });
+    this.logger.log(`评估项 #${itemId} 已自动续跑（第 ${attempt} 次）`);
+  }
+
+  /** 平台重启恢复：需要任务才能恢复的状态，任务丢失则标 ERROR；其余交给 tick 对账 */
   async onApplicationBootstrap(): Promise<void> {
     const rows = await this.items.find({
-      where: { status: In(ACTIVE_ITEM_STATUSES), superseded: false },
+      where: { status: In(IN_FLIGHT_ITEM_STATUSES), superseded: false },
       order: { id: 'ASC' },
       take: 200,
     });
     for (const item of rows) {
-      // 排队项无任务、无沙箱，无中断态可恢复，重启后由 ticker 继续调度
-      if (item.status === EvalItemStatus.PENDING) continue;
+      // 排队项由 ticker 调度；准备中项由 tick 重新进入启动流程；
+      // 判定中项由判定对账重开判定或判异常，这里不重复处理
+      if (
+        item.status === EvalItemStatus.PREPARING ||
+        item.status === EvalItemStatus.JUDGING
+      ) {
+        continue;
+      }
       if (!item.taskId) {
         await this.markItemError(item.id, '平台重启导致评估中断（任务未创建）');
         continue;
