@@ -12,6 +12,7 @@ import {
   Req,
 } from '@nestjs/common';
 import type { AuthedRequest } from '../auth/auth.guard';
+import { requireAdmin } from '../auth/require-admin';
 import { Task } from './task.entity';
 import { TaskTemplate } from './task-template.entity';
 import {
@@ -59,6 +60,7 @@ export class TaskTemplatesController {
     @Body() dto: CreateTaskTemplateDto,
     @Req() req: AuthedRequest,
   ): Promise<TaskTemplateWithFollow> {
+    requireAdmin(req);
     return this.templatesService.create(dto, req.user ?? null);
   }
 
@@ -84,13 +86,19 @@ export class TaskTemplatesController {
   update(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateTaskTemplateDto,
+    @Req() req: AuthedRequest,
   ): Promise<TaskTemplate> {
+    requireAdmin(req);
     return this.templatesService.update(id, dto);
   }
 
   @Delete(':id')
   @HttpCode(204)
-  remove(@Param('id', ParseIntPipe) id: number): Promise<void> {
+  remove(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req: AuthedRequest,
+  ): Promise<void> {
+    requireAdmin(req);
     return this.templatesService.remove(id);
   }
 }
@@ -132,6 +140,7 @@ export class TaskTemplatesMarkdownController {
     @Body() dto: CreateTaskTemplateDto,
     @Req() req: AuthedRequest,
   ): Promise<string> {
+    requireAdmin(req);
     return this.templatesService.createMarkdown(dto, resolveTemplateActor(req));
   }
 
@@ -141,14 +150,20 @@ export class TaskTemplatesMarkdownController {
   update(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateTaskTemplateDto,
+    @Req() req: AuthedRequest,
   ): Promise<string> {
+    requireAdmin(req);
     return this.templatesService.updateMarkdown(id, dto);
   }
 
   @Post(':id/delete.md')
   @HttpCode(200)
   @Header('Content-Type', 'text/markdown; charset=utf-8')
-  remove(@Param('id', ParseIntPipe) id: number): Promise<string> {
+  remove(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req: AuthedRequest,
+  ): Promise<string> {
+    requireAdmin(req);
     return this.templatesService.removeMarkdown(id);
   }
 }

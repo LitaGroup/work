@@ -72,7 +72,7 @@
 - `backend/src/model-config/`：管理区「模型配置」（固定场景的 OpenAI 兼容连接：baseUrl/apiKey/model/思考等级）与通用单次大模型调用（`LlmService`，工单/任务标题命名等后台任务）。
 - `backend/src/github/`、`github-gateway/`：仓库/分支/提交集成与凭证网关。
 - `backend/src/agent/`、`remote-run/`、`app-versions/`：Appium Agent、远程运行与 APP 包。
-- `backend/src/files/`、`images/`、`settings/`、`mcp/`：上传、设置与 MCP 开放（`lita-bots` 调用机器人、`lita-work` 平台工具：需求/迭代项（含成员与状态流转）/知识/运行/缺陷/反馈/灵感/任务协同/工单/机器人/飞书会话历史与消息发送/定时唤醒）；`backend/src/mcp-servers/` 为管理区「MCP 配置」（机器人连接的外部 MCP 服务）。
+- `backend/src/files/`、`images/`、`settings/`、`mcp/`：上传、设置与 MCP 开放（`lita-bots` 调用机器人；`lita-work` 基础业务工具：需求/迭代项（含成员与状态流转）/知识/运行/缺陷/反馈/灵感/任务协同/工单/飞书会话历史与消息发送/定时唤醒；`lita-work-admin` 管理面工具：机器人/任务定义/测试集与评估/执行记录/平台设置，仅管理员可用）；`backend/src/mcp-servers/` 为管理区「MCP 配置」（机器人连接的外部 MCP 服务）。
 
 其他入口：
 
@@ -80,8 +80,8 @@
 - `docs/APPIUM-AGENT.md`：Appium Agent 协议。
 - `docs/WORKER_STATION.md`：工位目录规范（内核无关布局、内核适配物、MCP 注入与迁移）。
 - `docs/OP_GATEWAY.md`、`docs/OP_GATEWAY_API.md`：凭证网关。
-- `MCP.md`：lita-work / lita-bots / lita-proxy 三个 MCP 服务接入总览（令牌、客户端配置与工具入口）。
-- `docs/work-mcp.md`：lita-work MCP（`POST /api/mcp/work`）接入指南与工具清单。
+- `MCP.md`：lita-work / lita-work-admin / lita-bots / lita-proxy 四个 MCP 服务接入总览（令牌、客户端配置与工具入口）。
+- `docs/work-mcp.md`：lita-work（`POST /api/mcp/work`）与 lita-work-admin（`POST /api/mcp/work-admin`）接入指南与工具清单。
 - `docs/MCP_BOTS.md`：lita-bots MCP（`POST /api/mcp/bots`）会话、提问与工具说明。
 - `docs/SSO.md`：单点登录（OAuth2 授权码）接入指南（authorize / token / userinfo）。
 - `skills/`：已随 MCP 二期下线（lita-work / knowledge-search / file-upload 等平台能力技能不再随仓库发布）。
@@ -105,7 +105,7 @@
 - **系统只有机器人令牌，没有用户级 agent 令牌**：个人中心「机器人令牌」就是该用户绑定真人机器人的 `workers.agentToken`，个人 AGENT 共用同一令牌；真人机器人令牌命中时同时挂载 `req.worker` 与 `req.user`。
 - `PUBLIC_AGENT_TOKEN` 可映射为虚拟管理员「公共 Agent」，未配置则禁用；设置页只能展示是否配置，不能泄露明文。
 - `X-Worker-Token` 用于识别机器人，挂载 `req.worker`；真人机器人额外挂载 `req.user`，这是真人身份的唯一来源，**不再有独立用户令牌**。机器人令牌不得出现在响应、日志或 `workers.md` 详情中。
-- `lita-work` / `lita-bots` MCP 端点同样接受 `X-Worker-Token`（或把机器人令牌放在 Bearer / `X-Agent-Token` / `?token=`）识别机器人身份；`lita-bots` 的机器人调用会话优先落到机器人绑定的真人，未绑定真人的 AI 机器人使用负 ID 隔离，不与他人会话混用。
+- `lita-work` / `lita-work-admin` / `lita-bots` MCP 端点同样接受 `X-Worker-Token`（或把机器人令牌放在 Bearer / `X-Agent-Token` / `?token=`）识别机器人身份；`lita-bots` 的机器人调用会话优先落到机器人绑定的真人，未绑定真人的 AI 机器人使用负 ID 隔离，不与他人会话混用。`lita-work-admin` 额外要求管理员身份（公共 Agent 或绑定管理员的真人机器人令牌），拒绝评估令牌与纯 AI 机器人令牌。
 - 工位 `.agents/.env` 中的 `LITA_WORK_TOKEN` 是机器人平台令牌，兼容旧名 `LITA_PROJECT_TOKEN`；`LITA_USER_TOKEN` 是 Lita 平台（`api.cinta.team`）用户令牌，供 lita-api 等技能使用；`LITA_APP_URL` 是平台访问地址（含协议，供 .md 回退拼接）。工位配置优先级高于进程环境和执行器宿主 `~/.env`。
 - 个人 AGENT 使用其主人真人机器人的平台令牌，任务操作统一记为真人身份，个人 AGENT 本身不写入任务参与身份。
 - 管理接口必须校验管理员；机器人执行动作必须校验当前执行机器人；需求方动作必须校验需求方身份。不要只依赖前端隐藏按钮。
@@ -224,7 +224,7 @@
 - 个人 AGENT 通过 `personalAgentUserId` 唯一绑定，只服务「我的 AI」对话，不出现在对外机器人清单，不承接任务分配或工单执行，不可网页删除。
 - 工位目录：production 为 `{WORKER_BASE_DIR}/worker/{id}`，其他环境为 `{WORKER_BASE_DIR}/worker-dev/{id}`。
 - 机器人工位目录按**内核无关**布局组织（详见 `docs/WORKER_STATION.md`）：`AGENTS.md`、`.agents/skills/`（技能源）、`.agents/rules/`（规范源 + manifest）、`.agents/.env`、`.agents/mcp.json`、`.agents/.station-manifest.json`、`docs/`；初始化由平台确定性同步（不创建模型会话）：后端直接生成 `AGENTS.md`、下载技能/规范全部文件、生成内核镜像并批量写入执行器，按同步版本和文件 SHA 校验；`.agents/.station-manifest.json` 记录版本与文件清单，内容未变化时只刷新凭据/MCP 并跳过文件同步。技能引用技能库 `SKILL.md`（lita-work / knowledge-search / file-upload 等平台能力技能已下线，目录不再展示、保存时自动丢弃），规范引用规范库目录的 `README.md`。取消规范只清理 manifest 记录的受管文件，保留机器人自有文档。
-- 工位 MCP 配置由平台初始化/派发时按执行器类型注入：opencode 为 `.opencode/opencode.json`、kiro 为 `.kiro/settings/mcp.json`、devin 为 `.devin/mcp_config.json`、droid 为 `.factory/mcp.json`，并始终写内核无关声明 `.agents/mcp.json`；固定 `lita-work`（`{APP_URL}/api/mcp/work` + 机器人令牌）与机器人勾选的自定义 MCP（管理区「MCP 配置」，`workers.mcps`），权限 600，纳入受管文件，机器人不得读取展示、改写或删除；令牌只经服务端落盘。MCP 鉴权支持固定令牌（明文落盘）、环境变量（`{env:NAME}` 占位，凭据不落盘）与机器人自身 `LITA_WORK_TOKEN`。
+- 工位 MCP 配置由平台初始化/派发时按执行器类型注入：opencode 为 `.opencode/opencode.json`、kiro 为 `.kiro/settings/mcp.json`、devin 为 `.devin/mcp_config.json`、droid 为 `.factory/mcp.json`，并始终写内核无关声明 `.agents/mcp.json`；固定 `lita-work`（`{APP_URL}/api/mcp/work` + 机器人令牌）与机器人勾选的自定义 MCP（管理区「MCP 配置」，`workers.mcps`），权限 600，纳入受管文件，机器人不得读取展示、改写或删除；`lita-work-admin` 不注入工位，仅管理员外部客户端按需配置。令牌只经服务端落盘。MCP 鉴权支持固定令牌（明文落盘）、环境变量（`{env:NAME}` 占位，凭据不落盘）与机器人自身 `LITA_WORK_TOKEN`。
 - **工作区边界（平台强制，仅 opencode）**：opencode 工位 `.opencode/opencode.json` 同时注入 `permissions`（deny `external_directory`），机器人会话（任务、调试、我的 AI、一次性会话）禁止读写工位目录之外的任何路径，含其他机器人工位与执行器宿主 `~/.env`；read/edit/write/patch 直接拦截，shell 由扫描器尽力推断拦截，deny 不会被「允许」答复覆盖。每次派发/初始化重写自愈；环境变量 `WORKER_DENY_EXTERNAL_DIRECTORY=false` 可止血关闭。bridge 内核（kiro/devin/droid）暂无强制拦截，仅靠 AGENTS.md 协议约束；平台自身经 `/api/shell` 的工位文件管理不受该限制约束。
 - opencode 集成位于 `executors/`：HTTP Basic 鉴权、会话/prompt/interrupt、SSE 事件和提问。会话终态必须匹配当前 session，不能只凭进程或连接状态判断任务完成。
 - 调试会话落 `worker_debug_sessions`，按 `userId + workerId + contextKey` 唯一绑定；机器人对话（管理区列表「对话」跳顶部 `/robots/{id}`）、通用我的 AI、每个任务会话相互隔离，7 天不活跃重置。模型与思考等级随会话落库（`activeProviderId/activeModelId/activeVariant`），新会话（新的任务/页面会话、重置后）沿用该用户在同一机器人下最近一次选择；记忆中的模型已下线时回退机器人默认配置，思考等级不可用时只清空等级。**存量会话每次发送前同样校验模型仍在执行器目录内**（不在则回退机器人默认配置并追加一条提示）；机器人执行器/供应商/模型/运行时变更时，平台清空该机器人全部调试会话的绑定与模型选择（消息历史保留），避免旧选择继续下发导致执行器秒失败。执行器失败原因经 bridge `GET /sessions/:id` 的 `error` 字段透传，页面展示真实原因。

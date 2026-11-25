@@ -34,6 +34,8 @@ import { McpLogsService } from './mcp-logs.service';
 import { McpService } from './mcp.service';
 import { McpWorkController } from './mcp-work.controller';
 import { McpWorkService } from './mcp-work.service';
+import { McpAdminController } from './mcp-admin.controller';
+import { McpAdminService } from './mcp-admin.service';
 import { WorkDefectTools } from './work-tools/work-defect.tools';
 import { WorkFeedbackTools } from './work-tools/work-feedback.tools';
 import { WorkFeishuTools } from './work-tools/work-feishu.tools';
@@ -51,12 +53,17 @@ import { WorkIterationTools } from './work-tools/work-iteration.tools';
 import { WorkWakeupTools } from './work-tools/work-wakeup.tools';
 import { WorkEvalTools } from './work-tools/work-eval.tools';
 import { WorkTraceTools } from './work-tools/work-trace.tools';
+import { AdminEvalTools } from './admin-tools/admin-eval.tools';
+import { AdminRunTools } from './admin-tools/admin-run.tools';
+import { AdminTaskDefinesTools } from './admin-tools/admin-task-defines.tools';
 import { EvalModule } from '../eval/eval.module';
 import { TraceModule } from '../trace/trace.module';
 /**
  * MCP 开放：
  * - POST /api/mcp/bots：lita-bots，外部 Agent 把平台机器人当子 Agent 调用；
- * - POST /api/mcp/work：lita-work，平台项目/知识/运行等工具（替代 lita-work 等技能）。
+ * - POST /api/mcp/work：lita-work，平台基础业务工具（需求/迭代项/任务/工单/知识/运行等）；
+ * - POST /api/mcp/work-admin：lita-work-admin，管理面工具（机器人/任务定义/
+ *   测试集与评估/执行记录/平台设置），仅管理员可用。
  */
 @Module({
   imports: [
@@ -88,10 +95,16 @@ import { TraceModule } from '../trace/trace.module';
     EvalModule,
     TraceModule,
   ],
-  controllers: [McpController, McpWorkController, McpLogsController],
+  controllers: [
+    McpController,
+    McpWorkController,
+    McpAdminController,
+    McpLogsController,
+  ],
   providers: [
     McpService,
     McpWorkService,
+    McpAdminService,
     McpLogsService,
     WorkProjectTools,
     WorkRunTools,
@@ -110,6 +123,9 @@ import { TraceModule } from '../trace/trace.module';
     WorkWakeupTools,
     WorkEvalTools,
     WorkTraceTools,
+    AdminEvalTools,
+    AdminRunTools,
+    AdminTaskDefinesTools,
   ],
 })
 export class McpModule {}

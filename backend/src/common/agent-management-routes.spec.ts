@@ -1,7 +1,9 @@
 import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import type { Server } from 'http';
+import type { NextFunction, Request, Response } from 'express';
 import request from 'supertest';
+import { UserRole } from './enums';
 import {
   TaskTemplatesController,
   TaskTemplatesListMarkdownController,
@@ -22,6 +24,10 @@ import { WorkersService } from '../workers/workers.service';
 
 describe('Agent 管理接口路由', () => {
   let app: INestApplication;
+  const admin = { id: 1, name: '管理员', role: UserRole.ADMIN };
+  const member = { id: 2, name: '普通成员', role: UserRole.MEMBER };
+  /** 当前请求身份（管理写接口需要管理员） */
+  let currentUser: { id: number; name: string; role: UserRole } = admin;
   const workersMarkdown = {
     listMarkdown: jest.fn(),
     findOneMarkdown: jest.fn(),
@@ -67,6 +73,11 @@ describe('Agent 管理接口路由', () => {
     }).compile();
     app = moduleRef.createNestApplication();
     app.setGlobalPrefix('api');
+    // 模拟 AuthGuard 注入的登录用户（写接口要求管理员）
+    app.use((req: Request, _res: Response, next: NextFunction) => {
+      (req as Request & { user?: unknown }).user = currentUser;
+      next();
+    });
     await app.init();
   });
 
@@ -76,6 +87,7 @@ describe('Agent 管理接口路由', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    currentUser = admin;
     workers.findOne.mockResolvedValue({
       id: 1001,
       personalAgentUserId: null,
@@ -157,5 +169,43 @@ describe('Agent 管理接口路由', () => {
     expect(templates.updateMarkdown).toHaveBeenCalledWith(1000, {
       description: '新描述',
     });
+  });
+
+  it('非管理员不能写机器人 / 任务定义（403）', async () => {
+    currentUser = member;
+    const server = app.getHttpServer() as Server;
+
+    await request(server)
+      .post('/api/workers/create.md')
+      .send({ name: '机器人' })
+      .expect(403);
+    await request(server)
+      .post('/api/workers/1001/update.md')
+      .send({ intro: '新简介' })
+      .expect(403);
+    await request(server).post('/api/workers/1001/delete.md').expect(403);
+    await request(server)
+      .post('/api/workers')
+      .send({ name: '机器人' })
+      .expect(403);
+    await request(server)
+      .post('/api/task-templates/create.md')
+      .send({ name: '新定义' })
+      .expect(403);
+    await request(server)
+      .post('/api/task-templates/1000/update.md')
+      .send({ description: '新描述' })
+      .expect(403);
+    await request(server)
+      .patch('/api/task-templates/1000')
+      .send({ description: '新描述' })
+      .expect(403);
+
+    expect(workersMarkdown.createMarkdown).not.toHaveBeenCalled();
+    expect(workersMarkdown.updateMarkdown).not.toHaveBeenCalled();
+    expect(workersMarkdown.removeMarkdown).not.toHaveBeenCalled();
+    expect(templates.createMarkdown).not.toHaveBeenCalled();
+    expect(templates.updateMarkdown).not.toHaveBeenCalled();
+    expect(templates.removeMarkdown).not.toHaveBeenCalled();
   });
 });

@@ -1,23 +1,25 @@
 ---
-description: "> AI 助手提示：定义 lita-work / lita-bots / lita-proxy 三个 MCP 服务的令牌获取与客户端接入配置（opencode / Claude Code / Codex CLI）。"
-version: 1.2.1
+description: "> AI 助手提示：定义 lita-work / lita-work-admin / lita-bots / lita-proxy 四个 MCP 服务的令牌获取与客户端接入配置（opencode / Claude Code / Codex CLI）。"
+version: 1.3.0
 type: docs
 ---
 
-# MCP 接入指南：lita-work / lita-bots / lita-proxy
+# MCP 接入指南：lita-work / lita-work-admin / lita-bots / lita-proxy
 
-> AI 助手提示：外部 Agent（opencode / Claude Code / Codex CLI / Cursor 等）按本文档完成一次配置，即可调用平台 MCP 服务。三个服务共用同一枚机器人令牌 `LITA_WORK_TOKEN`，可单独或同时接入。
+> AI 助手提示：外部 Agent（opencode / Claude Code / Codex CLI / Cursor 等）按本文档完成一次配置，即可调用平台 MCP 服务。四个服务共用同一枚机器人令牌 `LITA_WORK_TOKEN`，可单独或同时接入；lita-work-admin 仅管理员令牌可用。
 
-三个服务均使用 **MCP Streamable HTTP** 传输：
+四个服务均使用 **MCP Streamable HTTP** 传输：
 
 | 服务 | 地址 | 用途 | 工具数 |
 |---|---|---|---|
-| `lita-work` | `http://work.cinta.team/api/mcp/work` | 直接操作平台数据：需求 / 迭代项 / 文档 / 知识库 / 脚本运行 / 缺陷 / 反馈 / 灵感 / 代码分支 / 任务协同 / 工单 / 机器人管理 / 飞书会话历史与消息发送 | 102 |
+| `lita-work` | `http://work.cinta.team/api/mcp/work` | 基础业务操作：需求 / 迭代项 / 文档 / 知识库 / 脚本运行 / 缺陷 / 反馈 / 灵感 / 代码分支 / 任务协同 / 工单 / 话题 / 飞书 / 定时唤醒 | 94 |
+| `lita-work-admin` | `http://work.cinta.team/api/mcp/work-admin` | 管理面（仅管理员）：机器人 / 任务定义 / 测试集与评估 / 执行记录 / 平台设置 | 34 |
 | `lita-bots` | `http://work.cinta.team/api/mcp/bots` | 把平台机器人当**子 Agent** 调用（多轮会话、提问、中断、断线找回） | 6 |
 | `lita-proxy` | `http://proxy.cinta.team/mcp` | 内部资源运维：MySQL/ClickHouse/MaxCompute（ODPS）SQL、Redis 命令、阿里云 SLS 只读日志、Nacos 配置、XXL-JOB 任务、Firebase Firestore 只读查询、线上操作工单、GitHub PR 创建 | 31 |
 
 - 本地开发环境把 `work.cinta.team` 换成 `localhost:3100`；`lita-proxy` 本地实例默认 `http://localhost:3101/mcp`。
-- 鉴权统一：`Authorization: Bearer <LITA_WORK_TOKEN>`。`lita-work` / `lita-bots` 还接受 `X-Worker-Token` / `X-Agent-Token` 头或 `?token=` 参数；`lita-proxy` 只接受 `Authorization: Bearer` 或 `X-Worker-Token`（`X-Agent-Token` 返回 401）。
+- 鉴权统一：`Authorization: Bearer <LITA_WORK_TOKEN>`。`lita-work` / `lita-work-admin` / `lita-bots` 还接受 `X-Worker-Token` / `X-Agent-Token` 头或 `?token=` 参数；`lita-proxy` 只接受 `Authorization: Bearer` 或 `X-Worker-Token`（`X-Agent-Token` 返回 401）。
+- `lita-work-admin` 额外要求管理员身份：公共 Agent 令牌，或绑定真人且角色为管理员的真人机器人令牌；AI 机器人令牌与评估令牌返回 403。平台工位只注入 `lita-work`，不注入该服务。
 
 ---
 
@@ -73,32 +75,48 @@ Claude Code 的 `--header`、Codex 的 `bearer_token_env_var` 均见下文各节
 
 ---
 
-## 二、三个服务怎么选
+## 二、四个服务怎么选
 
-### 2.1 lita-work：直接操作平台数据
+### 2.1 lita-work：基础业务操作
 
-覆盖需求、迭代项、文档、脚本运行、知识库、缺陷、用户反馈、灵感、GitHub 代码分支、文件上传、任务协同、工单、机器人/任务定义和飞书会话历史查询、平台名义消息发送。代表性工具：
+覆盖需求、迭代项、文档、脚本运行、知识库、缺陷、用户反馈、灵感、GitHub 代码分支、文件上传、任务协同、工单、话题、飞书会话历史查询、平台名义消息发送和定时唤醒（机器人、任务定义、测试集与评估等管理能力在 `lita-work-admin`）。代表性工具：
 
 | 分类 | 代表工具 |
 |---|---|
 | 需求 / 文档 | `search_projects`、`get_project`、`update_project`、`read_document`、`upsert_document`、`sync_apipost_document` |
 | 迭代项 | `get_backlog`、`get_iteration`（迭代详情）、`update_backlog_members`（管理员或负责人整体替换成员）、`update_backlog`（预期上线/负责人改派）、`change_backlog_status`、`move_backlog`、`create_backlog_task`、`create_backlog_release`（批量提测：每个迭代项建提测工单+提测记录，提测群通知由工单节点发送） |
-| 运行 / 脚本 / 设置 | `run_check`、`run_test`、`run_export`、`run_schedule`、`get_run`、`list_runs`、`import_scripts`、`pull_scripts`、`get_settings` |
+| 运行 / 脚本 | `run_check`、`run_test`、`run_export`、`run_schedule`、`get_run`、`list_runs`、`import_scripts` |
 | 知识库 | `search_knowledge`、`list_knowledge_dir`、`read_knowledge`、`create_knowledge`、`update_knowledge`、`delete_knowledge`、`read_feishu_doc` |
 | 缺陷 | `list_defects`、`get_defect`、`create_defect`、`update_defect`、`change_defect_status`、`add_defect_record`、`delete_defect` |
 | 用户反馈 | `list_feedbacks`、`get_feedback`（含「系统-反馈处理」从飞书反馈群自动收录的话题反馈与跟帖） |
 | 灵感 | `list_ideas`、`get_idea`、`create_idea`、`update_idea`、`delete_idea`、`change_idea_status`（采纳时新建或关联需求池需求） |
 | GitHub / 文件 | `search_github_repos`、`list_github_branches`、`list_code_branches`、`register_code_branch`、`update_code_branch`、`delete_code_branch`、`list_code_events`、`upload_file` |
-| 任务协同 | `list_my_tasks`、`get_task`、`create_task`、`list_task_defines`、`create_subtask`、`accept_task` / `refuse_task`、`ask_task_question`、`answer_task_question`、`reply_task_message`、`list_task_documents`、`upsert_task_document`、`read_task_handoff`、`update_task_handoff`、`apply_task_acceptance`、`accept_task_handoff` / `refuse_task_handoff`、`fail_task`、`get_task_callback_url` |
-| 工单与工单文档 | `get_task_ticket`、`route_task_ticket`、`get_ticket`、`reject_ticket_node`、`list_ticket_documents`、`read_ticket_document`、`deliver_ticket_document`、`update_ticket_document`、`delete_ticket_document` |
-| 机器人与任务定义 | `list_workers`、`get_worker`、`create_worker`、`update_worker`、`delete_worker`、`list_worker_skill_catalog`、`list_worker_standard_catalog`、`list_task_templates`、`get_task_template`、`create_task_template`、`update_task_template`、`delete_task_template` |
+| 任务协同 | `list_my_tasks`、`get_task`、`create_task`、`create_subtask`、`accept_task` / `refuse_task`、`ask_task_question`、`answer_task_question`、`reply_task_message`、`list_task_documents`、`upsert_task_document`、`read_task_handoff`、`update_task_handoff`、`apply_task_acceptance`、`accept_task_handoff` / `refuse_task_handoff`、`fail_task`、`get_task_callback_url` |
+| 工单与工单文档 | `list_ticket_defines`、`create_ticket`、`get_task_ticket`、`route_task_ticket`、`get_ticket`、`accept_ticket`、`reject_ticket_node`、`list_ticket_documents`、`read_ticket_document`、`deliver_ticket_document`、`update_ticket_document`、`delete_ticket_document` |
+| 话题 | `list_topics`、`get_topic`、`create_topic`、`reply_topic`、`update_topic` |
+| 定时唤醒 | `schedule_task_wakeup`、`cancel_task_wakeup`、`schedule_agent_wakeup`、`cancel_agent_wakeup` |
+| 评估判定 | `get_eval_judge_input`、`submit_eval_judgement`（仅评估判定专用令牌可用） |
 | 飞书 | `feishu_history`（群聊/话题/私聊最近 7 天消息，需机器人绑定飞书应用）、`feishu_send_message`（平台官方机器人身份发 Markdown 卡片，机器人或管理员可用，审计留痕） |
 
 - 写操作按令牌身份校验：任务接受/拒绝/提问/申请验收仅机器人令牌；答复/验收/返工/判失败仅任务需求方；
 - `/project/**`、`/task/**` 知识为系统镜像，只读，变更走对应业务流程；
 - 全部工具的清单与入参见 [lita-work 接入指南](http://work.cinta.team/work-mcp.md)。
 
-### 2.2 lita-bots：把平台机器人当子 Agent
+### 2.2 lita-work-admin：管理面（仅管理员）
+
+机器人、任务定义、测试集与评估、执行记录和平台设置的独立服务：
+
+| 分类 | 代表工具 |
+|---|---|
+| 机器人与任务定义 | `list_workers`、`get_worker`、`create_worker`、`update_worker`、`delete_worker`、`list_worker_skill_catalog`、`list_worker_standard_catalog`、`list_task_templates`、`get_task_template`、`create_task_template`、`update_task_template`、`delete_task_template`、`list_task_defines` |
+| 测试集 / 用例 / 评估 | `list_eval_suites`、`get_eval_suite`、`create_eval_suite`、`update_eval_suite`、`archive_eval_suite`、`upsert_eval_case`、`delete_eval_case`、`import_eval_suite`、`export_eval_suite`、`list_eval_runs`、`create_eval_run`、`get_eval_run_report`、`cancel_eval_run`、`get_eval_item`、`rerun_eval_item`、`rejudge_eval_item` |
+| 执行记录 / 设置 | `list_task_traces`、`read_task_trace`、`get_trace_stats`、`get_settings`、`pull_scripts` |
+
+- 仅管理员：公共 Agent 令牌或管理员绑定的真人机器人令牌；其它身份 403；
+- 评估执行本身仍走 `lita-work`：被测方使用普通业务工具（受评估模式权限策略限制），判定机器人仅可调用 `get_eval_judge_input` / `submit_eval_judgement`；
+- 详细入参见 [lita-work 接入指南](http://work.cinta.team/work-mcp.md) 第六节。
+
+### 2.3 lita-bots：把平台机器人当子 Agent
 
 | 工具 | 说明 |
 |---|---|
@@ -111,7 +129,7 @@ Claude Code 的 `--header`、Codex 的 `bearer_token_env_var` 均见下文各节
 
 会话 7 天不活跃自动过期；机器人中途提问返回 `status=question`，需用 `bot_answer` 续跑。完整说明见 [lita-bots 接入指南](http://work.cinta.team/MCP_BOTS.md)。
 
-### 2.3 lita-proxy：内部资源运维
+### 2.4 lita-proxy：内部资源运维
 
 独立服务（不在本仓库）。权限以控制台「管理 → 用户」中机器人归属用户的配置为准（本地覆盖平台，即时生效）：
 
@@ -209,6 +227,14 @@ Claude Code 的 `--header`、Codex 的 `bearer_token_env_var` 均见下文各节
           "Authorization": "Bearer {env:LITA_WORK_TOKEN}"
         }
       },
+      "lita-work-admin": {
+        "type": "remote",
+        "url": "http://work.cinta.team/api/mcp/work-admin",
+        "oauth": false,
+        "headers": {
+          "Authorization": "Bearer {env:LITA_WORK_TOKEN}"
+        }
+      },
       "lita-proxy": {
         "type": "remote",
         "url": "http://proxy.cinta.team/mcp",
@@ -223,10 +249,11 @@ Claude Code 的 `--header`、Codex 的 `bearer_token_env_var` 均见下文各节
 ```
 
 - `{env:LITA_WORK_TOKEN}`：从 opencode 进程环境展开，变量需已 export；
-- 也可改用 secrets 文件：把三处令牌值替换为 `{file:secrets/lita-work-token}`（相对 `~/.config/opencode/`，建议 `chmod 600`），不依赖环境变量；
-- `lita-proxy` 同样可以写 `"Authorization": "Bearer {env:LITA_WORK_TOKEN}"`，两种写法等价。
+- 也可改用 secrets 文件：把令牌值替换为 `{file:secrets/lita-work-token}`（相对 `~/.config/opencode/`，建议 `chmod 600`），不依赖环境变量；
+- `lita-proxy` 同样可以写 `"Authorization": "Bearer {env:LITA_WORK_TOKEN}"`，两种写法等价；
+- `lita-work-admin` 仅管理员令牌可用（公共 Agent 或管理员绑定的真人机器人）；非管理员配置后调用会返回 403，可按需移除。
 
-保存后 opencode 自动加载，`tools/list` 中会出现三个服务的工具。
+保存后 opencode 自动加载，`tools/list` 中会出现对应服务的工具。
 
 ---
 
@@ -240,6 +267,9 @@ claude mcp add --transport http lita-work http://work.cinta.team/api/mcp/work \
   --header "Authorization: Bearer ${LITA_WORK_TOKEN}"
 
 claude mcp add --transport http lita-bots http://work.cinta.team/api/mcp/bots \
+  --header "Authorization: Bearer ${LITA_WORK_TOKEN}"
+
+claude mcp add --transport http lita-work-admin http://work.cinta.team/api/mcp/work-admin \
   --header "Authorization: Bearer ${LITA_WORK_TOKEN}"
 
 claude mcp add --transport http lita-proxy http://proxy.cinta.team/mcp \
@@ -259,6 +289,11 @@ claude mcp add --transport http lita-proxy http://proxy.cinta.team/mcp \
     "lita-bots": {
       "type": "http",
       "url": "http://work.cinta.team/api/mcp/bots",
+      "headers": { "Authorization": "Bearer ${LITA_WORK_TOKEN}" }
+    },
+    "lita-work-admin": {
+      "type": "http",
+      "url": "http://work.cinta.team/api/mcp/work-admin",
       "headers": { "Authorization": "Bearer ${LITA_WORK_TOKEN}" }
     },
     "lita-proxy": {
@@ -287,6 +322,10 @@ bearer_token_env_var = "LITA_WORK_TOKEN"
 url = "http://work.cinta.team/api/mcp/bots"
 bearer_token_env_var = "LITA_WORK_TOKEN"
 
+[mcp_servers.lita-work-admin]
+url = "http://work.cinta.team/api/mcp/work-admin"
+bearer_token_env_var = "LITA_WORK_TOKEN"
+
 [mcp_servers.lita-proxy]
 url = "http://proxy.cinta.team/mcp"
 bearer_token_env_var = "LITA_WORK_TOKEN"
@@ -306,6 +345,7 @@ env_http_headers = { "X-Worker-Token" = "LITA_WORK_TOKEN" }
 ```bash
 codex mcp add lita-work --url http://work.cinta.team/api/mcp/work --bearer-token-env-var LITA_WORK_TOKEN
 codex mcp add lita-bots --url http://work.cinta.team/api/mcp/bots --bearer-token-env-var LITA_WORK_TOKEN
+codex mcp add lita-work-admin --url http://work.cinta.team/api/mcp/work-admin --bearer-token-env-var LITA_WORK_TOKEN
 codex mcp add lita-proxy --url http://proxy.cinta.team/mcp --bearer-token-env-var LITA_WORK_TOKEN
 codex mcp list
 ```
@@ -318,12 +358,12 @@ codex mcp list
 
 任何支持 MCP Streamable HTTP 的客户端均可接入，通用参数：
 
-| 参数 | lita-work | lita-bots | lita-proxy |
-|---|---|---|---|
-| 传输类型 | Streamable HTTP（streamable-http / http） | 同左 | 同左 |
-| URL | `http://work.cinta.team/api/mcp/work` | `http://work.cinta.team/api/mcp/bots` | `http://proxy.cinta.team/mcp` |
-| 鉴权头 | `Authorization: Bearer <TOKEN>` | 同左 | `Authorization: Bearer <TOKEN>` 或 `X-Worker-Token: <TOKEN>` |
-| URL 参数兜底 | `?token=<TOKEN>` | `?token=<TOKEN>` | 不支持 |
+| 参数 | lita-work | lita-work-admin | lita-bots | lita-proxy |
+|---|---|---|---|---|
+| 传输类型 | Streamable HTTP（streamable-http / http） | 同左 | 同左 | 同左 |
+| URL | `http://work.cinta.team/api/mcp/work` | `http://work.cinta.team/api/mcp/work-admin`（仅管理员） | `http://work.cinta.team/api/mcp/bots` | `http://proxy.cinta.team/mcp` |
+| 鉴权头 | `Authorization: Bearer <TOKEN>` | 同左 | 同左 | `Authorization: Bearer <TOKEN>` 或 `X-Worker-Token: <TOKEN>` |
+| URL 参数兜底 | `?token=<TOKEN>` | `?token=<TOKEN>` | `?token=<TOKEN>` | 不支持 |
 
 ---
 
@@ -334,8 +374,15 @@ codex mcp list
 ```bash
 export LITA_WORK_TOKEN="<你的机器人令牌>"
 
-# lita-work：应返回 search_projects / get_settings 等工具
+# lita-work：应返回 search_projects / get_task 等工具
 curl -sS -X POST http://work.cinta.team/api/mcp/work \
+  -H "Authorization: Bearer $LITA_WORK_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+
+# lita-work-admin：管理员令牌应返回 list_workers / list_eval_suites 等工具（非管理员 403）
+curl -sS -X POST http://work.cinta.team/api/mcp/work-admin \
   -H "Authorization: Bearer $LITA_WORK_TOKEN" \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
@@ -360,10 +407,11 @@ curl -sS -X POST http://proxy.cinta.team/mcp \
 
 ### 7.2 Agent 内验证
 
-1. 让 Agent 列出可用 MCP 工具，应看到三个服务的工具名前缀；
-2. `lita-work`：调用 `get_settings` 或 `search_projects`；
-3. `lita-bots`：调用 `list_bots`，应返回机器人清单；
-4. `lita-proxy`：调用 `list_resources`，应返回当前机器人有权访问的资源。
+1. 让 Agent 列出可用 MCP 工具，应看到各服务的工具；
+2. `lita-work`：调用 `search_projects` 或 `list_my_tasks`；
+3. `lita-work-admin`（仅管理员）：调用 `list_workers` 或 `list_eval_suites`；
+4. `lita-bots`：调用 `list_bots`，应返回机器人清单；
+5. `lita-proxy`：调用 `list_resources`，应返回当前机器人有权访问的资源。
 
 ---
 
@@ -372,6 +420,9 @@ curl -sS -X POST http://proxy.cinta.team/mcp \
 | 现象 | 原因与处理 |
 |---|---|
 | 401 缺少鉴权 / 无效令牌 | 检查请求头格式；令牌可能已被重置，去个人中心重新复制并更新 `LITA_WORK_TOKEN` |
+| `lita-work` 返回未知工具（机器人/任务定义/测试集） | 管理类工具已迁 `lita-work-admin`，见第 2.2 节 |
+| `lita-work-admin` 返回 403 | 仅公共 Agent 令牌或管理员绑定的真人机器人令牌可用；AI 机器人令牌与评估令牌不可用 |
+| `POST /api/workers/create.md`、`POST /api/task-templates/create.md` 等返回 403 | 机器人 / 任务定义的 `.md` 写端点同样仅管理员可用，与 `lita-work-admin` 权限一致 |
 | `lita-proxy` 返回 401 且用的是 `X-Agent-Token` | 该服务不支持此头，改用 `Authorization: Bearer` 或 `X-Worker-Token` |
 | `lita-proxy` 看不到资源 / 403 | 机器人权限不足（控制台「管理 → 用户」配置）：资源权限 `read` 只能访问 `readOnly=true` 的资源，生产可写资源只能走工单；直接执行写操作需操作权限=有，建单需工单权限=可建 |
 | `{env:LITA_WORK_TOKEN}` 展开为空 | 变量不在 opencode 进程环境：写入 `~/.zshrc` 后重开终端，或改用 `{file:secrets/lita-work-token}` |
@@ -386,7 +437,7 @@ curl -sS -X POST http://proxy.cinta.team/mcp \
 
 | 文档 | 内容 |
 |---|---|
-| [lita-work 接入指南](http://work.cinta.team/work-mcp.md) | lita-work 全部工具清单、入参、流式进度与身份规则 |
+| [lita-work 接入指南](http://work.cinta.team/work-mcp.md) | lita-work 与 lita-work-admin 全部工具清单、入参、流式进度与身份规则 |
 | [lita-bots 接入指南](http://work.cinta.team/MCP_BOTS.md) | lita-bots 会话、提问、状态码、审计与管理细节 |
 | [lita-proxy 完整文档](http://proxy.cinta.team/MCP.md) | lita-proxy 全部 31 个工具参数、鉴权与权限模型、工单审批流程与安全边界 |
 

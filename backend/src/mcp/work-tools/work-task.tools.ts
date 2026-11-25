@@ -156,7 +156,9 @@ export class WorkTaskTools implements WorkToolRegistrar {
             .int()
             .positive()
             .optional()
-            .describe('任务定义 ID（可用 list_task_defines 查询）'),
+            .describe(
+              '任务定义 ID（由需求方提供；管理端可用 lita-work-admin 的 list_task_defines 查询）',
+            ),
         },
       },
       async (args) =>
@@ -167,20 +169,6 @@ export class WorkTaskTools implements WorkToolRegistrar {
               args,
             ),
           ),
-        ),
-    );
-
-    server.registerTool(
-      'list_task_defines',
-      {
-        title: '任务定义清单',
-        description:
-          '查询当前支持分发的任务定义（名称、说明与可用机器人），创建子任务前先查询 templateId。',
-        inputSchema: {},
-      },
-      async () =>
-        executeTool(this.logger, 'list_task_defines', principal, async () =>
-          markdownResult(await this.collaboration.definesMarkdown()),
         ),
     );
 

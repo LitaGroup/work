@@ -143,6 +143,7 @@ function CommandBlock({ command }: { command: string }) {
 function McpInstallSection() {
   const origin = window.location.origin
   const mcpWorkUrl = `${origin}/api/mcp/work`
+  const mcpAdminUrl = `${origin}/api/mcp/work-admin`
   const mcpBotsUrl = `${origin}/api/mcp/bots`
   const mcpProxyUrl = 'http://proxy.cinta.team/mcp'
   const docUrl = `${origin}/MCP.md`
@@ -154,6 +155,12 @@ function McpInstallSection() {
       "lita-work": {
         "type": "remote",
         "url": "${mcpWorkUrl}",
+        "oauth": false,
+        "headers": { "Authorization": "Bearer {env:LITA_WORK_TOKEN}" }
+      },
+      "lita-work-admin": {
+        "type": "remote",
+        "url": "${mcpAdminUrl}",
         "oauth": false,
         "headers": { "Authorization": "Bearer {env:LITA_WORK_TOKEN}" }
       },
@@ -179,20 +186,22 @@ function McpInstallSection() {
       <h2 className="mb-4 text-xl font-semibold">接入 MCP（让 Agent 直接调用平台能力）</h2>
       <Card>
         <CardHeader>
-          <CardTitle>lita-work / lita-bots / lita-proxy MCP</CardTitle>
+          <CardTitle>lita-work / lita-work-admin / lita-bots / lita-proxy MCP</CardTitle>
           <CardDescription>
-            三个 MCP 服务共用个人中心「机器人令牌」，可单独或同时接入。lita-work：
-            直接操作平台数据（项目、知识库、运行、缺陷、任务、工单、机器人管理）；
-            lita-bots：把平台机器人当子 Agent 调用；lita-proxy：运维内部资源（MySQL / Nacos / XXL-JOB）。
-            配置一次后，Agent 会话可直接调用带 schema 的工具。
+            四个 MCP 服务共用个人中心「机器人令牌」，可单独或同时接入。lita-work：
+            基础业务（需求、迭代项、知识库、运行、缺陷、任务、工单）；lita-work-admin：
+            管理机器人、任务定义、测试集与评估（仅管理员）；lita-bots：把平台机器人当子 Agent 调用；
+            lita-proxy：运维内部资源（MySQL / Nacos / XXL-JOB）。配置一次后，Agent 会话可直接调用带 schema 的工具。
           </CardDescription>
         </CardHeader>
         <div className="flex flex-col gap-4 px-6 pb-6 group-data-inset/card:px-4">
           <div className="flex flex-col gap-2">
             <p className="text-sm font-medium">1. 服务地址（MCP Streamable HTTP）</p>
-            <div className="grid grid-cols-[6rem_1fr] items-center gap-2">
+            <div className="grid grid-cols-[8rem_1fr] items-center gap-2">
               <span className="text-sm font-medium">lita-work</span>
               <CommandBlock command={mcpWorkUrl} />
+              <span className="text-sm font-medium">lita-work-admin</span>
+              <CommandBlock command={mcpAdminUrl} />
               <span className="text-sm font-medium">lita-bots</span>
               <CommandBlock command={mcpBotsUrl} />
               <span className="text-sm font-medium">lita-proxy</span>
@@ -200,12 +209,13 @@ function McpInstallSection() {
             </div>
             <p className="text-sm text-foreground-muted">
               鉴权使用个人中心「机器人令牌」（你的真人机器人令牌，个人 AGENT 共用；
-              环境变量 LITA_WORK_TOKEN，过渡期旧名 LITA_PROJECT_TOKEN 同值可用）；机器人工位由平台自动注入配置。
+              环境变量 LITA_WORK_TOKEN，过渡期旧名 LITA_PROJECT_TOKEN 同值可用）；机器人工位由平台自动注入配置
+              （仅注入 lita-work）。lita-work-admin 仅管理员令牌可用，AI 机器人令牌会返回 403；
               lita-proxy 为独立服务，本地开发环境不可用。
             </p>
           </div>
           <div className="flex flex-col gap-2">
-            <p className="text-sm font-medium">2. opencode 配置（推荐，可同时接入三个服务）</p>
+            <p className="text-sm font-medium">2. opencode 配置（推荐，可同时接入四个服务）</p>
             <CommandBlock command={opencodeConfig} />
             <p className="text-sm text-foreground-muted">
               写入 ~/.config/opencode/opencode.json 或项目 .opencode/opencode.json，保存后自动生效；
@@ -225,7 +235,7 @@ function McpInstallSection() {
                 rel="noreferrer"
                 className="w-fit text-sm text-foreground-intense underline"
               >
-                {docUrl}（三个服务的接入总览，含 Codex CLI 与 lita-proxy 工具）
+                {docUrl}（四个服务的接入总览，含 Codex CLI 与 lita-proxy 工具）
               </a>
               <a
                 href={workDocUrl}
@@ -233,7 +243,7 @@ function McpInstallSection() {
                 rel="noreferrer"
                 className="w-fit text-sm text-foreground-intense underline"
               >
-                {workDocUrl}（lita-work 全部工具清单与入参）
+                {workDocUrl}（lita-work / lita-work-admin 全部工具清单与入参）
               </a>
             </div>
             <p className="text-sm text-foreground-muted">

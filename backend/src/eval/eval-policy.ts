@@ -63,7 +63,7 @@ const WRITE_TOOLS = new Set([
   'delete_ticket',
   'upsert_ticket_document',
   'delete_ticket_document',
-  // 机器人 / 任务定义写
+  // 机器人 / 任务定义写（已迁 lita-work-admin；保留拦截防重名）
   'create_worker',
   'update_worker',
   'delete_worker',
@@ -106,18 +106,36 @@ const WRITE_TOOLS = new Set([
   'rename_project_branch',
   'delete_project_branch',
   'create_github_branch',
-  // 执行记录读取（12.7 工具全部拦截）
+  // 执行记录读取（12.7 工具全部拦截，已迁 lita-work-admin）
   'list_task_traces',
   'read_task_trace',
   'get_task_signals',
   'get_trace_stats',
+  // 评估体系管理（lita-work-admin；管理端点已拒绝评估令牌，这里再按工具名防御）
+  'list_eval_suites',
+  'get_eval_suite',
+  'create_eval_suite',
+  'update_eval_suite',
+  'archive_eval_suite',
+  'upsert_eval_case',
+  'delete_eval_case',
+  'import_eval_suite',
+  'export_eval_suite',
+  'list_eval_runs',
+  'create_eval_run',
+  'get_eval_run_report',
+  'cancel_eval_run',
+  'get_eval_item',
+  'rerun_eval_item',
+  'rejudge_eval_item',
   // 优化与提案（第二期工具，预留拦截）
   'get_worker_config_files',
   'create_change_proposal',
   'update_change_proposal',
   'run_proposal_evaluation',
   'get_proposal_evaluation',
-  'get_eval_run_report',
+  // 平台设置与脚本仓库维护（已迁 lita-work-admin）
+  'pull_scripts',
   // 定时唤醒与对外发送
   'schedule_task_wakeup',
   'cancel_task_wakeup',

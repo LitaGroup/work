@@ -277,12 +277,13 @@ export class AuthService {
     }
   }
 
-  /** 欢迎卡片：英文 MCP 接入介绍（三个服务，口径与仓库根目录 MCP.md、前端概览页一致） */
+  /** 欢迎卡片：英文 MCP 接入介绍（四个服务，口径与仓库根目录 MCP.md、前端概览页一致） */
   private buildWelcomeCard(): Record<string, unknown> {
     const appUrl = (
       this.config.get<string>('APP_URL') ?? 'http://localhost:5273'
     ).replace(/\/$/, '');
     const workMcpUrl = `${appUrl}/api/mcp/work`;
+    const adminMcpUrl = `${appUrl}/api/mcp/work-admin`;
     const botsMcpUrl = `${appUrl}/api/mcp/bots`;
     /** lita-proxy 是独立服务，没有本地实例，地址固定 */
     const proxyMcpUrl = 'http://proxy.cinta.team/mcp';
@@ -304,12 +305,14 @@ export class AuthService {
         { tag: 'hr' },
         md(
           [
-            '**MCP Services** (MCP Streamable HTTP; all three share one robot token)',
+            '**MCP Services** (MCP Streamable HTTP; all share one robot token)',
             `**1. lita-work** — ${workMcpUrl}`,
-            'Operate platform data directly: projects, documents, knowledge base, script runs, defects, releases, feedbacks, ideas, tasks, tickets, workers and Feishu chat history.',
-            `**2. lita-bots** — ${botsMcpUrl}`,
+            'Operate platform data directly: projects, documents, knowledge base, script runs, defects, releases, feedbacks, ideas, tasks, tickets and Feishu chat history.',
+            `**2. lita-work-admin** — ${adminMcpUrl}`,
+            'Admin-only tools: workers, task definitions, eval suites and runs, execution traces and platform settings (admin token required).',
+            `**3. lita-bots** — ${botsMcpUrl}`,
             'Call platform bots as sub-agents: multi-turn sessions, questions, interrupt and resume.',
-            `**3. lita-proxy** — ${proxyMcpUrl}`,
+            `**4. lita-proxy** — ${proxyMcpUrl}`,
             'Internal resource operations: MySQL SQL, Nacos configs and XXL-JOB jobs.',
           ].join('\n'),
         ),
@@ -320,7 +323,7 @@ export class AuthService {
             'Web → your avatar → Personal Center → "Robot Token": copy it into the environment variable LITA_WORK_TOKEN (shared by your human worker and personal AGENT; reset it there if it leaks).',
             '',
             '**Connect opencode**',
-            'Add the three servers under mcp.servers in ~/.config/opencode/opencode.json (type=remote, oauth=false, header Authorization: Bearer {env:LITA_WORK_TOKEN}; lita-proxy also accepts X-Worker-Token).',
+            'Add the servers under mcp.servers in ~/.config/opencode/opencode.json (type=remote, oauth=false, header Authorization: Bearer {env:LITA_WORK_TOKEN}; lita-proxy also accepts X-Worker-Token; lita-work-admin requires an admin token).',
             '',
             '**Other clients** (Claude Code / Codex CLI / Cursor): see the full guide.',
             `**Full guide** — ${mcpDocUrl}`,

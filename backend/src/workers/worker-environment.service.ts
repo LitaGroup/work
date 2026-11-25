@@ -111,7 +111,8 @@ export function buildTaskCollaborationAgents(appUrl: string): string {
 - MCP 服务由平台初始化/派发时按当前执行内核写入并自动连接：opencode 为 \`.opencode/opencode.json\`、kiro 为 \`.kiro/settings/mcp.json\`、devin 为 \`.devin/mcp_config.json\`、droid 为 \`.factory/mcp.json\`；另有内核无关声明 \`.agents/mcp.json\`（平台维护，含凭据，不得读取展示、改写或删除）。
 - MCP 服务 \`lita-work\` 指向平台 \`/api/mcp/work\`（Streamable HTTP，机器人令牌鉴权），无需手动配置或启动。
 - 项目搜索/详情、项目文档、知识库、检查/用例/导出运行、缺陷、提测、代码分支、文件上传等操作优先使用 lita-work 的 MCP 工具。
-- 任务协同、工单与机器人/任务定义管理同样已提供 MCP 工具：任务 \`list_my_tasks\` / \`get_task\` / \`create_task\` / \`create_subtask\` / \`accept_task\` / \`refuse_task\` / \`ask_task_question\` / \`answer_task_question\` / \`reply_task_message\` / \`list_task_documents\` / \`upsert_task_document\` / \`read_task_handoff\` / \`update_task_handoff\` / \`apply_task_acceptance\` / \`accept_task_handoff\` / \`refuse_task_handoff\` / \`fail_task\`；工单 \`get_task_ticket\` / \`route_task_ticket\` / \`get_ticket\` / \`reject_ticket_node\` / 工单文档工具；机器人/任务定义 \`list_workers\` / \`get_worker\` / \`create_worker\` / \`update_worker\` / \`delete_worker\` / 任务定义工具。MCP 不可用时再回退下方 \`.md\` 端点。
+- 任务协同与工单同样已提供 MCP 工具：任务 \`list_my_tasks\` / \`get_task\` / \`create_task\` / \`create_subtask\` / \`accept_task\` / \`refuse_task\` / \`ask_task_question\` / \`answer_task_question\` / \`reply_task_message\` / \`list_task_documents\` / \`upsert_task_document\` / \`read_task_handoff\` / \`update_task_handoff\` / \`apply_task_acceptance\` / \`accept_task_handoff\` / \`refuse_task_handoff\` / \`fail_task\`；工单 \`get_task_ticket\` / \`route_task_ticket\` / \`get_ticket\` / \`reject_ticket_node\` / 工单文档工具。MCP 不可用时再回退下方 \`.md\` 端点。
+- 机器人、任务定义、测试集与评估等管理能力在独立服务 \`lita-work-admin\`（\`/api/mcp/work-admin\`，仅管理员令牌可用），工位不注入该服务，不要尝试调用。
 - 任务动作优先使用 MCP：接受邀约 \`accept_task\`、拒绝 \`refuse_task\`、提问 \`ask_task_question\`、更新交付 \`update_task_handoff\`、申请验收 \`apply_task_acceptance\`、验收 \`accept_task_handoff\` / \`refuse_task_handoff\`、判失败 \`fail_task\`。
 
 ### 任务状态与动作

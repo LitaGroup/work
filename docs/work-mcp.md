@@ -1,12 +1,14 @@
 ---
-description: "> AI 助手提示：本文件定义了 lita-work MCP 服务的接入方式与工具清单；外部 Agent 按本文档完成令牌配置后即可调用需求、迭代项、文档、知识、运行、缺陷、反馈、灵感、任务、工单等平台工具。"
-version: "1.0.0"
+description: "> AI 助手提示：本文件定义了 lita-work 与 lita-work-admin MCP 服务的接入方式与工具清单；外部 Agent 按本文档完成令牌配置后即可调用需求、迭代项、文档、知识、运行、缺陷、反馈、灵感、任务、工单等平台工具（基础业务），管理员可另行接入 lita-work-admin 管理机器人、任务定义、测试集与评估。"
+version: "1.1.0"
 type: docs
 ---
 
 # MCP 接入指南：lita-work 平台工具
 
-平台把原 **lita-work / knowledge-search / file-upload** 三个 Agent 技能（`.md` HTTP 端点）改造成 MCP 服务 **`lita-work`**：外部 Agent（opencode / Claude Code / Cursor 等）完成一次配置后，即可直接调用带 schema 的平台工具——需求、迭代项、文档、知识库、脚本运行、缺陷、反馈、灵感、代码分支、文件上传、任务协同、工单和机器人/任务定义管理等。
+平台把原 **lita-work / knowledge-search / file-upload** 三个 Agent 技能（`.md` HTTP 端点）改造成 MCP 服务 **`lita-work`**：外部 Agent（opencode / Claude Code / Cursor 等）完成一次配置后，即可直接调用带 schema 的平台工具——需求、迭代项、文档、知识库、脚本运行、缺陷、反馈、灵感、代码分支、文件上传、任务协同与工单等基础业务能力。
+
+管理面能力（机器人、任务定义、测试集与评估、执行记录、平台设置）独立为 **`lita-work-admin`**（`POST /api/mcp/work-admin`），仅管理员令牌可用，见「六、lita-work-admin（管理面）」。
 
 - 服务地址：`POST /api/mcp/work`（MCP Streamable HTTP，响应为 SSE 流）
 - 鉴权：机器人令牌（`Authorization: Bearer` / `X-Worker-Token` / `X-Agent-Token` / `?token=`），或管理员下发的公共 Agent 令牌；与 `.md` 端点同一令牌体系。真人用户没有独立令牌，其令牌就是绑定真人机器人的 `workers.agentToken`
@@ -107,7 +109,7 @@ claude mcp add --transport http lita-work http://your-host:3100/api/mcp/work \
 | `create_backlog_task` | `backlogId`、`title?`、`description?`、`templateId?`、`agentId?` | 新建交付子任务（描述自动附带系统上下文）；无交付任务时按 `agentId` 创建交付任务并登记负责人（仅管理员） |
 | `create_backlog_release` | `items`（`[{backlogId}]`）、`ends?`（须为提测工单 testEnds 字段配置的选项）、`inputValues?`（提测工单动态字段）、`title?`、`taskId?` | 批量提测：每个迭代项建提测工单 + 提测记录（互相绑定），提测群通知由工单「提测群通知」节点发送 |
 
-### 运行 / 脚本 / 设置
+### 运行 / 脚本
 
 | 工具 | 主要入参 | 说明 |
 |---|---|---|
@@ -118,8 +120,8 @@ claude mcp add --transport http lita-work http://your-host:3100/api/mcp/work \
 | `get_run` | `kind`（check/test/export）、`runId` | 查询运行详情与输出 |
 | `list_runs` | `kind`（check/test/export/schedule）、`targetId` | 运行历史（倒序，上限 50） |
 | `import_scripts` | `projectId` | 导入项目脚本目录下的新脚本 |
-| `get_settings` | — | 平台设置概览 |
-| `pull_scripts` | — | 更新脚本仓库（git 输出流式推送） |
+
+> `get_settings`（平台设置）与 `pull_scripts`（更新脚本仓库）属运维管理能力，已迁至 `lita-work-admin`。
 
 ### 知识库
 
@@ -200,8 +202,7 @@ claude mcp add --transport http lita-work http://your-host:3100/api/mcp/work \
 |---|---|---|
 | `list_my_tasks` | `q?`、`status?`、`subStatus?`、`rootOnly?` | 我的任务清单（需求方/执行方/负责方） |
 | `get_task` | `taskId` | 任务详情与操作指引 |
-| `create_task` | `title?`、`description?`、`input?`、`outputSpec?`、`templateId?` | 创建根任务并自动分配机器人 |
-| `list_task_defines` | — | 可分发任务定义与可用机器人 |
+| `create_task` | `title?`、`description?`、`input?`、`outputSpec?`、`templateId?` | 创建根任务并自动分配机器人（`templateId` 由需求方提供，管理端可用 lita-work-admin 的 `list_task_defines` 查询） |
 | `create_subtask` | `parentTaskId`、`templateId`、`title`、`description?`、`input?`、`outputSpec?` | 父任务机器人创建子任务；描述自动附带系统上下文（任务树 / 迭代 / 相关工单 / 交付文档） |
 | `accept_task` / `refuse_task` | `taskId`、`reason?`、`suggestion?` | 接受 / 拒绝邀约（拒绝需理由） |
 | `ask_task_question` | `taskId`、`questions` | 执行机器人向需求方提问 |
@@ -245,20 +246,9 @@ claude mcp add --transport http lita-work http://your-host:3100/api/mcp/work \
 
 > 创建工单：真人机器人令牌以绑定真人身份发起；AI 机器人令牌以机器人自身为发起机器人（工单创建人为空，发起机器人记该机器人）。
 
-### 机器人与任务定义
+### 机器人 / 任务定义 / 评估（lita-work-admin）
 
-| 工具 | 主要入参 | 说明 |
-|---|---|---|
-| `list_workers` / `get_worker` | `role?` / `workerId` | 机器人清单 / 详情 |
-| `create_worker` | `name`、`intro?`、`executorId?`、`providerId?`、`modelId?`、`prompt?`、`skills?`、`standards?`、`mcps?`、`taskDefs?`、`ownerUserId?`、`enabled?`、权限与并行上限 | 创建自定义 AI 工作者（保存后自动初始化） |
-| `update_worker` | `workerId` + 同上字段 | 编辑机器人（未传字段保持不变） |
-| `delete_worker` | `workerId` | 删除自定义机器人 |
-| `list_worker_skill_catalog` | `q?` | 技能库目录（配置 `skills` 前查询） |
-| `list_worker_standard_catalog` | `q?` | 规范库目录（配置 `standards` 前查询） |
-| `list_task_templates` / `get_task_template` | — / `templateId` | 任务定义清单 / 详情 |
-| `create_task_template` | `name`、`description?`、`agentIds?` | 创建任务定义 |
-| `update_task_template` | `templateId`、`name?`、`description?`、`agentIds?` | 编辑任务定义 |
-| `delete_task_template` | `templateId` | 删除任务定义 |
+机器人管理、任务定义管理、技能/规范库目录、测试集与评估、执行记录与平台设置已迁至独立服务 **`lita-work-admin`**（`POST /api/mcp/work-admin`，仅管理员令牌可用），工具清单见「六、lita-work-admin（管理面）」。`lita-work` 不再提供这些工具，调用会返回未知工具。
 
 ### 飞书
 
@@ -273,7 +263,7 @@ claude mcp add --transport http lita-work http://your-host:3100/api/mcp/work \
 
 ## 四、流式进度与超时
 
-- 运行类与 `pull_scripts` 工具在客户端携带 `_meta.progressToken` 时（opencode / Claude Code 默认行为），经 `notifications/progress` 实时推送脚本输出；
+- 运行类工具（`lita-work-admin` 的 `pull_scripts` 同样支持）在客户端携带 `_meta.progressToken` 时（opencode / Claude Code 默认行为），经 `notifications/progress` 实时推送脚本输出；
 - 等待终态的时长由 `timeout_seconds` 控制（10–1800 秒，默认 1800）；**超时只结束等待，平台侧运行继续**，可稍后用 `get_run` 查询终态；
 - 未提供 progressToken 时退化为等待终态一次性返回。
 
@@ -281,25 +271,78 @@ claude mcp add --transport http lita-work http://your-host:3100/api/mcp/work \
 
 - 机器人令牌：平台识别为机器人身份；绑定真人时同时按真人身份处理，写操作记录该真人；未绑定真人的 AI 机器人记录机器人自身；
 - 公共 Agent 令牌：写操作记「公共 Agent」；
-- 任务协同、工单、机器人/任务定义管理的 MCP 工具与 `.md` 端点使用同一套身份与权限校验；`.md` 端点保留兼容。
+- 任务协同、工单的 MCP 工具与 `.md` 端点使用同一套身份与权限校验；`.md` 端点保留兼容；机器人/任务定义/评估管理走 `lita-work-admin`，统一要求管理员身份（对应的 `.md` 写端点 `POST /api/workers/create.md`、`POST /api/task-templates/create.md` 等同样仅管理员可用）。
 
-## 六、与 lita-bots 的区别
+## 六、lita-work-admin（管理面）
 
-| | `lita-work`（本文档） | `lita-bots`（[MCP_BOTS.md](./MCP_BOTS.md)） |
+- 服务地址：`POST /api/mcp/work-admin`（MCP Streamable HTTP，stateless）
+- 鉴权与 `lita-work` 使用同一套令牌解析规则，但**仅管理员可用**：公共 Agent 令牌，或绑定真人且角色为管理员的真人机器人令牌；纯 AI 机器人令牌与评估令牌一律 403
+- 工位不注入该服务；平台机器人的工位 `AGENTS.md` 只声明 `lita-work`
+
+### 机器人 / 任务定义 / 执行记录 / 设置
+
+| 工具 | 主要入参 | 说明 |
 |---|---|---|
-| 地址 | `POST /api/mcp/work` | `POST /api/mcp/bots` |
-| 用途 | 直接操作平台数据与脚本 | 把平台机器人当子 Agent 调用 |
-| 工具 | 需求/迭代项/知识/运行/缺陷/任务/工单/机器人等 100+ 工具 | `list_bots`、`bot_call` 等 6 个 |
-| 会话 | 无状态 | 多轮会话（`session_id`） |
+| `list_workers` / `get_worker` | `role?` / `workerId` | 机器人清单 / 详情 |
+| `create_worker` | `name`、`intro?`、`executorId?`、`providerId?`、`modelId?`、`prompt?`、`skills?`、`standards?`、`mcps?`、`taskDefs?`、`ownerUserId?`、`enabled?`、权限与并行上限 | 创建自定义 AI 工作者（保存后自动初始化） |
+| `update_worker` | `workerId` + 同上字段 | 编辑机器人（未传字段保持不变） |
+| `delete_worker` | `workerId` | 删除自定义机器人 |
+| `list_worker_skill_catalog` | `q?` | 技能库目录（配置 `skills` 前查询） |
+| `list_worker_standard_catalog` | `q?` | 规范库目录（配置 `standards` 前查询） |
+| `list_task_templates` / `get_task_template` | — / `templateId` | 任务定义清单 / 详情 |
+| `create_task_template` | `name`、`description?`、`agentIds?` | 创建任务定义 |
+| `update_task_template` | `templateId`、`name?`、`description?`、`agentIds?` | 编辑任务定义 |
+| `delete_task_template` | `templateId` | 删除任务定义 |
+| `list_task_defines` | — | 当前支持分发的任务定义与可用机器人（创建任务前确认 `templateId`） |
+| `list_task_traces` | `taskId` 等 | 任务执行记录清单 |
+| `read_task_trace` | `traceId` | 单条执行记录详情 |
+| `get_trace_stats` | `workerId?` 等 | 执行记录统计 |
+| `get_settings` | — | 平台设置概览 |
+| `pull_scripts` | — | 更新脚本仓库（git 输出流式推送） |
 
-两个服务可同时配置，互不影响。
+### 测试集 / 用例 / 评估
 
-## 七、常见问题
+| 工具 | 主要入参 | 说明 |
+|---|---|---|
+| `list_eval_suites` | — | 测试集清单（含用例数、启用数与版本） |
+| `get_eval_suite` | `suiteId` | 测试集详情（配置 + 用例 + 要点） |
+| `create_eval_suite` | `name`、`description?`、`purpose?`、`passThreshold?`、`defaultTimeoutSec?`、`maxQuestions?`、`tags?` | 创建测试集（阈值默认 80、超时 1800 秒、提问上限 3） |
+| `update_eval_suite` | `suiteId` + 同上字段、`status?`、`tags?` | 编辑测试集（`tags` 整体替换，编辑递增版本） |
+| `archive_eval_suite` | `suiteId` | 归档测试集 |
+| `upsert_eval_case` | `suiteId`、`caseId?`、`caseKey`、`title?`、`prompt`、`clarify?`、`passThreshold?`、`timeoutSec?`、`enabled?`、`points[]` | 新增/更新用例（要点整体替换，至少 1 条，序号自动生成） |
+| `delete_eval_case` | `suiteId`、`caseId` | 删除用例与要点 |
+| `import_eval_suite` | `suiteId`、`payload`（`{ suite?, cases[] }`） | 按 `caseKey` 导入（存在覆盖、不存在新增） |
+| `export_eval_suite` | `suiteId` | 导出测试集 JSON |
+| `list_eval_runs` | `suiteId?`、`targetWorkerId?`、`limit?` | 评估批次清单（倒序，上限 100） |
+| `create_eval_run` | `suiteId`、`targetWorkerId`、`evaluatorWorkerId`、`repeatCount?`、`concurrency?`、`mcpPolicy?` | 发起评估（冻结快照、生成评估项；发起人记当前管理员） |
+| `get_eval_run_report` | `runId` | 评估报告（批次信息 + 汇总 + 逐项得分/状态/提问返工） |
+| `cancel_eval_run` | `runId` | 取消评估批次 |
+| `get_eval_item` | `itemId` | 评估项详情（状态 / 事件 / 判定明细） |
+| `rerun_eval_item` | `itemId` | 重跑评估项（旧记录标记被替代） |
+| `rejudge_eval_item` | `itemId` | 重新判定评估项 |
+
+> 评估执行本身（被测方与判定机器人）仍通过 `lita-work` 的评估令牌运行：被测方使用普通业务工具（受评估模式权限策略限制），判定机器人仅可调用 `get_eval_judge_input` / `submit_eval_judgement`。
+
+## 七、与 lita-bots / lita-work-admin 的区别
+
+| | `lita-work`（本文档） | `lita-work-admin`（本文档第六节） | `lita-bots`（[MCP_BOTS.md](./MCP_BOTS.md)） |
+|---|---|---|---|
+| 地址 | `POST /api/mcp/work` | `POST /api/mcp/work-admin` | `POST /api/mcp/bots` |
+| 用途 | 直接操作平台业务数据与脚本 | 管理机器人、任务定义、测试集与评估等 | 把平台机器人当子 Agent 调用 |
+| 鉴权 | 机器人令牌 / 公共 Agent / 评估令牌 | 仅管理员（公共 Agent 或管理员绑定的真人机器人） | 机器人令牌 |
+| 工具 | 需求/迭代项/知识/运行/缺陷/任务/工单等基础工具 | 机器人 / 任务定义 / 评估 / 执行记录 / 设置 | `list_bots`、`bot_call` 等 6 个 |
+| 会话 | 无状态 | 无状态 | 多轮会话（`session_id`） |
+
+服务相互独立，可同时配置。
+
+## 八、常见问题
 
 | 现象 | 原因与处理 |
 |---|---|
 | 401 缺少鉴权 / 无效令牌 | 检查 `Authorization: Bearer`（或 `X-Agent-Token` / `X-Worker-Token` / `?token=`）；令牌可能已被重置，去个人中心重新复制并更新 `LITA_WORK_TOKEN` |
 | 工具返回 403（任务文档） | `/task/**` 知识由任务中心维护，请通过任务接口修改 |
+| `lita-work` 返回未知工具（机器人/任务定义/测试集） | 管理类工具已迁 `lita-work-admin`，且仅管理员令牌可用 |
+| `lita-work-admin` 返回 403 | 当前令牌不是公共 Agent，或绑定的真人不是管理员；AI 机器人令牌与评估令牌不可用 |
 | `upload_file` 失败 | 检查 base64 是否为空、文件是否超过 50MB |
 | 运行类工具等待超时 | 调大 `timeout_seconds`（≤1800）或稍后用 `get_run` 查询结果 |
 | 收不到中间进度 | 客户端未带 progressToken；opencode / Claude Code 默认携带 |

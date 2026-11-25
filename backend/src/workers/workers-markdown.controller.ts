@@ -12,6 +12,7 @@ import {
   Req,
 } from '@nestjs/common';
 import type { AuthedRequest } from '../auth/auth.guard';
+import { requireAdmin } from '../auth/require-admin';
 import {
   UserRole,
   WorkerGithubPermission,
@@ -117,7 +118,11 @@ export class WorkersMarkdownController {
   @Post('create.md')
   @HttpCode(200)
   @Header('Content-Type', 'text/markdown; charset=utf-8')
-  create(@Body() dto: CreateWorkerMarkdownDto): Promise<string> {
+  create(
+    @Body() dto: CreateWorkerMarkdownDto,
+    @Req() req: AuthedRequest,
+  ): Promise<string> {
+    requireAdmin(req);
     return this.markdown.createMarkdown(dto);
   }
 
@@ -127,14 +132,20 @@ export class WorkersMarkdownController {
   update(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateWorkerMarkdownDto,
+    @Req() req: AuthedRequest,
   ): Promise<string> {
+    requireAdmin(req);
     return this.markdown.updateMarkdown(id, dto);
   }
 
   @Post(':id/delete.md')
   @HttpCode(200)
   @Header('Content-Type', 'text/markdown; charset=utf-8')
-  remove(@Param('id', ParseIntPipe) id: number): Promise<string> {
+  remove(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req: AuthedRequest,
+  ): Promise<string> {
+    requireAdmin(req);
     return this.markdown.removeMarkdown(id);
   }
 }

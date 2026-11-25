@@ -102,7 +102,6 @@ describe('WorkTaskTools', () => {
         'list_my_tasks',
         'get_task',
         'create_task',
-        'list_task_defines',
         'create_subtask',
         'accept_task',
         'refuse_task',

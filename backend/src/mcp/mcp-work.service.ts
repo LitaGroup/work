@@ -13,7 +13,6 @@ import { WorkRunTools } from './work-tools/work-run.tools';
 import { WorkTaskTools } from './work-tools/work-task.tools';
 import { WorkTicketTools } from './work-tools/work-ticket.tools';
 import { WorkTopicTools } from './work-tools/work-topic.tools';
-import { WorkAgentTools } from './work-tools/work-agent.tools';
 import { WorkIterationTools } from './work-tools/work-iteration.tools';
 import { WorkWakeupTools } from './work-tools/work-wakeup.tools';
 import { WorkEvalTools } from './work-tools/work-eval.tools';
@@ -29,6 +28,7 @@ import type {
  * 返回沿用面向 Agent 的 Markdown 正文。
  * - 鉴权与 `.md` 端点一致：机器人令牌（真人机器人 / AI 机器人）或公共 Agent 令牌；
  * - 运行类工具经 progress notification 实时推送脚本输出；
+ * - 管理类工具（机器人 / 任务定义 / 测试集与评估等）在 lita-work-admin（McpAdminService）；
  * - 与 lita-bots（把机器人当子 Agent 调用）共用 stateless Streamable HTTP 传输。
  */
 @Injectable()
@@ -49,7 +49,6 @@ export class McpWorkService {
     taskTools: WorkTaskTools,
     ticketTools: WorkTicketTools,
     topicTools: WorkTopicTools,
-    agentTools: WorkAgentTools,
     feishuTools: WorkFeishuTools,
     iterationTools: WorkIterationTools,
     wakeupTools: WorkWakeupTools,
@@ -68,7 +67,6 @@ export class McpWorkService {
       taskTools,
       ticketTools,
       topicTools,
-      agentTools,
       feishuTools,
       iterationTools,
       wakeupTools,

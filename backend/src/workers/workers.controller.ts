@@ -16,6 +16,7 @@ import {
 import type { MessageEvent } from '@nestjs/common';
 import { Observable } from 'rxjs';
 import type { AuthedRequest } from '../auth/auth.guard';
+import { requireAdmin } from '../auth/require-admin';
 import {
   UserRole,
   WorkerGithubPermission,
@@ -259,7 +260,11 @@ export class WorkersController {
   }
 
   @Post()
-  create(@Body() dto: CreateWorkerDto): Promise<WorkerView> {
+  create(
+    @Body() dto: CreateWorkerDto,
+    @Req() req: AuthedRequest,
+  ): Promise<WorkerView> {
+    requireAdmin(req);
     return this.workersService.create(dto);
   }
 
@@ -269,13 +274,18 @@ export class WorkersController {
     @Body() dto: UpdateWorkerDto,
     @Req() req: AuthedRequest,
   ): Promise<WorkerView> {
+    requireAdmin(req);
     await this.assertPersonalAgentAccess(id, req);
     return this.workersService.update(id, dto);
   }
 
   @Delete(':id')
   @HttpCode(204)
-  remove(@Param('id', ParseIntPipe) id: number): Promise<void> {
+  remove(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req: AuthedRequest,
+  ): Promise<void> {
+    requireAdmin(req);
     return this.workersService.remove(id);
   }
 
