@@ -20,6 +20,7 @@ import {
   nextResumeRetryDelay,
   OFFER_STALL_REMIND_MAX_TIMES,
   TASK_INBOX_STALE_MS,
+  TASK_PENDING_ACCEPT_NOTIFY_PAUSED,
   TASK_PENDING_FEEDBACK_NOTIFY_PAUSED,
   TASK_REMIND_TIMEOUT_DAYS,
 } from './task-loop.rules';
@@ -381,6 +382,8 @@ export class TaskLoopService implements OnApplicationBootstrap {
    * 真人发飞书工作台卡片。每任务实际发出最多 3 次（offerStallRemindCount 落库）；
    * 北京时间 22:00~08:00 静默顺延；发送失败不计数，按 30 分钟节流随 LOOP 重试。
    * 不通知负责人/需求方，也不自动接受或改派。
+   * [已暂停] 真人的「任务待接受提醒」飞书卡片由 TASK_PENDING_ACCEPT_NOTIFY_PAUSED
+   * 统一暂停；AI 邀约重发不受影响。
    */
   private async warnOfferStalled(task: Task): Promise<void> {
     // 评估任务由评估引擎管理接受超时，不参与待接受卡住提醒
@@ -405,6 +408,9 @@ export class TaskLoopService implements OnApplicationBootstrap {
     let ownerName: string | null = null;
     try {
       if (human) {
+        // 「任务待接受提醒」飞书卡片已暂停（TASK_PENDING_ACCEPT_NOTIFY_PAUSED）：
+        // 不发送、不计数、不写事件；AI 邀约重发不受影响
+        if (TASK_PENDING_ACCEPT_NOTIFY_PAUSED) return;
         const result = await this.taskNotify.notifyTaskHumanAssignee(
           task,
           'notice',

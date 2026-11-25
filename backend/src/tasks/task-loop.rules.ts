@@ -12,6 +12,14 @@ export const TASK_REMIND_INTERVAL_MS = 30 * 60 * 1000;
  */
 export const TASK_PENDING_FEEDBACK_NOTIFY_PAUSED = true;
 
+/**
+ * 「任务待接受提醒」飞书推送暂停开关（运维止血，恢复推送时改为 false）。
+ *
+ * 暂停真人执行机器人待接受卡住时的飞书工作台卡片；AI 机器人的邀约重发、
+ * 任务状态机、offerStallRemindCount 计数与事件流、静默时段逻辑不受影响。
+ */
+export const TASK_PENDING_ACCEPT_NOTIFY_PAUSED = true;
+
 /** 待接受卡住提醒：每任务最多提醒次数（实际发出才计数） */
 export const OFFER_STALL_REMIND_MAX_TIMES = 3;
 

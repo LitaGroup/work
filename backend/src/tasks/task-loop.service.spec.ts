@@ -350,7 +350,7 @@ describe('TaskLoopService 多机器人协同', () => {
     }
   });
 
-  it('真人执行机器人卡住：发工作台卡片提醒绑定真人', async () => {
+  it('真人执行机器人卡住：「任务待接受提醒」飞书卡片暂停，不发送也不计数', async () => {
     jest.useFakeTimers();
     jest.setSystemTime(ACTIVE_NOW);
     try {
@@ -365,16 +365,9 @@ describe('TaskLoopService 多机器人协同', () => {
 
       await service.tick();
 
-      expect(taskNotify.notifyTaskHumanAssignee).toHaveBeenCalledWith(
-        task,
-        'notice',
-        expect.stringContaining('任务待接受提醒'),
-        expect.stringContaining('工作台'),
-      );
+      expect(taskNotify.notifyTaskHumanAssignee).not.toHaveBeenCalled();
       expect(dispatchService.offer).not.toHaveBeenCalled();
-      expect(tasksRepo.update).toHaveBeenCalledWith(expect.anything(), {
-        offerStallRemindCount: 1,
-      });
+      expect(stallCountPatches()).toHaveLength(0);
     } finally {
       jest.useRealTimers();
     }
