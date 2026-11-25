@@ -264,6 +264,21 @@ describe('WorkerEnvironmentService', () => {
     expect(agents).not.toContain('DONE');
   });
 
+  it('管理员机器人额外注入 lita-work-admin，非管理员不注入', () => {
+    const { service } = buildService();
+    const adminMcp = service['buildMcpSection']([
+      'lita-work-admin',
+      'demo',
+    ]);
+    expect(adminMcp).toContain('lita-work-admin');
+    expect(adminMcp).toContain('本机器人访问级别为管理员');
+    expect(adminMcp).toContain('- demo');
+    expect(adminMcp).not.toContain('- lita-work-admin');
+
+    const normalMcp = service['buildMcpSection'](['demo']);
+    expect(normalMcp).not.toContain('本机器人访问级别为管理员');
+  });
+
   it('内容版本随机器人配置与源文件 SHA 变化，避免无变化重复同步', () => {
     const { service } = buildService();
     const input = {

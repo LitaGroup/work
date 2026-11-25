@@ -33,7 +33,10 @@ import {
   writeKernelMcpConfig,
 } from './worker-env';
 import { WorkersService } from './workers.service';
-import { McpServersService } from '../mcp-servers/mcp-servers.service';
+import {
+  LITA_WORK_ADMIN_SERVER_NAME,
+  McpServersService,
+} from '../mcp-servers/mcp-servers.service';
 import { GithubPermissionCredentialService } from './github-permission-credential.service';
 import { GithubCredentialStatus } from '../github-gateway/github-permission-credential.entity';
 import {
@@ -45,6 +48,7 @@ import {
   WorkerSkillCatalogService,
 } from './worker-skill-catalog.service';
 import { WorkerSourceCacheService } from './worker-source-cache.service';
+import { resolveAccessLevel } from '../auth/worker-access';
 
 /** 工位同步协议版本：同步逻辑变更时递增，强制重建全部工位 */
 const STATION_SYNC_VERSION = 2;
@@ -112,7 +116,7 @@ export function buildTaskCollaborationAgents(appUrl: string): string {
 - MCP 服务 \`lita-work\` 指向平台 \`/api/mcp/work\`（Streamable HTTP，机器人令牌鉴权），无需手动配置或启动。
 - 项目搜索/详情、项目文档、知识库、检查/用例/导出运行、缺陷、提测、代码分支、文件上传等操作优先使用 lita-work 的 MCP 工具。
 - 任务协同与工单同样已提供 MCP 工具：任务 \`list_my_tasks\` / \`get_task\` / \`create_task\` / \`create_subtask\` / \`accept_task\` / \`refuse_task\` / \`ask_task_question\` / \`answer_task_question\` / \`reply_task_message\` / \`list_task_documents\` / \`upsert_task_document\` / \`read_task_handoff\` / \`update_task_handoff\` / \`apply_task_acceptance\` / \`accept_task_handoff\` / \`refuse_task_handoff\` / \`fail_task\`；工单 \`get_task_ticket\` / \`route_task_ticket\` / \`get_ticket\` / \`reject_ticket_node\` / 工单文档工具。MCP 不可用时再回退下方 \`.md\` 端点。
-- 机器人、任务定义、测试集与评估等管理能力在独立服务 \`lita-work-admin\`（\`/api/mcp/work-admin\`，仅管理员令牌可用），工位不注入该服务，不要尝试调用。
+- 机器人、任务定义、测试集与评估等管理能力在独立服务 \`lita-work-admin\`（\`/api/mcp/work-admin\`，仅管理员可用）：访问级别为管理员的机器人由平台额外注入该服务（见下方「已配置的 MCP 服务」）；非管理员机器人没有该服务，不要尝试调用。
 - 任务动作优先使用 MCP：接受邀约 \`accept_task\`、拒绝 \`refuse_task\`、提问 \`ask_task_question\`、更新交付 \`update_task_handoff\`、申请验收 \`apply_task_acceptance\`、验收 \`accept_task_handoff\` / \`refuse_task_handoff\`、判失败 \`fail_task\`。
 
 ### 任务状态与动作
@@ -421,10 +425,12 @@ export class WorkerEnvironmentService implements OnModuleDestroy {
         this.resolveStandardFiles(worker.standards),
         this.skillCatalog.resolveManagedFiles(worker.skills),
       ]);
+      const accessLevel = resolveAccessLevel({ worker });
       const servers = await this.mcpServers.buildServersConfig(
         this.appUrl(),
         token,
         worker.mcps ?? [],
+        accessLevel,
       );
       const mcpNames = Object.keys(servers).filter(
         (name) => name !== 'lita-work',
@@ -796,16 +802,26 @@ export class WorkerEnvironmentService implements OnModuleDestroy {
   }
 
   private buildMcpSection(mcpNames: string[]): string {
+    const adminInjected = mcpNames.includes(LITA_WORK_ADMIN_SERVER_NAME);
+    const customNames = mcpNames.filter(
+      (name) => name !== LITA_WORK_ADMIN_SERVER_NAME,
+    );
     return [
       '## 已配置的 MCP 服务',
       '',
       '平台固定注入：lita-work（Streamable HTTP，机器人令牌鉴权，由平台按执行内核写入配置文件并自动连接）。',
-      ...(mcpNames.length
+      ...(adminInjected
+        ? [
+            '',
+            '额外注入：lita-work-admin（`/api/mcp/work-admin`）——本机器人访问级别为管理员，可管理机器人、任务定义、测试集与评估、执行记录。此类操作影响平台其他数据，只做明确被要求的事。',
+          ]
+        : []),
+      ...(customNames.length
         ? [
             '',
             '机器人勾选的自定义 MCP（自动连接，可直接使用其工具）：',
             '',
-            ...mcpNames.map((name) => `- ${name}`),
+            ...customNames.map((name) => `- ${name}`),
           ]
         : ['', '机器人未勾选其它自定义 MCP 服务。']),
     ].join('\n');

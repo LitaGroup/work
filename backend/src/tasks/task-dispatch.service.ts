@@ -79,6 +79,7 @@ import { TASK_PENDING_FEEDBACK_NOTIFY_PAUSED } from './task-loop.rules';
 import { TaskQuestionAutoAnswerService } from './task-question-auto-answer.service';
 import { TaskRealtimeService } from './task-realtime.service';
 import { TaskWorkerInboxService } from './task-worker-inbox.service';
+import { resolveAccessLevel } from '../auth/worker-access';
 
 export interface TaskAcceptanceApplication {
   task: Task;
@@ -457,6 +458,7 @@ export class TaskDispatchService
           this.appUrl,
           workerToken,
           worker.mcps ?? [],
+          resolveAccessLevel({ worker }),
         );
         await ensureWorkerSkeleton(client, workdir);
         await upsertWorkerEnv(client, workdir, {

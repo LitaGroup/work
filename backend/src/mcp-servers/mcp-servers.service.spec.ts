@@ -1,5 +1,9 @@
 import { BadRequestException } from '@nestjs/common';
-import { McpAuthMode, McpServerType } from '../common/enums';
+import {
+  McpAuthMode,
+  McpServerType,
+  WorkerAccessLevel,
+} from '../common/enums';
 import { McpServer } from './mcp-server.entity';
 import {
   buildOpencodeServerConfig,
@@ -16,8 +20,21 @@ function makeServerRepo(initial: McpServer[] = []) {
       const builder: Record<string, unknown> = {
         addSelect: () => builder,
         orderBy: () => builder,
-        where: (_condition: string, params: { id: number }) => {
-          rows = rows.filter((row) => row.id === Number(params.id));
+        where: (
+          condition: string,
+          params: { id?: number; ids?: number[] },
+        ) => {
+          if (params.ids)
+            rows = rows.filter((row) => params.ids!.includes(row.id));
+          else if (params.id !== undefined)
+            rows = rows.filter((row) => row.id === Number(params.id));
+          else if (condition.includes('enabled'))
+            rows = rows.filter((row) => row.enabled !== false);
+          return builder;
+        },
+        andWhere: (condition: string) => {
+          if (condition.includes('enabled'))
+            rows = rows.filter((row) => row.enabled !== false);
           return builder;
         },
         getMany: () => Promise.resolve(rows),
@@ -279,5 +296,54 @@ describe('McpServersService', () => {
     await service.remove(3);
     expect(workers.repo.save).toHaveBeenCalledTimes(1);
     expect(workers.repo.save.mock.calls[0][0].mcps).toEqual([5]);
+  });
+
+  it('管理员级别才注入 lita-work-admin，普通/无权限不注入', async () => {
+    const { repo } = makeServerRepo();
+    const { repo: workers } = makeWorkerRepo();
+    const service = new McpServersService(repo as never, workers as never);
+    const admin = await service.buildServersConfig(
+      'http://work.cinta.team',
+      'tok-a',
+      [],
+      WorkerAccessLevel.ADMIN,
+    );
+    expect(admin['lita-work-admin']).toEqual({
+      type: 'remote',
+      url: 'http://work.cinta.team/api/mcp/work-admin',
+      oauth: false,
+      headers: { 'X-Worker-Token': 'tok-a' },
+    });
+    for (const level of [WorkerAccessLevel.NORMAL, WorkerAccessLevel.NONE, null]) {
+      const configs = await service.buildServersConfig(
+        'http://work.cinta.team',
+        'tok-b',
+        [],
+        level,
+      );
+      expect(configs['lita-work-admin']).toBeUndefined();
+    }
+  });
+
+  it('自定义 MCP 不能占用 lita-work-admin 服务名', async () => {
+    const { repo } = makeServerRepo([
+      server({
+        id: 6,
+        name: 'lita-work-admin',
+        type: McpServerType.REMOTE,
+        authMode: McpAuthMode.NONE,
+      }),
+    ]);
+    const { repo: workers } = makeWorkerRepo();
+    const service = new McpServersService(repo as never, workers as never);
+    const configs = await service.buildServersConfig(
+      'http://work.cinta.team',
+      'tok-c',
+      [6],
+      WorkerAccessLevel.ADMIN,
+    );
+    expect(configs['lita-work-admin'].headers).toEqual({
+      'X-Worker-Token': 'tok-c',
+    });
   });
 });

@@ -9,7 +9,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { In, Repository } from 'typeorm';
-import { McpAuthMode, McpServerType } from '../common/enums';
+import { McpAuthMode, McpServerType, WorkerAccessLevel } from '../common/enums';
 import { OpencodeMcpServerConfig } from '../workers/worker-env';
 import { Worker } from '../workers/worker.entity';
 import {
@@ -21,6 +21,9 @@ import {
 
 /** 平台固定注入的 lita-work MCP 服务名 */
 export const LITA_WORK_SERVER_NAME = 'lita-work';
+
+/** 管理员级别机器人额外注入的 lita-work-admin 服务名 */
+export const LITA_WORK_ADMIN_SERVER_NAME = 'lita-work-admin';
 
 /** 连接测试超时（毫秒） */
 const TEST_TIMEOUT_MS = 10_000;
@@ -273,22 +276,34 @@ export class McpServersService {
 
   /**
    * 生成工位 MCP 服务清单（各内核配置文件的统一数据源）：
-   * 平台 lita-work（机器人令牌鉴权）+ 机器人勾选且启用中的自定义 MCP。
+   * 平台 lita-work（机器人令牌鉴权）+ 访问级别为管理员时额外注入的
+   * lita-work-admin + 机器人勾选且启用中的自定义 MCP。
    * 令牌只进入返回值，由调用方经 shell 落盘，不进日志与 Prompt。
    */
   async buildServersConfig(
     appUrl: string,
     workerToken: string,
     mcpIds: number[] | null | undefined,
+    accessLevel?: WorkerAccessLevel | null,
   ): Promise<Record<string, OpencodeMcpServerConfig>> {
+    const base = appUrl.replace(/\/+$/, '');
     const configs: Record<string, OpencodeMcpServerConfig> = {
       [LITA_WORK_SERVER_NAME]: {
         type: 'remote',
-        url: `${appUrl.replace(/\/+$/, '')}/api/mcp/work`,
+        url: `${base}/api/mcp/work`,
         oauth: false,
         headers: { 'X-Worker-Token': workerToken },
       },
     };
+    // 管理员级别才下发管理面服务；服务端另有同源鉴权（resolveAccessLevel）
+    if (accessLevel === WorkerAccessLevel.ADMIN) {
+      configs[LITA_WORK_ADMIN_SERVER_NAME] = {
+        type: 'remote',
+        url: `${base}/api/mcp/work-admin`,
+        oauth: false,
+        headers: { 'X-Worker-Token': workerToken },
+      };
+    }
     const ids = [
       ...new Set((mcpIds ?? []).filter((id) => Number.isInteger(id) && id > 0)),
     ];
@@ -305,6 +320,7 @@ export class McpServersService {
       if (!row) continue;
       // 防止自定义配置覆盖平台固定服务
       if (row.name === LITA_WORK_SERVER_NAME) continue;
+      if (row.name === LITA_WORK_ADMIN_SERVER_NAME) continue;
       configs[row.name] = buildOpencodeServerConfig(row, workerToken);
     }
     return configs;

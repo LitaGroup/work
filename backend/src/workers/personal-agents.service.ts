@@ -36,6 +36,7 @@ import {
   writeKernelMcpConfig,
 } from './worker-env';
 import { McpServersService } from '../mcp-servers/mcp-servers.service';
+import { resolveAccessLevel } from '../auth/worker-access';
 
 /** 工作台「我的 AGENT」可用信息（对外只暴露必要字段） */
 export interface PersonalAgentView {
@@ -563,6 +564,7 @@ export class PersonalAgentsService {
       this.appUrl,
       token,
       worker.mcps ?? [],
+      resolveAccessLevel({ worker }),
     );
     const client = createExecutorClient(executor);
     // 调试/聊天与任务执行共用工位根目录，AGENTS.md 与 .agents 就是当前目录，
