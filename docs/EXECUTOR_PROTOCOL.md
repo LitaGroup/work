@@ -26,7 +26,7 @@ type: docs
 
 - **一个工位（一条 executors 记录）一个 bridge 实例**：独立端口 + Bearer 令牌，内核子进程 `cwd` 为该工位目录。
 - opencode 执行器不经 bridge（平台直连 opencode server）。
-- bridge 无状态持久化要求：会话状态在内存，进程重启后会话失效（平台按离线对账重建）。
+- **会话持久化**：稳定会话状态（bridge session id、内核原生 `externalId`、消息日志、模型、工位目录与最近回合终态）落本地 JSON 快照，默认 `{BRIDGE_ROOT}/.executor-bridge/{KERNEL}-{PORT}.json`，可用 `BRIDGE_STATE_FILE` 覆盖；启动时先恢复快照再监听 HTTP。快照原子写入且权限 600。重启前仍在运行或排队的回合**不自动重放**，恢复为 `failed`（`error=bridge restarted`），避免重复产生写操作；下一次新 prompt 继续复用恢复出的 `externalId` 续聊内核原生会话。
 - **并发回合上限**：`BRIDGE_MAX_TURNS`（缺省 10）。同一执行器同时运行的回合不超过上限，超出的回合按 `prompt` 下发顺序排队，回合结束后由 bridge 补位；`/health` 的 `capabilities.maxSessions` 上报该值。会话内仍严格串行（`promptQueueing`）。
 - **会话回收**：`BRIDGE_SESSION_TTL_MS`（缺省 24 小时）无回合且队列为空的会话由 bridge 定期淘汰，平台按 404 对账重建；`DELETE /sessions/:id` 立即丢弃会话及其排队回合。
 
@@ -159,7 +159,8 @@ bridge 环境变量：
 
 - `BRIDGE_PORT` / `BRIDGE_TOKEN` / `BRIDGE_ROOT`：监听端口、Bearer 令牌、工位根目录
 - `BRIDGE_MAX_TURNS`（默认 10）：同一执行器同时运行的回合上限
-- `BRIDGE_SESSION_TTL_MS`（默认 86400000，即 24 小时）：空闲会话回收时间
+- `BRIDGE_SESSION_TTL_MS`（默认 86400000，即 24 小时）：空闲会话回收时间，启动恢复后立即执行一次清理
+- `BRIDGE_STATE_FILE`（默认 `{BRIDGE_ROOT}/.executor-bridge/{KERNEL}-{PORT}.json`）：会话快照文件；损坏或版本不兼容时记录错误并以空状态启动，由平台按 404 对账重建
 
 ---
 
@@ -168,9 +169,10 @@ bridge 环境变量：
 | 文件名 | 路径 | 描述 | 类型 |
 |:---|:---|:---|:---|
 | `package.json` | `./executor-bridge/package.json` | bridge 独立包（零运行时依赖，Node 标准库） | 配置 |
-| `main.ts` | `./executor-bridge/src/main.ts` | 入口：环境变量、内核选择、HTTP/SSE 启动 | 脚本 |
+| `main.ts` | `./executor-bridge/src/main.ts` | 入口：环境变量、内核选择、快照恢复、HTTP/SSE 启动与优雅退出 | 脚本 |
 | `http.ts` | `./executor-bridge/src/server/http.ts` | 协议端点路由与鉴权 | 脚本 |
-| `sessions.ts` | `./executor-bridge/src/core/sessions.ts` | 会话状态机：队列、终态、消息日志、事件翻译（session.text.* / session.reasoning.*） | 脚本 |
+| `sessions.ts` | `./executor-bridge/src/core/sessions.ts` | 会话状态机：队列、终态、消息日志、快照恢复、事件翻译（session.text.* / session.reasoning.*） | 脚本 |
+| `session-store.ts` | `./executor-bridge/src/core/session-store.ts` | 会话快照的原子读写、版本校验与串行落盘 | 脚本 |
 | `kiro.kernel.ts` | `./executor-bridge/src/kernels/kiro/kiro.kernel.ts` | kiro ACP 内核（spawn per turn） | 脚本 |
 | `devin.kernel.ts` | `./executor-bridge/src/kernels/devin/devin.kernel.ts` | devin ACP 内核（spawn per turn + session/load 续聊） | 脚本 |
 | `droid.kernel.ts` | `./executor-bridge/src/kernels/droid/droid.kernel.ts` | droid exec 内核（spawn per turn + -s 续聊） | 脚本 |

@@ -16,6 +16,7 @@ import type {
 } from '../types.js';
 import type { Kernel } from '../kernels/kernel.js';
 import { KiroKernel } from '../kernels/kiro/kiro.kernel.js';
+import type { PersistedSession, SessionStore } from './session-store.js';
 
 interface QueueItem {
   text: string;
@@ -55,6 +56,8 @@ export class SessionManager {
   private readonly waiting: string[] = [];
   /** 正在运行的回合数 */
   private activeTurns = 0;
+  /** 退出中：不再接受新 prompt，也不再启动排队回合 */
+  private closing = false;
 
   constructor(
     private readonly kernel: Kernel,
@@ -62,7 +65,80 @@ export class SessionManager {
     private readonly defaultDirectory: string,
     /** 同时运行的回合上限（BRIDGE_MAX_TURNS，缺省 10） */
     readonly maxTurns = 10,
+    /** 本地快照存储；null 表示不持久化（测试/临时实例） */
+    private readonly store: SessionStore | null = null,
   ) {}
+
+  /**
+   * 从本地快照恢复会话：
+   * - 恢复 bridge session id 与内核原生 externalId 的绑定；
+   * - 重启前仍在运行的回合/排队消息不重放，统一按失败收尾，避免重复产生副作用；
+   * - 恢复后立即按 TTL 清理过期空闲会话。
+   */
+  async restore(ttlMs?: number): Promise<{
+    restored: number;
+    interrupted: number;
+  }> {
+    if (!this.store || this.closing) return { restored: 0, interrupted: 0 };
+    const persisted = await this.store.load();
+    const now = Date.now();
+    let restored = 0;
+    let interrupted = 0;
+    for (const item of persisted) {
+      if (this.sessions.has(item.id) || !item.id.startsWith('bs_')) continue;
+      const session: Session = {
+        id: item.id,
+        title: item.title,
+        directory: item.directory,
+        model: item.model,
+        agent: item.agent,
+        externalId: item.externalId,
+        queue: [],
+        running: false,
+        abort: null,
+        outcome: item.outcome,
+        lastError: item.lastError,
+        idleAt: item.idleAt,
+        createdAt: item.createdAt,
+        messages: [...item.messages],
+        turnBuffer: '',
+        deleted: false,
+      };
+      if (item.pending) {
+        this.failInterrupted(session, now);
+        interrupted += 1;
+      }
+      this.sessions.set(session.id, session);
+      restored += 1;
+    }
+    if (ttlMs && ttlMs > 0) this.evictIdle(ttlMs);
+    this.persist();
+    return { restored, interrupted };
+  }
+
+  /** 退出前中断活动回合并保存最终快照（排队消息不重放） */
+  async shutdown(timeoutMs = 8000): Promise<void> {
+    if (this.closing) return;
+    this.closing = true;
+    for (const session of this.sessions.values()) {
+      if (session.running) session.abort?.abort();
+    }
+    const deadline = Date.now() + timeoutMs;
+    while (this.activeTurns > 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    const now = Date.now();
+    for (const session of this.sessions.values()) {
+      if (!session.running && session.queue.length === 0) continue;
+      session.queue = [];
+      session.running = false;
+      session.abort = null;
+      session.turnBuffer = '';
+      this.failInterrupted(session, now);
+    }
+    this.persist();
+    await this.store?.flush();
+  }
 
   create(input: CreateSessionInput): SessionInfo {
     const id = `bs_${randomUUID().replace(/-/g, '').slice(0, 12)}`;
@@ -86,11 +162,13 @@ export class SessionManager {
       deleted: false,
     };
     this.sessions.set(id, session);
+    this.persist();
     return { id, title: session.title, location: { directory } };
   }
 
   /** 投递消息：立即入队并返回本轮用户消息（忙时由队列保证按序执行） */
   prompt(sessionId: string, text: string): PromptResult {
+    if (this.closing) throw new HttpError(503, 'bridge shutting down');
     const session = this.getOrFail(sessionId);
     const message: Message = {
       id: KiroKernel.messageId(),
@@ -101,6 +179,8 @@ export class SessionManager {
     session.messages.push(message);
     session.queue.push({ text });
     void this.drain(session);
+    // 运行中/排队标记随用户消息立即落盘：崩溃后恢复时据此按失败收尾
+    this.persist();
     return {
       id: message.id,
       sessionID: session.id,
@@ -198,10 +278,12 @@ export class SessionManager {
 
   setModel(sessionId: string, model: ModelRef): void {
     this.getOrFail(sessionId).model = model;
+    this.persist();
   }
 
   setAgent(sessionId: string, agent: string): void {
     this.getOrFail(sessionId).agent = agent;
+    this.persist();
   }
 
   /** 删除会话：终止当前回合并移除（事件由 http 层广播） */
@@ -211,6 +293,7 @@ export class SessionManager {
     session.abort?.abort();
     this.sessions.delete(sessionId);
     this.dropWaiting(sessionId);
+    this.persist();
   }
 
   /** 空闲会话淘汰：长时间没有回合的会话回收内存（平台按 404 对账重建） */
@@ -221,12 +304,15 @@ export class SessionManager {
 
   private evictIdle(ttlMs: number): void {
     const deadline = Date.now() - ttlMs;
+    let changed = false;
     for (const [id, session] of this.sessions) {
       if (session.running || session.queue.length > 0) continue;
       if (Math.max(session.idleAt, session.createdAt) > deadline) continue;
       this.sessions.delete(id);
       this.dropWaiting(id);
+      changed = true;
     }
+    if (changed) this.persist();
   }
 
   private dropWaiting(sessionId: string): void {
@@ -252,7 +338,7 @@ export class SessionManager {
   }
 
   private async drain(session: Session): Promise<void> {
-    if (session.running || session.deleted) return;
+    if (this.closing || session.running || session.deleted) return;
     if (session.queue.length === 0) return;
     // 并发上限：超出的回合保持排队，回合结束后由 pumpWaiting 按序补上
     if (this.activeTurns >= this.maxTurns) {
@@ -323,6 +409,8 @@ export class SessionManager {
           },
           onExternalSession: (externalId) => {
             session.externalId = externalId;
+            // 原生会话 id 一旦获取立即落盘，重启后仍可续聊该会话
+            this.persist();
           },
         },
       });
@@ -360,6 +448,7 @@ export class SessionManager {
     session.running = false;
     session.abort = null;
     session.turnBuffer = '';
+    this.persist();
     // 回合终态事件：平台据此立即收尾本轮（不用等两分钟对账）；time.idle 供平台判断是否属于最新一轮
     this.emit(
       result.outcome === 'succeeded'
@@ -378,8 +467,61 @@ export class SessionManager {
         time: { idle: session.idleAt },
       },
     );
-    this.pumpWaiting();
-    void this.drain(session);
+    if (!this.closing) {
+      this.pumpWaiting();
+      void this.drain(session);
+    }
+  }
+
+  /** 把重启/退出时未完成的会话标记失败（不重放已发 prompt，避免重复副作用） */
+  private failInterrupted(session: Session, idleAt: number): void {
+    const lastUser = [...session.messages]
+      .reverse()
+      .find((message) => message.role === 'user');
+    const lastAssistant = [...session.messages]
+      .reverse()
+      .find((message) => message.role === 'assistant');
+    if (
+      lastUser &&
+      (!lastAssistant || lastAssistant.createdAt < lastUser.createdAt)
+    ) {
+      session.messages.push({
+        id: KiroKernel.messageId(),
+        role: 'assistant',
+        text: '执行失败：bridge restarted',
+        createdAt: idleAt,
+      });
+    }
+    session.outcome = 'failed';
+    session.lastError = 'bridge restarted';
+    session.idleAt = idleAt;
+  }
+
+  /** 生成不含运行态对象的稳定快照并异步落盘 */
+  private persist(): void {
+    this.store?.schedule(this.snapshot());
+  }
+
+  private snapshot(): PersistedSession[] {
+    return [...this.sessions.values()].map((session) => ({
+      id: session.id,
+      title: session.title,
+      directory: session.directory,
+      model: session.model,
+      agent: session.agent,
+      externalId: session.externalId,
+      outcome: session.outcome,
+      lastError: session.lastError,
+      idleAt: session.idleAt,
+      createdAt: session.createdAt,
+      pending: session.running || session.queue.length > 0,
+      messages: session.messages.map((message) => ({
+        id: message.id,
+        role: message.role,
+        text: message.text,
+        createdAt: message.createdAt,
+      })),
+    }));
   }
 }
 

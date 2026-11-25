@@ -3,7 +3,12 @@
  * - 鉴权：Bearer BRIDGE_TOKEN（未配置令牌时跳过，仅限本机回环场景）。
  * - SSE：/events 全执行器单连接经 EventBus 广播 + 心跳注释行。
  */
-import { createServer, type IncomingMessage, type ServerResponse } from 'http';
+import {
+  createServer,
+  type IncomingMessage,
+  type Server,
+  type ServerResponse,
+} from 'http';
 import type { Kernel } from '../kernels/kernel.js';
 import { HttpError, SessionManager } from '../core/sessions.js';
 import { FileOps } from '../core/files.js';
@@ -23,7 +28,7 @@ export interface BridgeServerOptions {
   bus: EventBus;
 }
 
-export function startBridgeServer(options: BridgeServerOptions): void {
+export function startBridgeServer(options: BridgeServerOptions): Server {
   const { port, token, kernel, sessions, files, bus } = options;
   bus.startHeartbeat();
 
@@ -46,6 +51,7 @@ export function startBridgeServer(options: BridgeServerOptions): void {
       `[executor-bridge] kernel=${kernel.name} protocol=${PROTOCOL_VERSION} listening on :${port}\n`,
     );
   });
+  return server;
 }
 
 interface HandlerContext {
