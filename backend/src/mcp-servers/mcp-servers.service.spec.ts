@@ -16,8 +16,20 @@ function makeServerRepo(initial: McpServer[] = []) {
       const builder: Record<string, unknown> = {
         addSelect: () => builder,
         orderBy: () => builder,
-        where: (_condition: string, params: { id: number }) => {
-          rows = rows.filter((row) => row.id === Number(params.id));
+        where: (
+          _condition: string,
+          params: { id?: number; ids?: number[] },
+        ) => {
+          if (params.ids) rows = rows.filter((row) => params.ids!.includes(row.id));
+          else if (params.id !== undefined)
+            rows = rows.filter((row) => row.id === Number(params.id));
+          return builder;
+        },
+        andWhere: (_condition: string, params?: { ids?: number[] }) => {
+          if (params?.ids)
+            rows = rows.filter((row) => params.ids!.includes(row.id));
+          else if (_condition.includes('enabled'))
+            rows = rows.filter((row) => row.enabled !== false);
           return builder;
         },
         getMany: () => Promise.resolve(rows),
@@ -280,4 +292,57 @@ describe('McpServersService', () => {
     expect(workers.repo.save).toHaveBeenCalledTimes(1);
     expect(workers.repo.save.mock.calls[0][0].mcps).toEqual([5]);
   });
+
+  it('buildServersConfig 只给授权机器人注入 lita-work-admin', async () => {
+    const { repo } = makeServerRepo();
+    const { repo: workers } = makeWorkerRepo();
+    const service = new McpServersService(repo as never, workers as never);
+    const original = process.env.MCP_ADMIN_WORKER_IDS;
+    process.env.MCP_ADMIN_WORKER_IDS = '1041, 12';
+    try {
+      const granted = await service.buildServersConfig(
+        'http://work.cinta.team',
+        'tok-1',
+        [],
+        1041,
+      );
+      expect(granted['lita-work-admin']).toEqual({
+        type: 'remote',
+        url: 'http://work.cinta.team/api/mcp/work-admin',
+        oauth: false,
+        headers: { 'X-Worker-Token': 'tok-1' },
+      });
+      const denied = await service.buildServersConfig(
+        'http://work.cinta.team',
+        'tok-2',
+        [],
+        1001,
+      );
+      expect(denied['lita-work-admin']).toBeUndefined();
+    } finally {
+      if (original === undefined) delete process.env.MCP_ADMIN_WORKER_IDS;
+      else process.env.MCP_ADMIN_WORKER_IDS = original;
+    }
+  });
+
+  it('自定义 MCP 不能占用 lita-work-admin 服务名', async () => {
+    const { repo } = makeServerRepo([
+      server({
+        id: 5,
+        name: 'lita-work-admin',
+        type: McpServerType.REMOTE,
+        authMode: McpAuthMode.NONE,
+      }),
+    ]);
+    const { repo: workers } = makeWorkerRepo();
+    const service = new McpServersService(repo as never, workers as never);
+    const configs = await service.buildServersConfig(
+      'http://work.cinta.team',
+      'tok-3',
+      [5],
+      null,
+    );
+    expect(configs['lita-work-admin']).toBeUndefined();
+  });
+
 });

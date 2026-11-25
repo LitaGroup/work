@@ -11,6 +11,10 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { In, Repository } from 'typeorm';
 import { McpAuthMode, McpServerType } from '../common/enums';
 import { OpencodeMcpServerConfig } from '../workers/worker-env';
+import {
+  isAdminGrantedWorker,
+  LITA_WORK_ADMIN_SERVER_NAME,
+} from '../mcp/mcp-admin-grant';
 import { Worker } from '../workers/worker.entity';
 import {
   McpServer,
@@ -273,22 +277,33 @@ export class McpServersService {
 
   /**
    * 生成工位 MCP 服务清单（各内核配置文件的统一数据源）：
-   * 平台 lita-work（机器人令牌鉴权）+ 机器人勾选且启用中的自定义 MCP。
+   * 平台 lita-work（机器人令牌鉴权）+ 机器人勾选且启用中的自定义 MCP，
+   * 以及在 MCP_ADMIN_WORKER_IDS 中显式授权的 lita-work-admin。
    * 令牌只进入返回值，由调用方经 shell 落盘，不进日志与 Prompt。
    */
   async buildServersConfig(
     appUrl: string,
     workerToken: string,
     mcpIds: number[] | null | undefined,
+    workerId?: number | null,
   ): Promise<Record<string, OpencodeMcpServerConfig>> {
+    const base = appUrl.replace(/\/+$/, '');
     const configs: Record<string, OpencodeMcpServerConfig> = {
       [LITA_WORK_SERVER_NAME]: {
         type: 'remote',
-        url: `${appUrl.replace(/\/+$/, '')}/api/mcp/work`,
+        url: `${base}/api/mcp/work`,
         oauth: false,
         headers: { 'X-Worker-Token': workerToken },
       },
     };
+    if (isAdminGrantedWorker(workerId)) {
+      configs[LITA_WORK_ADMIN_SERVER_NAME] = {
+        type: 'remote',
+        url: `${base}/api/mcp/work-admin`,
+        oauth: false,
+        headers: { 'X-Worker-Token': workerToken },
+      };
+    }
     const ids = [
       ...new Set((mcpIds ?? []).filter((id) => Number.isInteger(id) && id > 0)),
     ];
@@ -304,7 +319,11 @@ export class McpServersService {
       const row = byId.get(id);
       if (!row) continue;
       // 防止自定义配置覆盖平台固定服务
-      if (row.name === LITA_WORK_SERVER_NAME) continue;
+      if (
+        row.name === LITA_WORK_SERVER_NAME ||
+        row.name === LITA_WORK_ADMIN_SERVER_NAME
+      )
+        continue;
       configs[row.name] = buildOpencodeServerConfig(row, workerToken);
     }
     return configs;

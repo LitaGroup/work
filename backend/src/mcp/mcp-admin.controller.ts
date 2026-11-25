@@ -17,6 +17,12 @@ import { authenticateMcpRequest } from './mcp-auth';
 import { beginMcpTrace } from './mcp-request-trace';
 import { McpAdminService } from './mcp-admin.service';
 import { TraceService } from '../trace/trace.service';
+import {
+  ADMIN_WORKER_IDS_ENV,
+  isAdminGrantedWorker,
+} from './mcp-admin-grant';
+
+export { ADMIN_WORKER_IDS_ENV };
 
 /**
  * lita-work-admin MCP 开放端点（MCP Streamable HTTP，stateless）：
@@ -28,19 +34,6 @@ import { TraceService } from '../trace/trace.service';
  * 或 MCP_ADMIN_WORKER_IDS 显式授权的机器人）；
  * 评估令牌（含判定令牌）一律拒绝。
  */
-
-/** 显式授权使用 lita-work-admin 的机器人 id（逗号/空格分隔，便于临时放开 AI 机器人） */
-export const ADMIN_WORKER_IDS_ENV = 'MCP_ADMIN_WORKER_IDS';
-
-function adminGrantedWorkerIds(): Set<number> {
-  const raw = process.env[ADMIN_WORKER_IDS_ENV] ?? '';
-  return new Set(
-    raw
-      .split(/[,\s]+/)
-      .map((item) => Number(item.trim()))
-      .filter((id) => Number.isInteger(id) && id > 0),
-  );
-}
 
 @Controller('mcp/work-admin')
 export class McpAdminController {
@@ -78,8 +71,7 @@ export class McpAdminController {
       throw new ForbiddenException('评估令牌不可访问 lita-work-admin');
     }
     const adminUser = principal.user?.role === UserRole.ADMIN;
-    const grantedWorker =
-      !!principal.worker && adminGrantedWorkerIds().has(principal.worker.id);
+    const grantedWorker = isAdminGrantedWorker(principal.worker?.id);
     if (!adminUser && !grantedWorker) {
       throw new ForbiddenException(
         'lita-work-admin 仅管理员可用（公共 Agent、管理员绑定的真人机器人令牌，或在 MCP_ADMIN_WORKER_IDS 中授权的机器人）',
