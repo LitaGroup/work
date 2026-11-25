@@ -1423,6 +1423,16 @@ export const WORKER_GITHUB_PERMISSION_LABELS: Record<WorkerGithubPermission, str
   release: '发布权限',
 }
 
+/** 机器人平台访问级别：无权限（禁用全部 MCP）/ 普通（基础业务，默认）/ 管理员（含管理面） */
+export const WORKER_ACCESS_LEVELS = ['无权限', '普通', '管理员'] as const
+export type WorkerAccessLevel = (typeof WORKER_ACCESS_LEVELS)[number]
+
+export const WORKER_ACCESS_LEVEL_LABELS: Record<WorkerAccessLevel, string> = {
+  无权限: '无权限（禁用全部 MCP）',
+  普通: '普通（基础业务）',
+  管理员: '管理员（含管理面）',
+}
+
 /** 机器人资源网关权限：none（无权限，默认）/ read（仅只读资源）/ write（全部资源） */
 export const WORKER_RESOURCE_PERMISSIONS = ['none', 'read', 'write'] as const
 export type WorkerResourcePermission =
@@ -1744,6 +1754,8 @@ export interface Worker {
   githubPermission: WorkerGithubPermission
   /** 资源网关权限：none（无权限）/ read（仅只读资源）/ write（全部资源） */
   resourcePermission: WorkerResourcePermission
+  /** 平台访问级别：无权限 / 普通（默认）/ 管理员（真人机器人与个人 AGENT 跟随真人） */
+  accessLevel: WorkerAccessLevel
   /** 并行执行上限：同一时刻可执行的任务数（仅 AI 机器人；1 表示串行，默认 3） */
   maxParallelTasks: number
   /** 是否采集执行记录（默认开；评估任务不受该开关影响） */
@@ -4341,6 +4353,7 @@ export const api = {
     enabled?: boolean
     githubPermission?: WorkerGithubPermission
     resourcePermission?: WorkerResourcePermission
+    accessLevel?: WorkerAccessLevel
   }) =>
     request<Worker>('/workers', {
       method: 'POST',
@@ -4367,6 +4380,7 @@ export const api = {
       enabled: boolean
       githubPermission: WorkerGithubPermission
       resourcePermission: WorkerResourcePermission
+      accessLevel: WorkerAccessLevel
       traceEnabled: boolean
       optimizerReadable: boolean
     }>,

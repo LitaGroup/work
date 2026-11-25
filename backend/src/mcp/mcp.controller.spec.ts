@@ -5,11 +5,14 @@ import { McpController } from './mcp.controller';
 function buildController(): {
   controller: McpController;
   mcp: { handleRequest: jest.Mock };
-  auth: { getPublicAgentByToken: jest.Mock };
+  auth: { getPublicAgentByToken: jest.Mock; getUserById: jest.Mock };
   workers: { findByAgentToken: jest.Mock };
 } {
   const mcp = { handleRequest: jest.fn() };
-  const auth = { getPublicAgentByToken: jest.fn() };
+  const auth = {
+    getPublicAgentByToken: jest.fn(),
+    getUserById: jest.fn().mockResolvedValue(null),
+  };
   const workers = { findByAgentToken: jest.fn() };
   const controller = new McpController(
     mcp as never,

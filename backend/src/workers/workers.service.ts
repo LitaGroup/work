@@ -12,6 +12,7 @@ import { In, IsNull, Repository, type FindOptionsWhere } from 'typeorm';
 import {
   TaskStatus,
   TaskSubStatus,
+  WorkerAccessLevel,
   WorkerGithubPermission,
   WorkerLiveStatus,
   WorkerResourcePermission,
@@ -65,6 +66,8 @@ export interface CreateWorkerInput {
   enabled?: boolean;
   githubPermission?: WorkerGithubPermission;
   resourcePermission?: WorkerResourcePermission;
+  /** 平台访问级别：无权限 / 普通（默认）/ 管理员（真人机器人与个人 AGENT 跟随真人，忽略该字段） */
+  accessLevel?: WorkerAccessLevel;
   /** 并行执行上限（仅 AI 机器人；1 表示串行，默认 3） */
   maxParallelTasks?: number;
   /** 是否采集执行记录（默认开；评估任务不受该开关影响） */
@@ -161,6 +164,23 @@ function normalizeBackupModel(worker: Worker): void {
   worker.backupProviderId = providerId;
   worker.backupModelId = modelId;
   worker.backupVariant = worker.backupVariant?.trim() || null;
+}
+
+/**
+ * 平台访问级别归一：无权限 / 普通 / 管理员；未传时缺省普通（存量与新建机器人默认）。
+ */
+function normalizeAccessLevel(value: unknown): WorkerAccessLevel {
+  if (value === undefined || value === null || value === '') {
+    return WorkerAccessLevel.NORMAL;
+  }
+  if (
+    value === WorkerAccessLevel.NONE ||
+    value === WorkerAccessLevel.NORMAL ||
+    value === WorkerAccessLevel.ADMIN
+  ) {
+    return value;
+  }
+  throw new BadRequestException('平台访问级别仅支持 无权限 / 普通 / 管理员');
 }
 
 /** 机器人视图：实体 + 工位路径 + 实时状态 + 当前任务（均不落库实时推导） */
@@ -536,6 +556,7 @@ export class WorkersService implements OnApplicationBootstrap {
       enabled: input.enabled ?? true,
       githubPermission: normalizeGithubPermission(input.githubPermission),
       resourcePermission: normalizeResourcePermission(input.resourcePermission),
+      accessLevel: normalizeAccessLevel(input.accessLevel),
       maxParallelTasks: normalizeMaxParallelTasks(input.maxParallelTasks),
     });
     normalizeBackupModel(worker);
@@ -658,6 +679,9 @@ export class WorkersService implements OnApplicationBootstrap {
       worker.resourcePermission = normalizeResourcePermission(
         input.resourcePermission,
       );
+    }
+    if (input.accessLevel !== undefined) {
+      worker.accessLevel = normalizeAccessLevel(input.accessLevel);
     }
     if (input.maxParallelTasks !== undefined && !worker.humanUserId) {
       worker.maxParallelTasks = normalizeMaxParallelTasks(

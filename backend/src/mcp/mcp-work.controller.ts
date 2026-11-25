@@ -9,6 +9,7 @@ import { authenticateMcpRequest } from './mcp-auth';
 import { beginMcpTrace } from './mcp-request-trace';
 import { McpWorkService } from './mcp-work.service';
 import { TraceService } from '../trace/trace.service';
+import { assertMcpAccess } from '../auth/worker-access';
 
 /**
  * lita-work MCP 开放端点（MCP Streamable HTTP，stateless）：
@@ -38,6 +39,8 @@ export class McpWorkController {
     @Body() body: unknown,
   ): Promise<void> {
     const principal = await this.authenticate(req);
+    // 「无权限」机器人禁止调用全部 MCP；评估令牌代表平台内部评估会话，豁免该限制（仍受 EvalShield 约束）
+    if (!principal.evalContext) assertMcpAccess(principal);
     const traceCtx = beginMcpTrace(this.trace, principal, res, body);
     try {
       await this.mcp.handleRequest(principal, req, res, body);

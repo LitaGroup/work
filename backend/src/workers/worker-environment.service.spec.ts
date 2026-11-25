@@ -469,7 +469,10 @@ describe('工位同步 revision 覆盖平台固定文案', () => {
       ExecutorType.OPENCODE,
     );
     expect(
-      stationTemplateFingerprint('http://project.cinta.team', ExecutorType.OPENCODE),
+      stationTemplateFingerprint(
+        'http://project.cinta.team',
+        ExecutorType.OPENCODE,
+      ),
     ).not.toBe(a);
     expect(
       stationTemplateFingerprint('http://work.cinta.team', ExecutorType.DROID),

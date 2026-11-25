@@ -1,4 +1,5 @@
-import { UnauthorizedException } from '@nestjs/common';
+import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
+import { WorkerAccessLevel } from '../common/enums';
 import { McpWorkController } from './mcp-work.controller';
 
 /** 构造被测 controller（mcp / auth / workers 全部 mock） */
@@ -53,6 +54,12 @@ describe('McpWorkController.authenticate（经 handlePost 验证）', () => {
     name: '测试机器人',
     humanUserId: null,
   };
+  const noneWorker = {
+    id: 9,
+    name: '无权限机器人',
+    humanUserId: null,
+    accessLevel: WorkerAccessLevel.NONE,
+  };
 
   function mockValid(
     auth: {
@@ -66,6 +73,7 @@ describe('McpWorkController.authenticate（经 handlePost 验证）', () => {
     workers.findByAgentToken.mockImplementation((token: string) => {
       if (token === 'human-worker-token') return humanWorker;
       if (token === 'worker-token') return aiWorker;
+      if (token === 'none-worker-token') return noneWorker;
       return null;
     });
   }
@@ -165,5 +173,14 @@ describe('McpWorkController.authenticate（经 handlePost 验证）', () => {
       ),
     ).rejects.toThrow(UnauthorizedException);
     expect(auth.getPublicAgentByToken).not.toHaveBeenCalled();
+  });
+
+  it('accessLevel=无权限 的机器人 403（全部 MCP 禁用）', async () => {
+    const { controller, mcp, auth, workers } = buildController();
+    mockValid(auth, workers);
+    await expect(
+      post(controller, reqOf({ workerToken: 'none-worker-token' })),
+    ).rejects.toThrow(ForbiddenException);
+    expect(mcp.handleRequest).not.toHaveBeenCalled();
   });
 });

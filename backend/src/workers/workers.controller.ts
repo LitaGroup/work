@@ -19,6 +19,7 @@ import type { AuthedRequest } from '../auth/auth.guard';
 import { requireAdmin } from '../auth/require-admin';
 import {
   UserRole,
+  WorkerAccessLevel,
   WorkerGithubPermission,
   WorkerLiveStatus,
   WorkerResourcePermission,
@@ -67,6 +68,7 @@ class CreateWorkerDto implements CreateWorkerInput {
   enabled?: boolean;
   githubPermission?: WorkerGithubPermission;
   resourcePermission?: WorkerResourcePermission;
+  accessLevel?: WorkerAccessLevel;
   maxParallelTasks?: number;
   traceEnabled?: boolean;
   optimizerReadable?: boolean;
@@ -93,6 +95,7 @@ class UpdateWorkerDto implements UpdateWorkerInput {
   enabled?: boolean;
   githubPermission?: WorkerGithubPermission;
   resourcePermission?: WorkerResourcePermission;
+  accessLevel?: WorkerAccessLevel;
   maxParallelTasks?: number;
   traceEnabled?: boolean;
   optimizerReadable?: boolean;

@@ -19,7 +19,8 @@ type: docs
 
 - 本地开发环境把 `work.cinta.team` 换成 `localhost:3100`；`lita-proxy` 本地实例默认 `http://localhost:3101/mcp`。
 - 鉴权统一：`Authorization: Bearer <LITA_WORK_TOKEN>`。`lita-work` / `lita-work-admin` / `lita-bots` 还接受 `X-Worker-Token` / `X-Agent-Token` 头或 `?token=` 参数；`lita-proxy` 只接受 `Authorization: Bearer` 或 `X-Worker-Token`（`X-Agent-Token` 返回 401）。
-- `lita-work-admin` 额外要求管理员身份：公共 Agent 令牌，或绑定真人且角色为管理员的真人机器人令牌；AI 机器人令牌与评估令牌返回 403。平台工位只注入 `lita-work`，不注入该服务。
+- `lita-work-admin` 额外要求管理员身份：公共 Agent 令牌、绑定管理员的真人机器人，或 `accessLevel=管理员` 的 AI 机器人；其余身份 403。平台工位只注入 `lita-work`，不注入该服务。
+- `accessLevel=无权限` 的机器人禁止调用全部 MCP（`lita-work` / `lita-work-admin` / `lita-bots`，返回 403）；真人机器人与个人 AGENT 跟随绑定真人的权限，不受该字段影响。
 
 ---
 
@@ -112,7 +113,8 @@ Claude Code 的 `--header`、Codex 的 `bearer_token_env_var` 均见下文各节
 | 测试集 / 用例 / 评估 | `list_eval_suites`、`get_eval_suite`、`create_eval_suite`、`update_eval_suite`、`archive_eval_suite`、`upsert_eval_case`、`delete_eval_case`、`import_eval_suite`、`export_eval_suite`、`list_eval_runs`、`create_eval_run`、`run_eval`（发起并等待终态）、`get_eval_run`（状态与进度）、`get_worker_eval_summary`（机器人评估成绩）、`get_eval_run_report`、`cancel_eval_run`、`get_eval_item`、`rerun_eval_item`、`rejudge_eval_item` |
 | 执行记录 / 设置 | `list_task_traces`、`read_task_trace`、`get_trace_stats`、`get_settings`、`pull_scripts` |
 
-- 仅管理员：公共 Agent 令牌或管理员绑定的真人机器人令牌；其它身份 403；
+- 仅管理员：公共 Agent 令牌、绑定管理员的真人机器人，或 `accessLevel=管理员` 的 AI 机器人；其它身份 403；
+- `accessLevel=无权限` 的机器人无法调用任何 MCP（含本服务）；真人机器人与个人 AGENT 跟随绑定真人；
 - 评估执行本身仍走 `lita-work`：被测方使用普通业务工具（受评估模式权限策略限制），判定机器人仅可调用 `get_eval_judge_input` / `submit_eval_judgement`；
 - 详细入参见 [lita-work 接入指南](http://work.cinta.team/work-mcp.md) 第六节。
 
@@ -421,7 +423,8 @@ curl -sS -X POST http://proxy.cinta.team/mcp \
 |---|---|
 | 401 缺少鉴权 / 无效令牌 | 检查请求头格式；令牌可能已被重置，去个人中心重新复制并更新 `LITA_WORK_TOKEN` |
 | `lita-work` 返回未知工具（机器人/任务定义/测试集） | 管理类工具已迁 `lita-work-admin`，见第 2.2 节 |
-| `lita-work-admin` 返回 403 | 仅公共 Agent 令牌或管理员绑定的真人机器人令牌可用；AI 机器人令牌与评估令牌不可用 |
+| `lita-work-admin` 返回 403 | 仅公共 Agent 令牌、管理员绑定的真人机器人，或 `accessLevel=管理员` 的 AI 机器人可用；评估令牌不可用 |
+| 机器人调用 MCP 返回 403 且提示「无权限」 | 该机器人平台访问级别为「无权限」，在机器人配置页调整为「普通」或「管理员」 |
 | `POST /api/workers/create.md`、`POST /api/task-templates/create.md` 等返回 403 | 机器人 / 任务定义的 `.md` 写端点同样仅管理员可用，与 `lita-work-admin` 权限一致 |
 | `lita-proxy` 返回 401 且用的是 `X-Agent-Token` | 该服务不支持此头，改用 `Authorization: Bearer` 或 `X-Worker-Token` |
 | `lita-proxy` 看不到资源 / 403 | 机器人权限不足（控制台「管理 → 用户」配置）：资源权限 `read` 只能访问 `readOnly=true` 的资源，生产可写资源只能走工单；直接执行写操作需操作权限=有，建单需工单权限=可建 |

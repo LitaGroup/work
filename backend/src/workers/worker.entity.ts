@@ -7,6 +7,7 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 import {
+  WorkerAccessLevel,
   WorkerGithubPermission,
   WorkerResourcePermission,
   WorkerRole,
@@ -203,6 +204,17 @@ export class Worker {
     default: WorkerResourcePermission.NONE,
   })
   resourcePermission: WorkerResourcePermission;
+
+  /**
+   * 平台访问级别：无权限 / 普通（默认）/ 管理员。
+   * 仅 AI 机器人使用该字段；真人机器人与个人 AGENT 动态跟随绑定真人的 UserRole。
+   */
+  @Column({
+    type: 'enum',
+    enum: WorkerAccessLevel,
+    default: WorkerAccessLevel.NORMAL,
+  })
+  accessLevel: WorkerAccessLevel;
 
   /**
    * 并行执行上限：同一时刻允许处于「进行中-执行中」的任务数。

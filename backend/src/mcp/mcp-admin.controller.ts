@@ -7,11 +7,12 @@ import {
   Body,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
-import { UserRole } from '../common/enums';
+import { WorkerAccessLevel } from '../common/enums';
 import { AuthService } from '../auth/auth.service';
 import { Public } from '../auth/public.decorator';
 import { WorkersService } from '../workers/workers.service';
 import { EvalTokenService } from '../eval/eval-token.service';
+import { resolveAccessLevel } from '../auth/worker-access';
 import type { McpWorkPrincipal } from './work-tools/work-tools.types';
 import { authenticateMcpRequest } from './mcp-auth';
 import { beginMcpTrace } from './mcp-request-trace';
@@ -62,9 +63,9 @@ export class McpAdminController {
     if (principal.evalContext) {
       throw new ForbiddenException('评估令牌不可访问 lita-work-admin');
     }
-    if (principal.user?.role !== UserRole.ADMIN) {
+    if (resolveAccessLevel(principal) !== WorkerAccessLevel.ADMIN) {
       throw new ForbiddenException(
-        'lita-work-admin 仅管理员可用（公共 Agent 或管理员绑定的真人机器人令牌）',
+        'lita-work-admin 仅管理员可用（公共 Agent、管理员绑定的真人机器人，或 accessLevel=管理员的机器人）',
       );
     }
     return principal;

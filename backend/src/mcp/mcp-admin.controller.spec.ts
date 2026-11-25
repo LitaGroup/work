@@ -1,5 +1,5 @@
 import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
-import { UserRole } from '../common/enums';
+import { UserRole, WorkerAccessLevel } from '../common/enums';
 import { McpAdminController } from './mcp-admin.controller';
 
 /** 构造被测 controller（mcp / auth / workers / evalToken / trace 全部 mock） */
@@ -69,6 +69,13 @@ describe('McpAdminController 鉴权（经 handlePost 验证）', () => {
     humanUserId: null,
     enabled: true,
   };
+  const aiAdminWorker = {
+    id: 10,
+    name: '管理员机器人',
+    humanUserId: null,
+    enabled: true,
+    accessLevel: WorkerAccessLevel.ADMIN,
+  };
 
   function mockTokens(
     auth: { getPublicAgentByToken: jest.Mock; getUserById: jest.Mock },
@@ -84,6 +91,7 @@ describe('McpAdminController 鉴权（经 handlePost 验证）', () => {
       if (token === 'admin-worker-token') return adminWorker;
       if (token === 'member-worker-token') return memberWorker;
       if (token === 'ai-worker-token') return aiWorker;
+      if (token === 'ai-admin-token') return aiAdminWorker;
       return null;
     });
   }
@@ -134,6 +142,13 @@ describe('McpAdminController 鉴权（经 handlePost 验证）', () => {
       post(controller, reqOf({ workerToken: 'ai-worker-token' })),
     ).rejects.toThrow(ForbiddenException);
     expect(mcp.handleRequest).not.toHaveBeenCalled();
+  });
+
+  it('AI 机器人 accessLevel=管理员 放行', async () => {
+    const { controller, mcp, auth, workers } = buildController();
+    mockTokens(auth, workers);
+    await post(controller, reqOf({ workerToken: 'ai-admin-token' }));
+    expect(principalOf(mcp)).toEqual({ worker: aiAdminWorker });
   });
 
   it('评估令牌 403（即使对应机器人绑定管理员）', async () => {

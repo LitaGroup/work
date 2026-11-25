@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import {
+  WorkerAccessLevel,
   WorkerGithubPermission,
   WorkerResourcePermission,
   WorkerRole,
@@ -27,6 +28,12 @@ const ResourcePermissionArg = z.enum(
   Object.values(WorkerResourcePermission) as [
     WorkerResourcePermission,
     ...WorkerResourcePermission[],
+  ],
+);
+const AccessLevelArg = z.enum(
+  Object.values(WorkerAccessLevel) as [
+    WorkerAccessLevel,
+    ...WorkerAccessLevel[],
   ],
 );
 
@@ -97,6 +104,9 @@ const CommonWorkerFields = {
   enabled: z.boolean().optional().describe('启用状态'),
   githubPermission: GithubPermissionArg.optional().describe('GitHub 权限'),
   resourcePermission: ResourcePermissionArg.optional().describe('资源网关权限'),
+  accessLevel: AccessLevelArg.optional().describe(
+    '平台访问级别：无权限 / 普通（默认）/ 管理员；真人机器人与个人 AGENT 跟随绑定真人',
+  ),
   maxParallelTasks: z
     .number()
     .int()

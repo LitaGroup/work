@@ -242,6 +242,19 @@ export enum ExecutorType {
   DROID = 'droid',
 }
 
+/**
+ * 机器人平台访问级别（accessLevel）：
+ * - 无权限：禁止调用全部 MCP（lita-work / lita-work-admin / lita-bots）；
+ * - 普通（默认）：可调用基础业务工具，不可调用管理面；
+ * - 管理员：与真人管理员等同，可调用管理面与管理类写接口。
+ * 真人机器人与个人 AGENT 忽略该字段，动态跟随绑定真人的 UserRole。
+ */
+export enum WorkerAccessLevel {
+  NONE = '无权限',
+  NORMAL = '普通',
+  ADMIN = '管理员',
+}
+
 /** 机器人角色：工作者（干活）/ 调度器（任务识别、拆解、分配建议；当前为系统内置机器人） */
 export enum WorkerRole {
   WORKER = '工作者',

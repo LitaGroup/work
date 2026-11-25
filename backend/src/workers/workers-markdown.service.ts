@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import {
+  WorkerAccessLevel,
   WorkerGithubPermission,
   WorkerResourcePermission,
   WorkerRole,
@@ -46,12 +47,12 @@ export class WorkersMarkdownService {
       '',
       `共 ${workers.length} 个机器人${filter?.role ? `（角色：${filter.role}）` : ''}。`,
       '',
-      '| ID | 名称 | 归属 | 角色 | 运行时 | GitHub 权限 | 资源权限 | 并行上限 | 实时状态 | 启用 | 执行器 | 模型 | 负责人 | 当前任务 |',
+      '| ID | 名称 | 归属 | 角色 | 运行时 | 访问级别 | GitHub 权限 | 资源权限 | 并行上限 | 实时状态 | 启用 | 执行器 | 模型 | 负责人 | 当前任务 |',
       '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
     ];
     for (const worker of workers) {
       lines.push(
-        `| [${worker.id}](/api/workers/${worker.id}.md) | ${markdownCell(worker.name)} | ${this.workerKind(worker)} | ${worker.role} | ${worker.runtime} | ${this.githubPermissionLabel(worker.githubPermission)} | ${this.resourcePermissionLabel(worker.resourcePermission)} | ${worker.humanUserId ? '不限' : worker.maxParallelTasks} | ${worker.liveStatus} | ${worker.enabled ? '是' : '否'} | ${worker.executorId ?? '-'} | ${markdownCell(worker.modelId)} | ${markdownCell(worker.ownerName)} | ${markdownCell(this.activeTaskLabel(worker))} |`,
+        `| [${worker.id}](/api/workers/${worker.id}.md) | ${markdownCell(worker.name)} | ${this.workerKind(worker)} | ${worker.role} | ${worker.runtime} | ${this.accessLevelLabel(worker)} | ${this.githubPermissionLabel(worker.githubPermission)} | ${this.resourcePermissionLabel(worker.resourcePermission)} | ${worker.humanUserId ? '不限' : worker.maxParallelTasks} | ${worker.liveStatus} | ${worker.enabled ? '是' : '否'} | ${worker.executorId ?? '-'} | ${markdownCell(worker.modelId)} | ${markdownCell(worker.ownerName)} | ${markdownCell(this.activeTaskLabel(worker))} |`,
       );
     }
     if (workers.length === 0) {
@@ -88,6 +89,7 @@ export class WorkersMarkdownService {
       `- 运行时：${worker.runtime}`,
       `- GitHub 权限：${this.githubPermissionLabel(worker.githubPermission)}`,
       `- 资源权限：${this.resourcePermissionLabel(worker.resourcePermission)}`,
+      `- 平台访问级别：${this.accessLevelLabel(worker)}`,
       `- 并行上限：${worker.humanUserId ? '不限（真人可并行）' : worker.maxParallelTasks}`,
       `- 启用：${worker.enabled ? '是' : '否'}`,
       `- 实时状态：${worker.liveStatus}`,
@@ -256,6 +258,7 @@ export class WorkersMarkdownService {
       `- 运行时：${worker.runtime}`,
       `- GitHub 权限：${this.githubPermissionLabel(worker.githubPermission)}`,
       `- 资源权限：${this.resourcePermissionLabel(worker.resourcePermission)}`,
+      `- 平台访问级别：${this.accessLevelLabel(worker)}`,
       `- MCP 服务：${mcpNames.length ? mcpNames.join('、') : '仅 lita-work'}`,
       `- 并行上限：${worker.humanUserId ? '不限（真人可并行）' : worker.maxParallelTasks}`,
       `- 启用：${worker.enabled ? '是' : '否'}`,
@@ -303,6 +306,14 @@ export class WorkersMarkdownService {
     if (permission === WorkerResourcePermission.WRITE) return '全部资源';
     if (permission === WorkerResourcePermission.READ) return '只读资源';
     return '无权限';
+  }
+
+  /** 平台访问级别：真人机器人与个人 AGENT 跟随绑定真人 */
+  private accessLevelLabel(worker: WorkerView): string {
+    if (worker.humanUserId != null || worker.personalAgentUserId != null) {
+      return '跟随真人';
+    }
+    return worker.accessLevel ?? WorkerAccessLevel.NORMAL;
   }
 
   private activeTaskLabel(worker: WorkerView): string {

@@ -9,6 +9,7 @@ import {
 import type { Request, Response } from 'express';
 import { AuthService } from '../auth/auth.service';
 import { Public } from '../auth/public.decorator';
+import { assertMcpAccess } from '../auth/worker-access';
 import type { Worker } from '../workers/worker.entity';
 import { WorkersService } from '../workers/workers.service';
 import { McpService } from './mcp.service';
@@ -92,8 +93,11 @@ export class McpController {
   }
 
   /** 机器人令牌映射调用方：绑定真人时记真人身份，否则用负 ID 隔离 AI 机器人会话 */
-  private callerOf(worker: Worker): McpBotCaller {
+  private async callerOf(worker: Worker): Promise<McpBotCaller> {
     const userId = worker.humanUserId ?? worker.personalAgentUserId;
+    const user = userId != null ? await this.auth.getUserById(userId) : null;
+    // 「无权限」机器人禁止调用全部 MCP
+    assertMcpAccess({ worker, user });
     if (userId != null) {
       return { id: userId, name: worker.humanUserName?.trim() || worker.name };
     }

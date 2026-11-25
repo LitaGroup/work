@@ -40,6 +40,8 @@ import {
 import {
   api,
   MCP_SERVER_TYPE_LABELS,
+  WORKER_ACCESS_LEVELS,
+  WORKER_ACCESS_LEVEL_LABELS,
   WORKER_GITHUB_PERMISSIONS,
   WORKER_GITHUB_PERMISSION_LABELS,
   WORKER_RESOURCE_PERMISSIONS,
@@ -51,6 +53,7 @@ import {
   type WorkerDebugModelCatalog,
   type WorkerDebugModelSelection,
   type WorkerGithubPermission,
+  type WorkerAccessLevel,
   type WorkerInitializeSnapshot,
   type WorkerInitializeStatus,
   type WorkerOptimizeSnapshot,
@@ -157,6 +160,7 @@ export function WorkerEditPage({ personal = false }: { personal?: boolean }) {
     useState<WorkerGithubPermission>('develop')
   const [resourcePermission, setResourcePermission] =
     useState<WorkerResourcePermission>('none')
+  const [accessLevel, setAccessLevel] = useState<WorkerAccessLevel>('普通')
   /** 并行执行上限（同一时刻可执行的任务数，1 表示串行） */
   const [maxParallelTasks, setMaxParallelTasks] = useState('3')
   const [error, setError] = useState<string | null>(null)
@@ -310,6 +314,7 @@ export function WorkerEditPage({ personal = false }: { personal?: boolean }) {
         setMcps((w.mcps ?? []).filter((id) => Number.isInteger(id)))
         setGithubPermission(w.githubPermission ?? 'develop')
         setResourcePermission(w.resourcePermission ?? 'none')
+        setAccessLevel(w.accessLevel ?? '普通')
         setMaxParallelTasks(String(w.maxParallelTasks ?? 3))
       })
       .catch((e: Error) => setLoadError(e.message))
@@ -511,6 +516,7 @@ export function WorkerEditPage({ personal = false }: { personal?: boolean }) {
         : {
             githubPermission,
             resourcePermission,
+            accessLevel,
             maxParallelTasks: Math.min(
               20,
               Math.max(1, Math.trunc(Number(maxParallelTasks)) || 3),
@@ -970,6 +976,30 @@ export function WorkerEditPage({ personal = false }: { personal?: boolean }) {
                   <span className="text-xs text-foreground-muted">
                     全部资源可访问所有 MySQL 资源；只读资源仅能访问标记为只读的资源。
                     默认无权限，GitHub 与资源权限相互独立。
+                  </span>
+                </label>
+                <label className="flex flex-col gap-1 text-sm">
+                  平台访问级别
+                  <Select
+                    value={accessLevel}
+                    onValueChange={(v) => setAccessLevel(v as WorkerAccessLevel)}
+                    items={WORKER_ACCESS_LEVEL_LABELS}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {WORKER_ACCESS_LEVELS.map((level) => (
+                        <SelectItem key={level} value={level}>
+                          {WORKER_ACCESS_LEVEL_LABELS[level]}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <span className="text-xs text-foreground-muted">
+                    普通可调用基础业务 MCP；管理员额外可调用管理面（机器人、任务定义、
+                    测试集与评估）；无权限禁止调用全部 MCP。真人机器人与个人 AGENT
+                    跟随绑定真人，不适用该配置。
                   </span>
                 </label>
                 <label className="flex flex-col gap-1 text-sm">
@@ -1812,7 +1842,8 @@ function HumanWorkerPermissionCard({
         <CardTitle>真人机器人</CardTitle>
         <CardDescription>
           「{worker.humanUserName ?? worker.name}」绑定该机器人；实际执行人是用户，
-          不需要 opencode 工位、执行器与模型。此处只维护权限，保存后立即生效。
+          不需要 opencode 工位、执行器与模型。此处只维护 GitHub 与资源权限，
+          平台访问级别跟随绑定真人，保存后立即生效。
         </CardDescription>
       </CardHeader>
       <div className="flex flex-col gap-4 px-6 pb-6 group-data-inset/card:px-4">

@@ -271,12 +271,13 @@ claude mcp add --transport http lita-work http://your-host:3100/api/mcp/work \
 
 - 机器人令牌：平台识别为机器人身份；绑定真人时同时按真人身份处理，写操作记录该真人；未绑定真人的 AI 机器人记录机器人自身；
 - 公共 Agent 令牌：写操作记「公共 Agent」；
-- 任务协同、工单的 MCP 工具与 `.md` 端点使用同一套身份与权限校验；`.md` 端点保留兼容；机器人/任务定义/评估管理走 `lita-work-admin`，统一要求管理员身份（对应的 `.md` 写端点 `POST /api/workers/create.md`、`POST /api/task-templates/create.md` 等同样仅管理员可用）。
+- 任务协同、工单的 MCP 工具与 `.md` 端点使用同一套身份与权限校验；`.md` 端点保留兼容；机器人/任务定义/评估管理走 `lita-work-admin`，统一要求管理员身份（公共 Agent、绑定管理员的真人机器人，或 `accessLevel=管理员` 的 AI 机器人；对应的 `.md` 写端点 `POST /api/workers/create.md`、`POST /api/task-templates/create.md` 等同样仅管理员可用）。
 
 ## 六、lita-work-admin（管理面）
 
 - 服务地址：`POST /api/mcp/work-admin`（MCP Streamable HTTP，stateless）
-- 鉴权与 `lita-work` 使用同一套令牌解析规则，但**仅管理员可用**：公共 Agent 令牌，或绑定真人且角色为管理员的真人机器人令牌；纯 AI 机器人令牌与评估令牌一律 403
+- 鉴权与 `lita-work` 使用同一套令牌解析规则，但**仅管理员可用**：公共 Agent 令牌、绑定管理员的真人机器人，或 `accessLevel=管理员` 的 AI 机器人；普通/无权限机器人与评估令牌一律 403
+- `accessLevel=无权限` 的机器人禁止调用全部 MCP（含 `lita-work` 与 `lita-bots`）；真人机器人与个人 AGENT 跟随绑定真人的权限
 - 工位不注入该服务；平台机器人的工位 `AGENTS.md` 只声明 `lita-work`
 
 ### 机器人 / 任务定义 / 执行记录 / 设置
@@ -284,7 +285,7 @@ claude mcp add --transport http lita-work http://your-host:3100/api/mcp/work \
 | 工具 | 主要入参 | 说明 |
 |---|---|---|
 | `list_workers` / `get_worker` | `role?` / `workerId` | 机器人清单 / 详情 |
-| `create_worker` | `name`、`intro?`、`executorId?`、`providerId?`、`modelId?`、`prompt?`、`skills?`、`standards?`、`mcps?`、`taskDefs?`、`ownerUserId?`、`enabled?`、权限与并行上限 | 创建自定义 AI 工作者（保存后自动初始化） |
+| `create_worker` | `name`、`intro?`、`executorId?`、`providerId?`、`modelId?`、`prompt?`、`skills?`、`standards?`、`mcps?`、`taskDefs?`、`ownerUserId?`、`enabled?`、`accessLevel?`（无权限/普通/管理员）、权限与并行上限 | 创建自定义 AI 工作者（保存后自动初始化） |
 | `update_worker` | `workerId` + 同上字段 | 编辑机器人（未传字段保持不变） |
 | `delete_worker` | `workerId` | 删除自定义机器人 |
 | `list_worker_skill_catalog` | `q?` | 技能库目录（配置 `skills` 前查询） |
