@@ -173,6 +173,38 @@ async function handle(
     return;
   }
 
+  if (method === 'POST' && path === '/fs/read-file') {
+    const body = (await readJson(req)) as {
+      directory?: string;
+      path?: string;
+    };
+    if (!body.directory || !body.path) {
+      throw new HttpError(400, 'directory/path 不能为空');
+    }
+    const result = await ctx.files.readFile({
+      directory: body.directory,
+      path: body.path,
+    });
+    if (!result) throw new HttpError(404, 'file not found');
+    sendJson(res, 200, result);
+    return;
+  }
+
+  if (method === 'POST' && path === '/fs/remove-files') {
+    const body = (await readJson(req)) as {
+      directory?: string;
+      paths?: string[];
+    };
+    if (!body.directory || !Array.isArray(body.paths)) {
+      throw new HttpError(400, 'directory/paths 不能为空');
+    }
+    sendJson(res, 200, await ctx.files.removeFiles({
+      directory: body.directory,
+      paths: body.paths.map(String),
+    }));
+    return;
+  }
+
   if (method === 'POST' && path === '/fs/upsert-env') {
     const body = (await readJson(req)) as {
       directory?: string;

@@ -41,9 +41,10 @@ worker/{id}/
 
 | 路径 | 说明 |
 |:---|:---|
-| `AGENTS.md` | 初始化时由机器人按平台指令生成（职责定义 + 协同协议 + 权限小节 + 目录结构） |
-| `.agents/skills/` | 初始化时按技能清单安装；移除清单之外的旧技能目录 |
-| `.agents/rules/` | 初始化时按规范清单同步，`.standards-manifest.json` 记录受管文件 |
+| `AGENTS.md` | 初始化时由平台直接生成（职责定义 + 协同协议 + 权限小节 + 目录结构），不经过模型转写 |
+| `.agents/skills/` | 初始化时由平台按技能目录下载（含脚本、模板等资源）；移除清单之外的旧技能目录 |
+| `.agents/rules/` | 初始化时由平台按规范清单下载，`.standards-manifest.json` 记录受管文件 |
+| `.agents/.station-manifest.json` | 工位同步版本、源文件指纹与写入文件 SHA-256 清单；内容未变化时据此跳过同步 |
 | `docs/` | 机器人自行维护的知识文档 |
 
 ### 保留目录：评估沙箱
@@ -68,7 +69,7 @@ worker/{id}/
 | `droid` | `.factory/mcp.json`（`mcpServers`，`type: http` + `headers` + `oauth: false`） | 镜像 `.factory/skills/` | 镜像 `.factory/rules/` |
 | `codex` / `claude-code` | 规划中：仅写 `.agents/mcp.json`，接入时补适配 | — | — |
 
-- **镜像由初始化会话执行**：初始化指令要求机器人把 `.agents/skills`、`.agents/rules` 复制到当前内核目录；`.agents` 永远是唯一源。
+- **镜像由平台同步器生成**：平台在发布工位文件时直接把 `.agents/skills`、`.agents/rules` 镜像到当前内核目录；`.agents` 永远是唯一源，不创建模型初始化会话。
 - 各内核均原生支持项目级 remote HTTP MCP，无需额外代理；`lita-work` 指向 `{APP_URL}/api/mcp/work`，使用 `X-Worker-Token` 请求头鉴权。
 
 ### 已知差异
@@ -85,11 +86,11 @@ worker/{id}/
 
 | 动作 | 平台写入 | 机器人写入 |
 |:---|:---|:---|
-| 初始化 | 骨架目录、`.agents/.env`、`.agents/mcp.json`、内核 MCP 配置 | 按初始化指令生成 `AGENTS.md`、安装技能与规范并镜像到内核目录 |
+| 初始化 | 骨架目录、`.agents/.env`、`.agents/mcp.json`、内核 MCP 配置、`AGENTS.md`、技能/规范与内核镜像、`.agents/.station-manifest.json` | — |
 | 每次派发 | `.agents/.env`（令牌/地址）、`.agents/mcp.json`、内核 MCP 配置（幂等重写） | — |
 | 令牌重置 | 个人 AGENT 首次对话前重写 `.agents/.env` 与内核 MCP 配置 | — |
 
-初始化指令按执行内核生成技能/规范镜像步骤；协议文本中的「平台地址」与 `.md` 端点由 `APP_URL` 注入。
+初始化由平台确定性完成：后端生成最终 `AGENTS.md`，按技能/规范目录下载全部文件（技能包含脚本、模板等附属资源），写入受管 manifest 后发布到执行器。内容版本由机器人配置、权限、执行内核以及技能/规范文件的 Git blob SHA 组成；版本与 `.agents/.station-manifest.json` 一致时只刷新凭据/MCP 配置并跳过文件同步。协议文本中的「平台地址」与 `.md` 端点由 `APP_URL` 注入。
 
 ---
 
@@ -97,7 +98,7 @@ worker/{id}/
 
 - 工位布局为**直接切换**：平台不再写旧路径（`.opencode/agent-token`、`.opencode/.env`、`.opencode/skills`、`.opencode/docs`）。
 - 发布后需**全量重新初始化**所有机器人工位，以生成新的 `AGENTS.md`、把技能/规范安装到 `.agents/` 并镜像到内核目录。
-- 初始化指令包含一次性迁移清理：删除旧版 `.opencode/agent-token`、`.opencode/.env`、`.opencode/skills/`、`.opencode/docs/`（`.opencode/opencode.json` 保留为 opencode 适配物）。
+- 初始化同步器包含一次性迁移清理：删除旧版 `.opencode/agent-token`、`.opencode/.env`、`.opencode/skills/`、`.opencode/docs/`（`.opencode/opencode.json` 保留为 opencode 适配物）。
 - 重新初始化前避免重置机器人令牌：旧工位 `AGENTS.md` 仍指向旧令牌路径。
 
 ---

@@ -38,6 +38,18 @@ export interface RemoveDirInput {
   directory: string;
 }
 
+export interface ReadFileInput {
+  directory: string;
+  /** 相对 directory 的路径 */
+  path: string;
+}
+
+export interface RemoveFilesInput {
+  directory: string;
+  /** 相对 directory 的受管路径；不存在时忽略 */
+  paths: string[];
+}
+
 export class FileOps {
   private readonly root: string;
 
@@ -97,6 +109,40 @@ export class FileOps {
     await writeFile(full, `${[...kept, ...appended].join('\n')}\n`, 'utf8');
     await chmod(full, 0o600);
     return { path: full };
+  }
+
+  /** 读取工位内文件；不存在返回 null（不暴露 root 之外路径） */
+  async readFile(
+    input: ReadFileInput,
+  ): Promise<{ contentBase64: string } | null> {
+    const directory = this.within(input.directory);
+    const full = this.within(resolve(directory, input.path));
+    try {
+      const data = await readFile(full);
+      return { contentBase64: data.toString('base64') };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    }
+  }
+
+  /** 删除工位内受管文件（不存在时忽略） */
+  async removeFiles(input: RemoveFilesInput): Promise<{ removed: number }> {
+    const directory = this.within(input.directory);
+    let removed = 0;
+    for (const path of input.paths) {
+      if (!path || path.startsWith('/') || path.split('/').includes('..')) {
+        throw new HttpError(400, `非法文件路径：${path}`);
+      }
+      const full = this.within(resolve(directory, path));
+      try {
+        await rm(full, { force: true });
+        removed += 1;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+    }
+    return { removed };
   }
 
   /**

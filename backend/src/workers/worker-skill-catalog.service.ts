@@ -1,7 +1,17 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { fetchFullTree } from './gitea-tree';
+import type { WorkerSkill } from './worker.entity';
 import { isDeprecatedSkill } from './worker-skill-deprecation';
+
+/** 初始化时解析出的受管技能文件集合（整个技能目录，含脚本/模板） */
+export interface ManagedSkillFiles {
+  branch: string;
+  rawBase: string;
+  directories: string[];
+  files: string[];
+  entries: Array<{ path: string; sha: string }>;
+}
 
 /** 技能目录条目（供机器人表单选择） */
 export interface SkillCatalogItem {
@@ -24,7 +34,7 @@ const CACHE_TTL_MS = 5 * 60_000;
 
 /**
  * 技能库目录服务：读取 Gitea docs/skills 仓库中的全部 SKILL.md。
- * 机器人保存时只保存技能引用，不保存技能正文；正文由初始化任务安装到工位。
+ * 机器人保存时只保存技能引用，不保存技能正文；正文由平台初始化同步器安装到工位。
  */
 @Injectable()
 export class WorkerSkillCatalogService {
@@ -36,6 +46,17 @@ export class WorkerSkillCatalogService {
   private cache: SkillCatalogItem[] | null = null;
   private cacheLoadedAt = 0;
   private loading: Promise<SkillCatalogItem[]> | null = null;
+  /** 默认分支与目录树短期缓存：连续保存/初始化不重复请求 Gitea */
+  private defaultBranchCache: { branch: string; expiresAt: number } | null =
+    null;
+  private readonly treeCache = new Map<
+    string,
+    { entries: Awaited<ReturnType<typeof fetchFullTree>>; expiresAt: number }
+  >();
+  private readonly treeLoading = new Map<
+    string,
+    Promise<Awaited<ReturnType<typeof fetchFullTree>>>
+  >();
 
   constructor(config: ConfigService) {
     this.repoUrl =
@@ -160,6 +181,58 @@ export class WorkerSkillCatalogService {
     return normalized;
   }
 
+  /**
+   * 解析选中技能所在目录下的全部文件。
+   * SKILL.md 只是入口，脚本、模板等附属资源必须一并同步到工位。
+   */
+  async resolveManagedFiles(
+    skills?: WorkerSkill[] | null,
+  ): Promise<ManagedSkillFiles> {
+    const directories = [
+      ...new Set(
+        (skills ?? [])
+          .map((skill) => String(skill?.path ?? ''))
+          .filter((path) => path.endsWith('/SKILL.md') && !path.includes('..'))
+          .map((path) => path.slice(0, -'/SKILL.md'.length)),
+      ),
+    ].sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'));
+    if (!directories.length) {
+      return {
+        branch: '',
+        rawBase: '',
+        directories: [],
+        files: [],
+        entries: [],
+      };
+    }
+    const repo = new URL(this.repoUrl);
+    const apiRepo = `${repo.origin}/api/v1/repos${repo.pathname}`;
+    const selectedBranch = this.selectedBranch(skills);
+    const branch = selectedBranch || (await this.defaultBranch(apiRepo));
+    const tree = await this.treeOf(apiRepo, branch);
+    const selected = tree
+      .filter((item) => {
+        if (item.type !== 'blob' || !item.path) return false;
+        if (item.path.split('/').pop() === '.DS_Store') return false;
+        return directories.some(
+          (directory) =>
+            item.path === directory || item.path!.startsWith(`${directory}/`),
+        );
+      })
+      .sort((a, b) => (a.path ?? '').localeCompare(b.path ?? '', 'zh-Hans-CN'));
+    const encodedBranch = branch.split('/').map(encodeURIComponent).join('/');
+    return {
+      branch,
+      rawBase: `${repo.origin}${repo.pathname}/raw/branch/${encodedBranch}`,
+      directories,
+      files: selected.map((item) => item.path!),
+      entries: selected.map((item) => ({
+        path: item.path!,
+        sha: item.sha ?? '',
+      })),
+    };
+  }
+
   /** 批量规范化并按 path 去重；undefined 表示本次未提交该字段 */
   normalizeSkills(
     input?: Array<unknown> | null,
@@ -176,19 +249,46 @@ export class WorkerSkillCatalogService {
     return byPath.size ? [...byPath.values()] : null;
   }
 
+  /**
+   * 解析已保存技能引用的分支：引用 URL 自带分支时优先使用，
+   * 避免技能库默认分支漂移后同步到错误版本。
+   */
+  private selectedBranch(skills?: WorkerSkill[] | null): string | null {
+    const repo = new URL(this.repoUrl);
+    const marker = `${repo.pathname}/raw/branch/`;
+    const branches = (skills ?? [])
+      .map((item) => {
+        const path = String(item?.path ?? '');
+        if (!path.endsWith('/SKILL.md') || path.includes('..')) return null;
+        try {
+          const url = new URL(String(item?.url ?? ''));
+          if (url.origin !== repo.origin || !url.pathname.startsWith(marker)) {
+            return null;
+          }
+          const suffix = decodeURIComponent(url.pathname.slice(marker.length));
+          if (!(suffix === path || suffix.endsWith(`/${path}`))) return null;
+          return (
+            suffix.slice(0, suffix.length - path.length).replace(/\/+$/, '') ||
+            null
+          );
+        } catch {
+          return null;
+        }
+      })
+      .filter((branch): branch is string => Boolean(branch));
+    const unique = [...new Set(branches)];
+    if (unique.length > 1) {
+      throw new BadRequestException('选中的技能必须来自技能库同一分支');
+    }
+    return unique[0] ?? null;
+  }
+
   /** 拉取仓库默认分支 + 递归目录树，并读取全部 SKILL.md 元数据 */
   private async load(): Promise<SkillCatalogItem[]> {
     const repo = new URL(this.repoUrl);
     const apiRepo = `${repo.origin}/api/v1/repos${repo.pathname}`;
-    const repoInfo = await this.requestJson<{
-      default_branch?: string;
-    }>(apiRepo);
-    const branch = repoInfo.default_branch?.trim() || 'main';
-    const tree = await fetchFullTree(
-      (url) => this.requestJson<unknown>(url),
-      apiRepo,
-      branch,
-    );
+    const branch = await this.defaultBranch(apiRepo);
+    const tree = await this.treeOf(apiRepo, branch);
     const paths = tree
       .filter(
         (item) => item.type === 'blob' && item.path?.endsWith('/SKILL.md'),
@@ -260,6 +360,52 @@ export class WorkerSkillCatalogService {
       description: result.description,
       version: result.version,
     };
+  }
+
+  /** 默认分支短期缓存 */
+  private async defaultBranch(apiRepo: string): Promise<string> {
+    if (
+      this.defaultBranchCache &&
+      this.defaultBranchCache.expiresAt > Date.now()
+    ) {
+      return this.defaultBranchCache.branch;
+    }
+    const repoInfo = await this.requestJson<{ default_branch?: string }>(
+      apiRepo,
+    );
+    const branch = repoInfo.default_branch?.trim() || 'main';
+    this.defaultBranchCache = {
+      branch,
+      expiresAt: Date.now() + 5 * 60_000,
+    };
+    return branch;
+  }
+
+  /** 递归目录树短期缓存（60 秒），连续初始化/保存共享结果 */
+  private async treeOf(
+    apiRepo: string,
+    branch: string,
+  ): Promise<Awaited<ReturnType<typeof fetchFullTree>>> {
+    const key = `${apiRepo}@${branch}`;
+    const cached = this.treeCache.get(key);
+    if (cached && cached.expiresAt > Date.now()) return cached.entries;
+    const pending = this.treeLoading.get(key);
+    if (pending) return pending;
+    const request = fetchFullTree(
+      (url) => this.requestJson<unknown>(url),
+      apiRepo,
+      branch,
+    )
+      .then((entries) => {
+        this.treeCache.set(key, {
+          entries,
+          expiresAt: Date.now() + 60_000,
+        });
+        return entries;
+      })
+      .finally(() => this.treeLoading.delete(key));
+    this.treeLoading.set(key, request);
+    return request;
   }
 
   /** JSON GET（Gitea API） */

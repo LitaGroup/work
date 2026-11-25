@@ -82,6 +82,8 @@ opencode 执行器不经 bridge，端口不受本规范约束（当前本机 409
 | GET | `/sessions/:id/messages/:mid` | 单条消息详情 `{content:[{type:"text",text}]}` |
 | POST | `/fs/ensure-dir` | body `{directory}`，路径必须位于 BRIDGE_ROOT 内 |
 | POST | `/fs/write-file` | body `{directory,path,contentBase64,mode?}`，同上路径约束，mode 可选（如 0o600） |
+| POST | `/fs/read-file` | body `{directory,path}`；返回 `{contentBase64}`，不存在返回 404，路径约束同上 |
+| POST | `/fs/remove-files` | body `{directory,paths}`；删除受管文件，不存在时忽略，路径约束同上 |
 | POST | `/fs/upsert-env` | body `{directory,path,entries}`；按键合并 env 文件（保留其他键，权限 600） |
 | POST | `/fs/copy-dir` | body `{source,target,exclude?}`；递归复制目录（替代 `cp -a`），source/target 均须位于 BRIDGE_ROOT 内，`target` 不得位于 `source` 内，`exclude` 为相对 source 的路径整项（文件或目录）不复制 |
 | POST | `/fs/rm-dir` | body `{directory}`；递归删除目录（替代 `rm -rf`），同上路径约束，禁止删除 BRIDGE_ROOT 本身 |

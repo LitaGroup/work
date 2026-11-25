@@ -4,6 +4,8 @@ import { Logger } from '@nestjs/common';
 export interface GiteaTreeEntry {
   path?: string;
   type?: string;
+  /** Git blob SHA；用于工位内容版本计算，不额外请求文件正文 */
+  sha?: string;
 }
 
 interface GiteaTreeResponse {

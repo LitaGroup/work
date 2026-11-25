@@ -8,6 +8,7 @@ import {
 import type { MessageEvent } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
+import { createHash } from 'crypto';
 import { EventEmitter } from 'events';
 import { Observable } from 'rxjs';
 import { Repository } from 'typeorm';
@@ -18,24 +19,17 @@ import {
 } from '../common/enums';
 import { isAgentRuntime } from '../common/worker-runtime';
 import { Executor } from '../executors/executor.entity';
-import { OpencodeEventHub } from '../executors/opencode-event-hub.service';
-import type { OpencodeEvent } from '../executors/opencode-event-hub.service';
-import { isFreshOutcome } from '../executors/opencode-client';
 import {
   createExecutorClient,
   type ExecutorClient,
 } from '../executors/executor-client';
-import {
-  isModelQuotaError,
-  markModelExhausted,
-  resolveWorkerModel,
-} from '../executors/model-availability';
-import { toOpencodeModelRef } from '../executors/executor-run';
 import { Worker } from './worker.entity';
 import {
   ensureWorkerSkeleton,
   shouldDenyExternalDirectory,
   upsertWorkerEnv,
+  WORKER_RULES_PATH,
+  WORKER_SKILLS_PATH,
   writeKernelMcpConfig,
 } from './worker-env';
 import { WorkersService } from './workers.service';
@@ -46,11 +40,28 @@ import {
   ManagedStandardFiles,
   WorkerStandardCatalogService,
 } from './worker-standard-catalog.service';
+import {
+  ManagedSkillFiles,
+  WorkerSkillCatalogService,
+} from './worker-skill-catalog.service';
+import { WorkerSourceCacheService } from './worker-source-cache.service';
 
-/** 初始化任务超时（含技能下载与规范文档同步） */
-const INITIALIZE_TIMEOUT_MS = 10 * 60_000;
-/** 轮询会话终态的间隔 */
-const POLL_MS = 2_000;
+/** 工位同步协议版本：同步逻辑变更时递增，强制重建全部工位 */
+const STATION_SYNC_VERSION = 2;
+/** 工位同步 manifest：记录内容版本与受管文件，用于无变化跳过和校验 */
+const STATION_MANIFEST_PATH = '.agents/.station-manifest.json';
+/** 文件写入并发上限 */
+const SYNC_CONCURRENCY = 8;
+
+interface StationWrite {
+  path: string;
+  bytes: Uint8Array;
+}
+
+interface DownloadedSource extends StationWrite {
+  /** 源仓库内相对路径（不含工位前缀） */
+  sourcePath: string;
+}
 /** 终态快照保留时长（晚订阅/刷新页面的客户端可立即拿到结果） */
 const JOB_TTL_MS = 5 * 60_000;
 /** SSE 心跳间隔（须小于网关空闲超时，如 ALB 60s） */
@@ -190,20 +201,6 @@ interface InitializeJob {
   ttlTimer?: NodeJS.Timeout;
 }
 
-/** 执行器工具名 → 进度行展示文案（未收录的原样展示） */
-const TOOL_LABELS: Record<string, string> = {
-  read: '读取文件',
-  write: '写入文件',
-  edit: '编辑文件',
-  bash: '执行命令',
-  glob: '查找文件',
-  grep: '搜索内容',
-  webfetch: '访问网页',
-  task: '委派子任务',
-  todowrite: '更新待办',
-  todoread: '读取待办',
-};
-
 /**
  * 机器人工作环境初始化：把数据库中的 AGENTS.md、技能引用与规范引用应用到工位。
  * 工位目录结构（内核无关）：
@@ -215,6 +212,9 @@ const TOOL_LABELS: Record<string, string> = {
  * - 内核适配物（.opencode/opencode.json、.kiro/settings/mcp.json 等，平台生成）
  *
  * 执行模型：POST 启动后台任务并立即返回运行快照，进度经 SSE 实时推送。
+ * 初始化是平台确定性的文件发布，不创建模型会话：平台生成 AGENTS.md、下载技能/规范、
+ * 生成内核镜像并批量写入执行器，最后以 `.agents/.station-manifest.json` 校验版本。
+ * 内容版本未变化时只刷新凭据/MCP 配置并跳过文件同步。
  * 同步长请求会被网关（ALB 60s）以 504 掐断而后端继续跑完，故刻意异步化。
  */
 @Injectable()
@@ -230,8 +230,9 @@ export class WorkerEnvironmentService implements OnModuleDestroy {
     private readonly executors: Repository<Executor>,
     private readonly workersService: WorkersService,
     private readonly standardCatalog: WorkerStandardCatalogService,
+    private readonly skillCatalog: WorkerSkillCatalogService,
+    private readonly sourceCache: WorkerSourceCacheService,
     private readonly mcpServers: McpServersService,
-    private readonly eventHub: OpencodeEventHub,
     private readonly config: ConfigService,
     @Optional()
     private readonly githubCredentials?: GithubPermissionCredentialService,
@@ -239,22 +240,17 @@ export class WorkerEnvironmentService implements OnModuleDestroy {
 
   /**
    * 启动初始化任务：同步完成全部前置校验（配置类错误立即 400），
-   * 随后后台执行并立即返回运行快照；同一机器人进行中时幂等返回现有快照。
+   * 随后后台执行确定性文件同步并立即返回运行快照；同一机器人进行中时幂等返回现有快照。
    */
   async start(id: number): Promise<WorkerInitializeSnapshot> {
     const worker = await this.workers.findOne({ where: { id } });
     if (!worker) throw new BadRequestException('机器人不存在');
     if (!isAgentRuntime(worker.runtime)) {
-      throw new BadRequestException('仅支持 opencode 机器人初始化');
+      throw new BadRequestException('仅支持 AI 机器人初始化');
     }
-    if (
-      !worker.executorId ||
-      !worker.providerId?.trim() ||
-      !worker.modelId?.trim()
-    ) {
-      throw new BadRequestException(
-        '初始化工作环境前，请先配置执行器、供应商与模型',
-      );
+    // 工位同步是确定性的文件发布，不依赖供应商/模型；机器人启用配置仍由保存校验负责。
+    if (!worker.executorId) {
+      throw new BadRequestException('初始化工作环境前，请先配置执行器');
     }
     const workdir = this.workersService.workdirOf(worker.id);
     if (!workdir) {
@@ -288,7 +284,7 @@ export class WorkerEnvironmentService implements OnModuleDestroy {
     // 编辑页/详情页可能同时订阅同一任务的进度
     job.emitter.setMaxListeners(50);
     this.jobs.set(id, job);
-    // 刻意不 await：HTTP 请求立刻返回，任务在后台跑完（10 分钟预算）
+    // 刻意不 await：HTTP 请求立刻返回，文件同步在后台完成
     void this.run(job, worker, executor, workdir);
     return this.toSnapshot(job);
   }
@@ -362,7 +358,7 @@ export class WorkerEnvironmentService implements OnModuleDestroy {
     });
   }
 
-  /** 后台执行：建工位 → 建会话 → 下发初始化指令 → 轮询终态 → 校验 DONE */
+  /** 后台执行：建工位 → 解析源版本 → 平台生成文件 → 批量同步 → 校验 manifest */
   private async run(
     job: InitializeJob,
     worker: Worker,
@@ -370,121 +366,191 @@ export class WorkerEnvironmentService implements OnModuleDestroy {
     workdir: string,
   ): Promise<void> {
     const client = createExecutorClient(executor);
-    // 执行期间占用执行器事件流，结束后释放（引用归零延迟断开）
-    this.eventHub.retain(executor);
+    const kernel = executor.type ?? ExecutorType.OPENCODE;
     try {
       this.pushLine(job, `▶ 开始初始化工位 ${workdir}`);
-      // 幂等建立工位骨架，初始化会话内仍会按需补齐
       this.pushLine(job, '· 创建工位目录…');
       await ensureWorkerSkeleton(client, workdir);
-      this.pushLine(job, '· 写入工位环境变量（令牌 / 平台地址）…');
-      await this.writeWorkerSecrets(client, worker.id, workdir);
+
+      const token = await this.workersService.ensureWorkToken(worker.id);
+      const litaUserToken = this.resolveLitaUserToken();
+      const [githubCredentialStatus, standards, skills] = await Promise.all([
+        this.githubCredentials?.statusOf(worker.githubPermission) ??
+          Promise.resolve({
+            configured: false,
+            enabled: false,
+            githubAccount: null,
+            rotatedAt: null,
+          }),
+        this.resolveStandardFiles(worker.standards),
+        this.skillCatalog.resolveManagedFiles(worker.skills),
+      ]);
+      const servers = await this.mcpServers.buildServersConfig(
+        this.appUrl(),
+        token,
+        worker.mcps ?? [],
+      );
+      const mcpNames = Object.keys(servers).filter(
+        (name) => name !== 'lita-work',
+      );
+
       this.pushLine(
         job,
-        `· 注入 MCP 配置（${executor.type ?? ExecutorType.OPENCODE} + 已选服务）…`,
+        `· 写入工位凭据与 MCP 配置（${kernel} + ${Object.keys(servers).length} 个服务）…`,
       );
-      await this.writeWorkMcpConfig(client, worker, executor, workdir);
-      this.pushLine(job, '· 注入 Lita 用户令牌…');
-      await this.writeLitaUserToken(client, workdir);
-      const githubCredentialStatus = (await this.githubCredentials?.statusOf(
-        worker.githubPermission,
-      )) ?? {
-        configured: false,
-        enabled: false,
-        githubAccount: null,
-        rotatedAt: null,
-      };
+      await Promise.all([
+        this.writeWorkerSecrets(
+          client,
+          worker.id,
+          workdir,
+          token,
+          litaUserToken,
+        ),
+        writeKernelMcpConfig(client, workdir, kernel, servers, {
+          denyExternalDirectory: shouldDenyExternalDirectory(
+            this.config.get<string>('WORKER_DENY_EXTERNAL_DIRECTORY'),
+          ),
+        }),
+      ]);
+      if (litaUserToken) {
+        await this.syncLitaUserTokenToHost(client, litaUserToken);
+      }
+
+      const revision = this.stationRevision({
+        worker,
+        kernel,
+        githubCredentialStatus,
+        standards,
+        skills,
+        mcpNames,
+      });
+      const installed = await this.readJsonFile(
+        client,
+        workdir,
+        STATION_MANIFEST_PATH,
+      ).catch(() => null);
+      if (installed?.revision === revision) {
+        this.pushLine(job, '· 工位内容未变化，跳过文件同步');
+        this.finish(job, 'success', null, workdir);
+        return;
+      }
+
       this.pushLine(
         job,
-        `· GitHub 权限：${this.githubPermissionLabel(worker.githubPermission)}；凭证：${
-          githubCredentialStatus.configured
-            ? githubCredentialStatus.enabled
-              ? '已配置'
-              : '已停用'
-            : '未配置'
-        }`,
+        `· 下载技能与规范（技能 ${skills.files.length} 个文件，规范 ${standards.files.length} 个文件）…`,
       );
-      this.pushLine(job, '· 生成初始化指令（AGENTS.md + 技能 + 规范）…');
-      const prompt = await this.buildPrompt(
+      const [skillFiles, standardFiles] = await Promise.all([
+        this.downloadSources(
+          skills.rawBase,
+          skills.files,
+          WORKER_SKILLS_PATH,
+          skills.entries,
+        ),
+        this.downloadSources(
+          standards.rawBase,
+          standards.files,
+          WORKER_RULES_PATH,
+          standards.entries,
+        ),
+      ]);
+      const rulesSection = this.buildRulesSection(worker, standards);
+      const mcpSection = this.buildMcpSection(mcpNames);
+      const agents = this.buildAgentsDocument({
         worker,
         githubCredentialStatus,
-        executor.type ?? ExecutorType.OPENCODE,
-      );
-      // 主模型限额冷却中改用备用模型，避免初始化也撞限额
-      const initModel = resolveWorkerModel(worker)?.model ?? {
-        providerId: worker.providerId!,
-        modelId: worker.modelId!,
-        variant: worker.variant ?? null,
-      };
-      this.pushLine(
-        job,
-        `· 创建执行器会话（${initModel.providerId}/${initModel.modelId}）…`,
-      );
-      const session = await client.createSession({
-        title: `初始化机器人 #${worker.id} ${worker.name}`.slice(0, 100),
-        // 空值已在 start() 校验过（缺失即 400），此处断言非空
-        model: toOpencodeModelRef(initModel),
-        location: { directory: workdir },
+        kernel,
+        rulesSection,
+        mcpSection,
       });
-      // 订阅执行器事件：把该会话的工具调用转成进度行（先订阅再下发，避免漏事件）
-      const unsubscribe = this.eventHub.onEvent((event) =>
-        this.onExecutorEvent(job, session.id, event),
+
+      const nextRulePaths = new Set(
+        standardFiles.map((file) =>
+          file.path.slice(`${WORKER_RULES_PATH}/`.length),
+        ),
       );
-      let text: string | null = null;
-      try {
-        this.pushLine(job, '· 下发初始化任务…');
-        // prompt 为异步接口；outcome 具有粘性，以本轮用户消息时间为新鲜度基准
-        const promptResult = await client.prompt(session.id, {
-          text: prompt,
-        });
-        const afterMs = promptResult?.time?.created ?? 0;
-        const deadline = Date.now() + INITIALIZE_TIMEOUT_MS;
-        while (Date.now() < deadline) {
-          const info = await client.session(session.id);
-          if (isFreshOutcome(info, afterMs)) {
-            if (info.outcome !== 'succeeded') {
-              // 主模型限额：记录共享冷却，重试初始化时自动改用备用模型
-              const error = await client
-                .lastAssistantError(session.id, afterMs)
-                .catch(() => null);
-              if (isModelQuotaError(error)) {
-                markModelExhausted(
-                  executor.id,
-                  initModel.providerId,
-                  initModel.modelId,
-                  error?.message,
-                );
-              }
-              throw new Error(`执行器会话 ${session.id} 执行失败`);
-            }
-            // 会话终态与消息落库可能有短暂延迟，重试几次再取文本
-            for (let attempt = 0; attempt < 3 && !text; attempt++) {
-              text = await client.lastAssistantText(session.id, afterMs);
-              if (!text && attempt < 2) await sleep(500);
-            }
-            if (!text?.trim()) {
-              throw new Error('执行器会话已结束但没有文本输出');
-            }
-            break;
-          }
-          await sleep(Math.min(POLL_MS, Math.max(0, deadline - Date.now())));
+      const oldRulePaths = await this.readManagedRulePaths(client, workdir);
+      const staleRuleFiles = oldRulePaths
+        .filter((path) => !nextRulePaths.has(path))
+        .map((path) => `${WORKER_RULES_PATH}/${path}`);
+      const mirrorDirs = this.mirrorDirs(kernel);
+      const managedDirs = [WORKER_SKILLS_PATH, ...mirrorDirs];
+      this.pushLine(job, '· 清理旧受管文件与内核镜像…');
+      await Promise.all(
+        managedDirs.map((dir) => client.removeDir(`${workdir}/${dir}`)),
+      );
+      await client.removeFiles(workdir, [
+        ...staleRuleFiles,
+        '.opencode/agent-token',
+        '.opencode/.env',
+      ]);
+      await client
+        .removeDir(`${workdir}/.opencode/docs`)
+        .catch(() => undefined);
+      await client
+        .removeDir(`${workdir}/.opencode/skills`)
+        .catch(() => undefined);
+
+      const writes: StationWrite[] = [
+        {
+          path: 'AGENTS.md',
+          bytes: Buffer.from(agents, 'utf8'),
+        },
+        ...skillFiles,
+        ...standardFiles,
+        ...this.mirrorWrites(kernel, standardFiles, skillFiles),
+        {
+          path: `${WORKER_RULES_PATH}/.standards-manifest.json`,
+          bytes: Buffer.from(
+            `${JSON.stringify(
+              { version: 1, files: standards.files.slice().sort() },
+              null,
+              2,
+            )}\n`,
+            'utf8',
+          ),
+        },
+      ];
+      await this.ensureManagedDirs(client, workdir, kernel);
+      this.pushLine(job, `· 发布 ${writes.length} 个工位文件…`);
+      await mapWithConcurrency(writes, SYNC_CONCURRENCY, async (file) => {
+        try {
+          await client.writeFile(workdir, file.path, file.bytes);
+        } catch (error) {
+          throw new Error(
+            `写入 ${file.path} 失败：${(error as Error).message}`,
+          );
         }
-      } finally {
-        unsubscribe();
+      });
+
+      const manifest = {
+        version: STATION_SYNC_VERSION,
+        revision,
+        syncedAt: new Date().toISOString(),
+        kernel,
+        files: writes
+          .map((file) => ({
+            path: file.path,
+            sha256: createHash('sha256').update(file.bytes).digest('hex'),
+          }))
+          .sort((a, b) => a.path.localeCompare(b.path)),
+      };
+      this.pushLine(job, '· 写入同步 manifest 并校验…');
+      await client.writeFile(
+        workdir,
+        STATION_MANIFEST_PATH,
+        Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`, 'utf8'),
+      );
+      const verified = await this.readJsonFile(
+        client,
+        workdir,
+        STATION_MANIFEST_PATH,
+      );
+      if (verified?.revision !== revision) {
+        throw new Error('工位同步校验失败：manifest 版本不一致');
       }
-      if (!text?.trim()) {
-        await client.interrupt(session.id).catch(() => undefined);
-        throw new Error(
-          `执行器会话执行超时（超过 ${Math.round(INITIALIZE_TIMEOUT_MS / 60_000)} 分钟）`,
-        );
-      }
-      this.pushLine(job, '· 校验初始化结果…');
-      this.assertDone(text);
       this.finish(job, 'success', null, workdir);
     } catch (e) {
       this.finish(job, 'failed', (e as Error).message);
-    } finally {
-      this.eventHub.release(executor.id);
     }
   }
 
@@ -498,12 +564,16 @@ export class WorkerEnvironmentService implements OnModuleDestroy {
     client: ExecutorClient,
     workerId: number,
     workdir: string,
+    token?: string,
+    litaUserToken?: string | null,
   ): Promise<void> {
-    const token = await this.workersService.ensureWorkToken(workerId);
+    const workToken =
+      token ?? (await this.workersService.ensureWorkToken(workerId));
     await upsertWorkerEnv(client, workdir, {
-      LITA_WORK_TOKEN: token,
-      LITA_PROJECT_TOKEN: token,
+      LITA_WORK_TOKEN: workToken,
+      LITA_PROJECT_TOKEN: workToken,
       LITA_APP_URL: this.appUrl(),
+      ...(litaUserToken ? { LITA_USER_TOKEN: litaUserToken } : {}),
     });
   }
 
@@ -514,59 +584,20 @@ export class WorkerEnvironmentService implements OnModuleDestroy {
       .replace(/\/+$/, '');
   }
 
-  /**
-   * 按执行器内核注入 MCP 配置（平台 lita-work + 机器人勾选且启用中的自定义 MCP）：
-   * opencode / kiro / devin / droid 各自的项目级配置文件，另写内核无关声明
-   * .agents/mcp.json；opencode 同时注入工作区边界权限（WORKER_DENY_EXTERNAL_DIRECTORY=false
-   * 可止血关闭）。令牌只经服务端落盘，不进入 Prompt、SSE 进度或日志。
-   */
-  private async writeWorkMcpConfig(
-    client: ExecutorClient,
-    worker: Worker,
-    executor: Executor,
-    workdir: string,
-  ): Promise<void> {
-    const token = await this.workersService.ensureWorkToken(worker.id);
-    const servers = await this.mcpServers.buildServersConfig(
-      this.appUrl(),
-      token,
-      worker.mcps ?? [],
-    );
-    await writeKernelMcpConfig(
-      client,
-      workdir,
-      executor.type ?? ExecutorType.OPENCODE,
-      servers,
-      {
-        denyExternalDirectory: shouldDenyExternalDirectory(
-          this.config.get<string>('WORKER_DENY_EXTERNAL_DIRECTORY'),
-        ),
-      },
+  /** Lita 用户令牌：优先工位专用配置，回退平台配置 */
+  private resolveLitaUserToken(): string | null {
+    return (
+      this.config.get<string>('WORKER_LITA_USER_TOKEN')?.trim() ||
+      this.config.get<string>('LITA_USER_TOKEN')?.trim() ||
+      null
     );
   }
 
-  /**
-   * 把 Lita 用户令牌写入工位 .agents/.env 的 LITA_USER_TOKEN（权限 600，保留其他键），
-   * 供 lita-api 等技能使用；同时同步到执行器宿主 ~/.env（保留其他变量），
-   * 兼容按 ~/.env 读取令牌的技能。
-   * 优先 WORKER_LITA_USER_TOKEN，未配置时回退平台自身的 LITA_USER_TOKEN。
-   * 令牌只经服务端落盘，不进入初始化 Prompt、SSE 进度或日志。
-   */
-  private async writeLitaUserToken(
+  /** 兼容按 ~/.env 读取令牌的技能；bridge 无 shell，失败只告警 */
+  private async syncLitaUserTokenToHost(
     client: ExecutorClient,
-    workdir: string,
+    token: string,
   ): Promise<void> {
-    const token =
-      this.config.get<string>('WORKER_LITA_USER_TOKEN')?.trim() ||
-      this.config.get<string>('LITA_USER_TOKEN')?.trim();
-    if (!token) {
-      this.logger.warn(
-        '未配置 WORKER_LITA_USER_TOKEN/LITA_USER_TOKEN，跳过工位 Lita 用户令牌注入',
-      );
-      return;
-    }
-    await upsertWorkerEnv(client, workdir, { LITA_USER_TOKEN: token });
-    // 兼容按 ~/.env 读取令牌的技能（如 lita-api）：同步到执行器宿主，保留其他变量
     try {
       await client.shell(
         `if [ -n "$HOME" ]; then { grep -v '^LITA_USER_TOKEN=' "$HOME/.env" 2>/dev/null; ` +
@@ -577,25 +608,6 @@ export class WorkerEnvironmentService implements OnModuleDestroy {
       this.logger.warn(
         `同步 Lita 用户令牌到执行器 ~/.env 失败：${(e as Error).message}`,
       );
-    }
-  }
-
-  /** 执行器事件 → 进度行：仅取初始化会话的工具调用（与任务详情的终端行同风格） */
-  private onExecutorEvent(
-    job: InitializeJob,
-    sessionId: string,
-    event: OpencodeEvent,
-  ): void {
-    if (job.status !== 'running') return;
-    const data = event.data as { sessionID?: string; name?: string } | null;
-    if (!data || data.sessionID !== sessionId) return;
-    if (event.type === 'session.execution.started') {
-      this.pushLine(job, '▶ 执行器开始执行');
-      return;
-    }
-    if (event.type === 'session.tool.input.started') {
-      const name = data.name || '?';
-      this.pushLine(job, `🔧 ${TOOL_LABELS[name] ?? name}`);
     }
   }
 
@@ -623,13 +635,22 @@ export class WorkerEnvironmentService implements OnModuleDestroy {
     job.error = error;
     job.workdir = workdir ?? null;
     job.finishedAt = new Date();
+    const durationMs = job.finishedAt.getTime() - job.startedAt.getTime();
     if (status === 'success') {
-      this.pushLine(job, `✅ 工作环境初始化完成：${workdir}`);
-      this.logger.log(`机器人 #${job.workerId} 工作环境已初始化：${workdir}`);
+      this.pushLine(
+        job,
+        `✅ 工作环境初始化完成：${workdir}（${formatDuration(durationMs)}）`,
+      );
+      this.logger.log(
+        `机器人 #${job.workerId} 工作环境已初始化：${workdir}（${formatDuration(durationMs)}）`,
+      );
     } else {
-      this.pushLine(job, `✗ 初始化失败：${error ?? '未知错误'}`);
+      this.pushLine(
+        job,
+        `✗ 初始化失败：${error ?? '未知错误'}（${formatDuration(durationMs)}）`,
+      );
       this.logger.warn(
-        `机器人 #${job.workerId} 工作环境初始化失败：${error ?? '未知错误'}`,
+        `机器人 #${job.workerId} 工作环境初始化失败：${error ?? '未知错误'}（${formatDuration(durationMs)}）`,
       );
     }
     job.emitter.emit('payload', {
@@ -663,35 +684,39 @@ export class WorkerEnvironmentService implements OnModuleDestroy {
     this.jobs.clear();
   }
 
-  /** 初始化任务指令：AGENTS.md 原文 + 技能库链接 + 规范目录同步要求 + 工位结构约定 */
-  private async buildPrompt(
+  /** 平台直接生成最终 AGENTS.md（不再由模型转写） */
+  private buildAgentsDocument(input: {
+    worker: Worker;
+    githubCredentialStatus: GithubCredentialStatus;
+    kernel: ExecutorType;
+    rulesSection: string;
+    mcpSection: string;
+  }): string {
+    const { worker, githubCredentialStatus, kernel, rulesSection, mcpSection } =
+      input;
+    const sections = [
+      (worker.prompt ?? '').trim(),
+      buildTaskCollaborationAgents(this.appUrl()),
+      this.buildGithubAgentsSection(worker, githubCredentialStatus),
+      this.buildResourceAgentsSection(worker),
+      rulesSection,
+      mcpSection,
+      this.buildDirectorySection(kernel),
+    ];
+    return `${sections.filter(Boolean).join('\n\n')}\n`;
+  }
+
+  /** 写入 AGENTS.md 的规范清单：名称、说明、工位目录与全部规则文档 */
+  private buildRulesSection(
     worker: Worker,
-    githubCredentialStatus: GithubCredentialStatus = {
-      configured: false,
-      enabled: false,
-      githubAccount: null,
-      rotatedAt: null,
-    },
-    kernel: ExecutorType = ExecutorType.OPENCODE,
-  ): Promise<string> {
-    const agents = worker.prompt ?? '';
-    const skills = worker.skills ?? [];
-    const standards = await this.resolveStandardFiles(worker.standards);
-    const skillLines = skills.length
-      ? skills
-          .map(
-            (skill) =>
-              `- [${skill.name}](${skill.url})（目录：${skill.path.slice(
-                0,
-                -'/SKILL.md'.length,
-              )}${skill.version ? `，版本：${skill.version}` : ''}）`,
-          )
-          .join('\n')
-      : '（本次清单为空：不保留任何技能目录）';
+    standards: ManagedStandardFiles,
+  ): string {
+    if (!standards.directories.length) {
+      return '## 规范与规则\n\n本次未选择规范。';
+    }
     const standardsByDirectory = new Map(
       (worker.standards ?? []).map((item) => [item.directory, item]),
     );
-    // 文件按最具体的选中目录分组，避免嵌套选择时重复列出
     const ruleFiles = new Map<string, string[]>(
       standards.directories.map((directory) => [directory, []]),
     );
@@ -703,73 +728,42 @@ export class WorkerEnvironmentService implements OnModuleDestroy {
         .sort((a, b) => b.length - a.length)[0];
       if (owner) ruleFiles.get(owner)?.push(file);
     }
-    const standardLines = standards.directories.length
-      ? standards.directories
-          .map((directory) => {
-            const standard = standardsByDirectory.get(directory);
-            const sourceUrl = standard?.sourceUrl || standard?.url || directory;
-            const description = standard?.description?.trim();
-            return `- [${standard?.name || directory}](${sourceUrl})（源目录：${directory}；工位目录：.agents/rules/${directory}${
-              standard?.version ? `；版本：${standard.version}` : ''
-            }${description ? `；说明：${description}` : ''}）`;
-          })
-          .join('\n')
-      : '（本次规范清单为空：只移除 .agents/rules/.standards-manifest.json 中记录的旧规范文件，不处理其他文档）';
-    const requiredFileLines = standards.files.length
-      ? standards.files
-          .map(
-            (path) =>
-              `- [${path}](${standards.rawBase}/${path
-                .split('/')
-                .map(encodeURIComponent)
-                .join('/')})`,
-          )
-          .join('\n')
-      : '（无）';
-    // 写入 AGENTS.md 的规范清单：名称、说明、工位目录与全部规则文档
-    const rulesSection = standards.directories.length
-      ? [
-          '## 规范与规则',
+    return [
+      '## 规范与规则',
+      '',
+      '以下规范由平台同步到 `.agents/rules/`，执行任务前按需阅读对应文档。',
+      '',
+      ...standards.directories.flatMap((directory) => {
+        const standard = standardsByDirectory.get(directory);
+        const name = standard?.name || directory;
+        const description = standard?.description?.trim() || '（未提供说明）';
+        const version = standard?.version?.trim();
+        const sourceUrl = standard?.sourceUrl || standard?.url;
+        const files = (ruleFiles.get(directory) ?? []).map((file) =>
+          file === directory
+            ? (file.split('/').pop() ?? file)
+            : file.slice(directory.length + 1),
+        );
+        return [
+          `### ${name}`,
           '',
-          '以下规范由平台同步到 `.agents/rules/`，执行任务前按需阅读对应文档。',
+          `- 说明：${description}`,
+          ...(version ? [`- 版本：${version}`] : []),
+          ...(sourceUrl ? [`- 原文：${sourceUrl}`] : []),
+          `- 工位目录：\`.agents/rules/${directory}\``,
+          '- 文档：',
+          ...files.map((file) => `  - \`${file}\``),
           '',
-          ...standards.directories.flatMap((directory) => {
-            const standard = standardsByDirectory.get(directory);
-            const name = standard?.name || directory;
-            const description =
-              standard?.description?.trim() || '（未提供说明）';
-            const version = standard?.version?.trim();
-            const sourceUrl = standard?.sourceUrl || standard?.url;
-            const files = (ruleFiles.get(directory) ?? []).map((file) =>
-              file === directory
-                ? (file.split('/').pop() ?? file)
-                : file.slice(directory.length + 1),
-            );
-            return [
-              `### ${name}`,
-              '',
-              `- 说明：${description}`,
-              ...(version ? [`- 版本：${version}`] : []),
-              ...(sourceUrl ? [`- 原文：${sourceUrl}`] : []),
-              `- 工位目录：\`.agents/rules/${directory}\``,
-              '- 文档：',
-              ...files.map((file) => `  - \`${file}\``),
-              '',
-            ];
-          }),
-        ].join('\n')
-      : '## 规范与规则\n\n本次未选择规范。';
+        ];
+      }),
+    ].join('\n');
+  }
 
-    const githubSection = this.buildGithubAgentsSection(
-      worker,
-      githubCredentialStatus,
-    );
-    const resourceSection = this.buildResourceAgentsSection(worker);
-    const mcpNames = await this.mcpServers.namesOf(worker.mcps);
-    const mcpSection = [
+  private buildMcpSection(mcpNames: string[]): string {
+    return [
       '## 已配置的 MCP 服务',
       '',
-      `平台固定注入：lita-work（Streamable HTTP，机器人令牌鉴权，由平台按执行内核写入配置文件并自动连接）。`,
+      '平台固定注入：lita-work（Streamable HTTP，机器人令牌鉴权，由平台按执行内核写入配置文件并自动连接）。',
       ...(mcpNames.length
         ? [
             '',
@@ -779,69 +773,10 @@ export class WorkerEnvironmentService implements OnModuleDestroy {
           ]
         : ['', '机器人未勾选其它自定义 MCP 服务。']),
     ].join('\n');
+  }
 
-    const skillMirror =
-      kernel === ExecutorType.KIRO
-        ? '当前执行内核 kiro 需要镜像：把 `.agents/skills/` 下的技能目录一并复制到 `.kiro/skills/`（同名覆盖；本次清单之外的旧技能目录同步删除）。'
-        : kernel === ExecutorType.DROID
-          ? '当前执行内核 droid 需要镜像：把 `.agents/skills/` 下的技能目录一并复制到 `.factory/skills/`（同名覆盖；本次清单之外的旧技能目录同步删除）。'
-          : `当前执行内核 ${kernel} 直接读取 \`.agents/skills/\`，无需镜像。`;
-    const ruleMirror =
-      kernel === ExecutorType.OPENCODE
-        ? '当前执行内核 opencode 需要镜像：把 `.agents/rules/` 的内容复制到 `.opencode/rules/`（.agents 为唯一源；镜像目录中已不存在的旧文件同步删除）。'
-        : kernel === ExecutorType.KIRO
-          ? '当前执行内核 kiro 需要镜像：把 `.agents/rules/` 的内容复制到 `.kiro/steering/`（.agents 为唯一源；镜像目录中已不存在的旧文件同步删除）。'
-          : kernel === ExecutorType.DROID
-            ? '当前执行内核 droid 需要镜像：把 `.agents/rules/` 的内容复制到 `.factory/rules/`（.agents 为唯一源；镜像目录中已不存在的旧文件同步删除）。'
-            : '当前执行内核 devin 不设规范目录：AGENTS.md 已注明从 `.agents/rules/` 按需阅读，无需镜像。';
-
-    return `接下来，更新当前的工作环境：
-
-## 根据以下信息更新AGENTS.md 以下为AGENTS.md 内容
-
-### 工作职责定义
-\`\`\`\`markdown
-${agents}
-\`\`\`\`
-
-### 平台固定协同协议
-\`\`\`\`markdown
-${buildTaskCollaborationAgents(this.appUrl())}
-\`\`\`\`
-
-### GitHub 操作权限（必须写入 AGENTS.md）
-
-把以下内容原样写入 AGENTS.md 的「## GitHub 操作权限」小节，权限、允许/禁止事项与凭证状态不得删减或改写：
-
-\`\`\`\`markdown
-${githubSection}
-\`\`\`\`
-
-### 资源访问权限（必须写入 AGENTS.md）
-
-把以下内容原样写入 AGENTS.md 的「## 资源访问权限」小节，权限与允许/禁止事项不得删减或改写：
-
-\`\`\`\`markdown
-${resourceSection}
-\`\`\`\`
-
-### 规范与规则（必须写入 AGENTS.md）
-
-把以下内容原样写入 AGENTS.md 的「## 规范与规则」小节，规范名称、说明、工位目录与文档清单不得删减：
-
-\`\`\`\`markdown
-${rulesSection}
-\`\`\`\`
-
-### MCP 服务清单（必须写入 AGENTS.md）
-
-把以下内容原样写入 AGENTS.md 的「## 已配置的 MCP 服务」小节，服务清单不得删减：
-
-\`\`\`\`markdown
-${mcpSection}
-\`\`\`\`
-
-### 目录结构
+  private buildDirectorySection(kernel: ExecutorType): string {
+    return `## 目录结构
 
 - AGENTS.md    机器人的工作基本原则
 - .agents/     通用 Agent 目录（内核无关的技能、规范与平台注入内容）
@@ -851,51 +786,206 @@ ${mcpSection}
 - .agents/rules/     平台同步的规范与规则源文档（保持规范库原始目录结构；.standards-manifest.json 是受管清单）
 - .agents/rules/.standards-manifest.json   本次同步的规范文件清单（JSON：{"version":1,"files":[...]}）
 - docs/         机器人自行维护的知识文档（可以根据完成任务的情况更新总结）
-- 内核适配物（平台按执行器类型生成，权限 600，不得读取展示、改写或删除）：opencode 为 .opencode/opencode.json 与 .opencode/rules 镜像；kiro 为 .kiro/settings/mcp.json 与 .kiro/skills、.kiro/steering 镜像；devin 为 .devin/mcp_config.json；droid 为 .factory/mcp.json 与 .factory/skills、.factory/rules 镜像
+- .agents/.station-manifest.json   平台同步版本与文件校验清单（不得读取展示、改写或删除）
+- 内核适配物（平台按执行器类型生成，权限 600，不得读取展示、改写或删除）：当前内核 ${kernel}；opencode 为 .opencode/opencode.json 与 .opencode/rules 镜像；kiro 为 .kiro/settings/mcp.json 与 .kiro/skills、.kiro/steering 镜像；devin 为 .devin/mcp_config.json；droid 为 .factory/mcp.json 与 .factory/skills、.factory/rules 镜像`;
+  }
 
-### 更新要求
+  /** 下载源仓库目录下的全部文件，并映射到工位路径 */
+  private async downloadSources(
+    rawBase: string,
+    files: string[],
+    destinationRoot: string,
+    entries?: Array<{ path: string; sha: string }>,
+  ): Promise<DownloadedSource[]> {
+    if (!rawBase || !files.length) return [];
+    const shaByPath = new Map(
+      (entries ?? []).map((entry) => [entry.path, entry.sha]),
+    );
+    const rows = files.map((sourcePath) => {
+      if (
+        !sourcePath ||
+        sourcePath.startsWith('/') ||
+        sourcePath.split('/').includes('..')
+      ) {
+        throw new Error(`技能/规范源文件路径非法：${sourcePath}`);
+      }
+      const url = `${rawBase}/${sourcePath
+        .split('/')
+        .map(encodeURIComponent)
+        .join('/')}`;
+      const sha = shaByPath.get(sourcePath) || '';
+      return {
+        sourcePath,
+        url,
+        // 内容缓存按 blob SHA 区分；同一分支更新后不会命中旧正文
+        cacheKey: sha ? `${url}@${sha}` : url,
+      };
+    });
+    const downloaded = await mapWithConcurrency(
+      rows,
+      SYNC_CONCURRENCY,
+      async (row) => ({
+        sourcePath: row.sourcePath,
+        bytes: await this.sourceCache.get(row.url, row.cacheKey),
+      }),
+    );
+    return downloaded.map((row) => ({
+      sourcePath: row.sourcePath,
+      path: `${destinationRoot}/${row.sourcePath}`,
+      bytes: row.bytes,
+    }));
+  }
 
-1. 把「工作职责定义」和「平台固定协同协议」中的 Markdown 原文完整写入当前工作目录的 AGENTS.md；不要改写、缩写或额外发挥。协同协议放在工作职责定义之后。
-2. 把「GitHub 操作权限（必须写入 AGENTS.md）」中的 Markdown 原样写入 AGENTS.md 的「## GitHub 操作权限」小节；权限、允许/禁止事项与凭证状态不得删减。
-3. 把「资源访问权限（必须写入 AGENTS.md）」中的 Markdown 原样写入 AGENTS.md 的「## 资源访问权限」小节；权限与允许/禁止事项不得删减。
-4. 把「规范与规则（必须写入 AGENTS.md）」中的 Markdown 原样写入 AGENTS.md 的「## 规范与规则」小节；规范名称、说明、工位目录与文档清单不得删减。
-5. 把「MCP 服务清单（必须写入 AGENTS.md）」中的 Markdown 原样写入 AGENTS.md 的「## 已配置的 MCP 服务」小节；服务清单不得删减。
-6. 确保 AGENTS.md 中包含上面的目录结构说明。
-7. 保留 .agents/ 下与本次更新无关的配置，尤其不得读取展示、改写或删除 .agents/.env、.agents/mcp.json 与 .agents/rules/.standards-manifest.json；不得清空或改写 docs/ 中机器人自行维护的文档。
-8. .agents/skills/ 以本次技能清单为准：安装或更新清单中的全部技能；移除清单之外的旧技能目录。
-9. 安装技能时不要只保存 SKILL.md：按技能目录保持原始结构，并下载技能引用到的脚本、模板等资源文件。
-10. 技能镜像：${skillMirror}
-11. .agents/rules/ 中的规范文档以本次规范清单为准：
-   - 如果 .agents/rules/.standards-manifest.json 存在，先读取其中 files 数组作为旧受管文件清单；不存在或内容非法时旧受管清单视为空。
-   - 如果旧的 .opencode/docs/.standards-manifest.json 或 .opencode/rules/.standards-manifest.json 存在：先按其 files 清单删除对应旧受管文件，再删除该旧清单；这是目录迁移到 .agents/rules 的一次性清理，其他文档不要动。
-   - 按下方「需存在的规范文件」下载并写入 .agents/rules/ 下同名相对路径；保持文件内容与链接内容一致，不要改写或摘要。
-   - 只删除「旧受管文件清单中存在、但本次需存在清单中没有」的文件；不要删除 docs/ 或其他流程产生的文档。
-   - 同步完成后把本次需存在的全部相对路径写入 .agents/rules/.standards-manifest.json，格式为 {"version":1,"files":[...]}，路径按字典序排序；manifest 自身不要写入 files。
-12. 规范镜像：${ruleMirror}
-13. 需要创建目录时保持仓库原始目录结构；同名文件以本次规范库内容覆盖。
-14. 内核 MCP 配置由平台注入并维护（lita-work、机器人勾选的 MCP 服务与工作区边界权限），不得读取展示、改写或删除。
-15. 一次性迁移清理：如果工位存在旧版路径 \`.opencode/agent-token\`、\`.opencode/.env\`、\`.opencode/skills/\`、\`.opencode/docs/\`，删除它们（令牌与技能已迁移到 \`.agents/\`）；\`.opencode/opencode.json\` 是平台生成的适配物，必须保留。不要删除 \`docs/\` 与 \`.agents/\`。
+  /** 生成工位内容版本：机器人配置 + 权限 + 内核 + 源文件 blob SHA */
+  private stationRevision(input: {
+    worker: Worker;
+    kernel: ExecutorType;
+    githubCredentialStatus: GithubCredentialStatus;
+    standards: ManagedStandardFiles;
+    skills: ManagedSkillFiles;
+    mcpNames: string[];
+  }): string {
+    const {
+      worker,
+      kernel,
+      githubCredentialStatus,
+      standards,
+      skills,
+      mcpNames,
+    } = input;
+    return createHash('sha256')
+      .update(
+        JSON.stringify({
+          version: STATION_SYNC_VERSION,
+          appUrl: this.appUrl(),
+          kernel,
+          prompt: worker.prompt ?? '',
+          githubPermission: worker.githubPermission,
+          githubCredential: {
+            configured: githubCredentialStatus.configured,
+            enabled: githubCredentialStatus.enabled,
+            account: githubCredentialStatus.githubAccount,
+          },
+          resourcePermission: worker.resourcePermission,
+          mcpNames: [...mcpNames].sort(),
+          standards: {
+            branch: standards.branch,
+            entries: (
+              standards.entries ??
+              standards.files.map((path) => ({ path, sha: '' }))
+            )
+              .map((entry) => [entry.path, entry.sha])
+              .sort(),
+          },
+          skills: {
+            branch: skills.branch,
+            entries: skills.entries
+              .map((entry) => [entry.path, entry.sha])
+              .sort(),
+          },
+        }),
+      )
+      .digest('hex');
+  }
 
-## 从以下链接中，安装或更新技能
+  /** 读取旧规范受管清单（迁移前路径也兼容） */
+  private async readManagedRulePaths(
+    client: ExecutorClient,
+    workdir: string,
+  ): Promise<string[]> {
+    const paths = [
+      `${WORKER_RULES_PATH}/.standards-manifest.json`,
+      '.opencode/rules/.standards-manifest.json',
+      '.opencode/docs/.standards-manifest.json',
+    ];
+    const manifests = await Promise.all(
+      paths.map((path) =>
+        this.readJsonFile(client, workdir, path).catch(() => null),
+      ),
+    );
+    const files = new Set<string>();
+    for (const manifest of manifests) {
+      if (!Array.isArray(manifest?.files)) continue;
+      for (const file of manifest.files) {
+        if (typeof file !== 'string') continue;
+        const normalized = file.replace(/^\/+/, '');
+        if (
+          normalized &&
+          !normalized.split('/').includes('..') &&
+          !normalized.startsWith('.agents/rules/')
+        ) {
+          files.add(normalized);
+        }
+      }
+    }
+    return [...files];
+  }
 
-${skillLines}
+  private async readJsonFile(
+    client: ExecutorClient,
+    workdir: string,
+    path: string,
+  ): Promise<Record<string, unknown> | null> {
+    const bytes = await client.readFile(workdir, path);
+    if (!bytes) return null;
+    try {
+      const parsed = JSON.parse(Buffer.from(bytes).toString('utf8')) as unknown;
+      return parsed && typeof parsed === 'object'
+        ? (parsed as Record<string, unknown>)
+        : null;
+    } catch {
+      return null;
+    }
+  }
 
-## 规范目录
+  private mirrorDirs(kernel: ExecutorType): string[] {
+    if (kernel === ExecutorType.OPENCODE) return ['.opencode/rules'];
+    if (kernel === ExecutorType.KIRO) return ['.kiro/skills', '.kiro/steering'];
+    if (kernel === ExecutorType.DROID) {
+      return ['.factory/skills', '.factory/rules'];
+    }
+    return [];
+  }
 
-${standardLines}
+  private async ensureManagedDirs(
+    client: ExecutorClient,
+    workdir: string,
+    kernel: ExecutorType,
+  ): Promise<void> {
+    const dirs = [
+      WORKER_SKILLS_PATH,
+      WORKER_RULES_PATH,
+      ...this.mirrorDirs(kernel),
+    ];
+    await Promise.all(dirs.map((dir) => client.ensureDir(`${workdir}/${dir}`)));
+  }
 
-## 需存在的规范文件（左侧为相对 .agents/rules/ 的路径，右侧为原始文件地址）
-
-${requiredFileLines}
-
----
-
-### 返回协议
-
-1. 执行过程中的检查、下载和说明不要写入最终回复。
-2. 任务成功时，最终回复的正文必须只有一行：DONE；不要附带验证报告，也不要包在代码块里。
-3. 任务失败时，最终回复的正文必须只有一行：ERROR: 具体原因。
-`;
+  /** 生成内核镜像写入（.agents 为唯一源） */
+  private mirrorWrites(
+    kernel: ExecutorType,
+    standards: DownloadedSource[],
+    skills: DownloadedSource[],
+  ): StationWrite[] {
+    const prefix = (root: string, file: DownloadedSource): StationWrite => ({
+      path: `${root}/${file.sourcePath}`,
+      bytes: file.bytes,
+    });
+    if (kernel === ExecutorType.OPENCODE) {
+      return standards.map((file) => prefix('.opencode/rules', file));
+    }
+    if (kernel === ExecutorType.KIRO) {
+      return [
+        ...skills.map((file) => prefix('.kiro/skills', file)),
+        ...standards.map((file) => prefix('.kiro/steering', file)),
+      ];
+    }
+    if (kernel === ExecutorType.DROID) {
+      return [
+        ...skills.map((file) => prefix('.factory/skills', file)),
+        ...standards.map((file) => prefix('.factory/rules', file)),
+      ];
+    }
+    return [];
   }
 
   /**
@@ -1033,60 +1123,32 @@ ${requiredFileLines}
       throw new BadRequestException(`规范库读取失败：${(e as Error).message}`);
     }
   }
-
-  /**
-   * 校验初始化协议输出。
-   * 优先接受整段 `DONE`；同时兜底接受独立成行的 DONE（部分模型会先输出验证报告，
-   * 再把 DONE 放进代码块），以及整段以 DONE 收尾的输出（devin 等内核把多段叙述直接
-   * 拼接，DONE 会粘在句尾，如 `...AGENTS.md.DONE`）。
-   * ERROR 优先于 DONE 判定，避免失败报告被误判成功；ERROR 同样允许粘在句读标点之后。
-   */
-  private assertDone(text: string): void {
-    const output = text.trim();
-    const error = output.match(
-      /(?:^|\n)\s*(?:`{3,}\s*)?ERROR:\s*([\s\S]+)$|(?:[.。!！?？;；:：`>）)])(?:`{3,}\s*)?ERROR:\s*([\s\S]+)$/,
-    );
-    if (error) {
-      throw new BadRequestException(
-        `工作环境初始化失败：${(error[1] ?? error[2] ?? '').replace(/`+$/, '').trim() || '未知错误'}`,
-      );
-    }
-    if (this.hasStandaloneDone(output)) return;
-    const summary = this.stripFence(output).replace(/\s+/g, ' ').slice(0, 200);
-    throw new BadRequestException(
-      summary
-        ? `工作环境初始化未返回 DONE：${summary}`
-        : '工作环境初始化未返回 DONE',
-    );
-  }
-
-  /**
-   * 判断输出是否以 DONE 收尾。
-   * 接受整段 `DONE`、独立成行的 DONE（允许被代码围栏包裹），以及整段以 DONE 收尾
-   * （句读标点后粘连的 DONE，如 `...Now writing AGENTS.md.DONE`，devin 的叙述 chunk
-   * 不带尾换行，bridge 兜底拼接后会粘成一行）。
-   */
-  private hasStandaloneDone(output: string): boolean {
-    if (output === 'DONE') return true;
-    if (
-      output
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .includes('DONE')
-    ) {
-      return true;
-    }
-    return /(?:^|[\s.。!！?？;；:：`>）)])DONE[.。]?\s*$/.test(output);
-  }
-
-  /** 去掉模型偶尔包裹的代码围栏（与 WorkerAiService 相同的兜底） */
-  private stripFence(text: string): string {
-    const trimmed = text.trim();
-    const fenced = trimmed.match(/^```(?:\w+)?\s*\n([\s\S]*?)\n```$/);
-    return (fenced ? fenced[1] : trimmed).trim();
-  }
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function formatDuration(ms: number): string {
+  return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
+}
+
+/** 有限并发执行（保持结果顺序） */
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const run = async (): Promise<void> => {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      results[index] = await worker(items[index], index);
+    }
+  };
+  await Promise.all(
+    Array.from(
+      { length: Math.min(Math.max(1, concurrency), items.length) },
+      () => run(),
+    ),
+  );
+  return results;
 }

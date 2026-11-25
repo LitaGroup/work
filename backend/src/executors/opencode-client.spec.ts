@@ -111,6 +111,46 @@ describe('OpencodeClient.lastAssistantText', () => {
   });
 });
 
+describe('OpencodeClient.readFile', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('按工位相对路径读取二进制内容', async () => {
+    const client = new OpencodeClient({ ip: '127.0.0.1', port: 4096 });
+    const fetchMock = jest.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(Uint8Array.from([1, 2, 3]), {
+        status: 200,
+      }),
+    );
+    await expect(
+      client.readFile('/worker/1001', '.agents/.station-manifest.json'),
+    ).resolves.toEqual(Uint8Array.from([1, 2, 3]));
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      'http://127.0.0.1:4096/api/fs/read/.agents/.station-manifest.json?location%5Bdirectory%5D=%2Fworker%2F1001',
+    );
+  });
+
+  it('文件不存在返回 null，不回退读取其他路径', async () => {
+    const client = new OpencodeClient({ ip: '127.0.0.1', port: 4096 });
+    jest.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response('not found', {
+        status: 404,
+      }),
+    );
+    await expect(
+      client.readFile('/worker/1001', '.agents/missing.json'),
+    ).resolves.toBeNull();
+  });
+
+  it('拒绝包含 .. 的相对路径', async () => {
+    const client = new OpencodeClient({ ip: '127.0.0.1', port: 4096 });
+    await expect(client.readFile('/worker/1001', '../secret')).rejects.toThrow(
+      '非法文件路径',
+    );
+  });
+});
+
 describe('lastUserMessageCreatedAt', () => {
   it('返回最新一条用户消息的创建时间', async () => {
     const client = new OpencodeClient({ ip: '127.0.0.1', port: 4096 });

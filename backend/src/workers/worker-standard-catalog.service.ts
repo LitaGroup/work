@@ -23,7 +23,7 @@ export interface StandardCatalogItem {
 
 /** 初始化时解析出的受管规范文件集合 */
 export interface ManagedStandardFiles {
-  /** 规范库默认分支 */
+  /** 规范库实际使用的分支 */
   branch: string;
   /** 原始文件根地址（拼接仓库内相对路径即可下载） */
   rawBase: string;
@@ -31,6 +31,8 @@ export interface ManagedStandardFiles {
   directories: string[];
   /** 目录下全部文件（相对仓库根，已排序去重） */
   files: string[];
+  /** 文件内容指纹（相对路径 + git blob SHA）；用于无变化初始化跳过 */
+  entries?: Array<{ path: string; sha: string }>;
 }
 
 const DEFAULT_REPO_URL = 'http://gitea.cinta.team/docs/standard';
@@ -50,6 +52,17 @@ export class WorkerStandardCatalogService {
   private cache: StandardCatalogItem[] | null = null;
   private cacheLoadedAt = 0;
   private loading: Promise<StandardCatalogItem[]> | null = null;
+  /** 默认分支与目录树短期缓存：连续保存/初始化不重复请求 Gitea */
+  private defaultBranchCache: { branch: string; expiresAt: number } | null =
+    null;
+  private readonly treeCache = new Map<
+    string,
+    { entries: Awaited<ReturnType<typeof fetchFullTree>>; expiresAt: number }
+  >();
+  private readonly treeLoading = new Map<
+    string,
+    Promise<Awaited<ReturnType<typeof fetchFullTree>>>
+  >();
 
   constructor(config: ConfigService) {
     this.repoUrl =
@@ -192,21 +205,20 @@ export class WorkerStandardCatalogService {
   ): Promise<ManagedStandardFiles> {
     const directories = this.selectedDirectories(standards);
     if (!directories.length) {
-      return { branch: '', rawBase: '', directories: [], files: [] };
+      return {
+        branch: '',
+        rawBase: '',
+        directories: [],
+        files: [],
+        entries: [],
+      };
     }
     const repo = new URL(this.repoUrl);
     const apiRepo = `${repo.origin}/api/v1/repos${repo.pathname}`;
     const selectedBranch = this.selectedBranch(standards);
-    const repoInfo = await this.requestJson<{ default_branch?: string }>(
-      apiRepo,
-    );
-    const branch = selectedBranch || repoInfo.default_branch?.trim() || 'main';
-    const tree = await fetchFullTree(
-      (url) => this.requestJson<unknown>(url),
-      apiRepo,
-      branch,
-    );
-    const files = tree
+    const branch = selectedBranch || (await this.defaultBranch(apiRepo));
+    const tree = await this.treeOf(apiRepo, branch);
+    const selected = tree
       .filter((item) => {
         if (item.type !== 'blob' || !item.path) return false;
         // 系统垃圾文件不作为规范文档同步
@@ -216,14 +228,19 @@ export class WorkerStandardCatalogService {
             item.path === directory || item.path!.startsWith(`${directory}/`),
         );
       })
-      .map((item) => item.path!)
-      .sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'));
+      .sort((a, b) => (a.path ?? '').localeCompare(b.path ?? '', 'zh-Hans-CN'));
+    const files = selected.map((item) => item.path!);
+    const entries = selected.map((item) => ({
+      path: item.path!,
+      sha: item.sha ?? '',
+    }));
     const encodedBranch = branch.split('/').map(encodeURIComponent).join('/');
     return {
       branch,
       rawBase: `${repo.origin}${repo.pathname}/raw/branch/${encodedBranch}`,
       directories,
       files,
+      entries,
     };
   }
 
@@ -280,15 +297,8 @@ export class WorkerStandardCatalogService {
   private async load(): Promise<StandardCatalogItem[]> {
     const repo = new URL(this.repoUrl);
     const apiRepo = `${repo.origin}/api/v1/repos${repo.pathname}`;
-    const repoInfo = await this.requestJson<{
-      default_branch?: string;
-    }>(apiRepo);
-    const branch = repoInfo.default_branch?.trim() || 'main';
-    const tree = await fetchFullTree(
-      (url) => this.requestJson<unknown>(url),
-      apiRepo,
-      branch,
-    );
+    const branch = await this.defaultBranch(apiRepo);
+    const tree = await this.treeOf(apiRepo, branch);
     const paths = tree
       .filter(
         (item) =>
@@ -372,6 +382,52 @@ export class WorkerStandardCatalogService {
       .map((line) => line.trim())
       .find((line) => /^#\s+\S/.test(line));
     return heading ? heading.replace(/^#\s+/, '').trim() : null;
+  }
+
+  /** 默认分支短期缓存 */
+  private async defaultBranch(apiRepo: string): Promise<string> {
+    if (
+      this.defaultBranchCache &&
+      this.defaultBranchCache.expiresAt > Date.now()
+    ) {
+      return this.defaultBranchCache.branch;
+    }
+    const repoInfo = await this.requestJson<{ default_branch?: string }>(
+      apiRepo,
+    );
+    const branch = repoInfo.default_branch?.trim() || 'main';
+    this.defaultBranchCache = {
+      branch,
+      expiresAt: Date.now() + 5 * 60_000,
+    };
+    return branch;
+  }
+
+  /** 递归目录树短期缓存（60 秒），连续初始化/保存共享结果 */
+  private async treeOf(
+    apiRepo: string,
+    branch: string,
+  ): Promise<Awaited<ReturnType<typeof fetchFullTree>>> {
+    const key = `${apiRepo}@${branch}`;
+    const cached = this.treeCache.get(key);
+    if (cached && cached.expiresAt > Date.now()) return cached.entries;
+    const pending = this.treeLoading.get(key);
+    if (pending) return pending;
+    const request = fetchFullTree(
+      (url) => this.requestJson<unknown>(url),
+      apiRepo,
+      branch,
+    )
+      .then((entries) => {
+        this.treeCache.set(key, {
+          entries,
+          expiresAt: Date.now() + 60_000,
+        });
+        return entries;
+      })
+      .finally(() => this.treeLoading.delete(key));
+    this.treeLoading.set(key, request);
+    return request;
   }
 
   /** Gitea API JSON 请求 */

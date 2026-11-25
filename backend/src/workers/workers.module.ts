@@ -17,6 +17,7 @@ import { WorkerEnvironmentService } from './worker-environment.service';
 import { WorkerOptimizeService } from './worker-optimize.service';
 import { WorkerSkillCatalogService } from './worker-skill-catalog.service';
 import { WorkerStandardCatalogService } from './worker-standard-catalog.service';
+import { WorkerSourceCacheService } from './worker-source-cache.service';
 import { WorkerChatController } from './worker-chat.controller';
 import { WorkerChatService } from './worker-chat.service';
 import { WorkerDebugService } from './worker-debug.service';
@@ -61,6 +62,7 @@ import { WorkersService } from './workers.service';
     WorkerEnvironmentService,
     WorkerSkillCatalogService,
     WorkerStandardCatalogService,
+    WorkerSourceCacheService,
     WorkerDebugService,
     WorkerChatService,
     PersonalAgentsService,
@@ -74,6 +76,7 @@ import { WorkersService } from './workers.service';
     WorkerChatService,
     WorkerSkillCatalogService,
     WorkerStandardCatalogService,
+    WorkerSourceCacheService,
   ],
 })
 export class WorkersModule {}

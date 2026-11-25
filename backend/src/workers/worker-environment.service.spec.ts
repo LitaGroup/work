@@ -1,437 +1,424 @@
 import { BadRequestException } from '@nestjs/common';
 import { firstValueFrom } from 'rxjs';
 import { toArray } from 'rxjs/operators';
-import { WorkerRuntime } from '../common/enums';
+import { ExecutorType, WorkerRuntime } from '../common/enums';
+import { createExecutorClient } from '../executors/executor-client';
 import { WorkerEnvironmentService } from './worker-environment.service';
 import { ManagedStandardFiles } from './worker-standard-catalog.service';
 import { Worker } from './worker.entity';
 
-describe('WorkerEnvironmentService.assertDone', () => {
-  const buildService = () =>
-    new WorkerEnvironmentService(
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      { get: () => undefined } as never,
-    );
-
-  it('接受整段 DONE', () => {
-    expect(() => buildService()['assertDone']('DONE')).not.toThrow();
-  });
-
-  it('接受验证报告后代码块中的独立 DONE', () => {
-    const text = [
-      'Verified the workspace:',
-      '- AGENTS.md is unchanged',
-      '',
-      '```',
-      'DONE',
-      '```',
-    ].join('\n');
-    expect(() => buildService()['assertDone'](text)).not.toThrow();
-  });
-
-  it('接受 devin 叙述粘连且以 DONE 收尾的输出', () => {
-    expect(() =>
-      buildService()['assertDone'](
-        'Fresh workspace. Now fetching the skills.Now writing AGENTS.md.DONE',
-      ),
-    ).not.toThrow();
-  });
-
-  it('接受句读标点后粘连 DONE 的整段输出', () => {
-    expect(() =>
-      buildService()['assertDone'](
-        'Workspace prepared.AGENTS.md updated.DONE.',
-      ),
-    ).not.toThrow();
-  });
-
-  it('优先返回 ERROR 内容', () => {
-    expect(() =>
-      buildService()['assertDone'](
-        '```shell\nERROR: remote skill not found\n```',
-      ),
-    ).toThrow(BadRequestException);
-  });
-
-  it('识别粘连在句读标点后的 ERROR', () => {
-    expect(() =>
-      buildService()['assertDone'](
-        'Fresh workspace. Now fetching the skills.ERROR: remote skill not found',
-      ),
-    ).toThrow(/remote skill not found/);
-  });
-
-  it('拒绝没有独立 DONE 的报告', () => {
-    expect(() =>
-      buildService()['assertDone']('Workspace updated successfully.'),
-    ).toThrow(/未返回 DONE/);
-  });
-
-  it('拒绝未以 DONE 收尾的叙述', () => {
-    expect(() =>
-      buildService()['assertDone'](
-        'Fresh workspace. Now fetching the skills. Now writing AGENTS.md.',
-      ),
-    ).toThrow(/未返回 DONE/);
-  });
-});
-
-describe('WorkerEnvironmentService.buildPrompt', () => {
-  const managed: ManagedStandardFiles = {
-    branch: 'main',
-    rawBase: 'http://gitea.cinta.team/docs/standard/raw/branch/main',
-    directories: ['fe/h5'],
-    files: ['fe/h5/README.md', 'fe/h5/DEVELOP.md'],
+jest.mock('../executors/executor-client', () => {
+  const actual = jest.requireActual<
+    typeof import('../executors/executor-client')
+  >('../executors/executor-client');
+  return {
+    ...actual,
+    createExecutorClient: jest.fn(),
   };
-
-  const buildService = (
-    managedFiles: ManagedStandardFiles = managed,
-  ): WorkerEnvironmentService =>
-    new WorkerEnvironmentService(
-      {} as never,
-      {} as never,
-      {} as never,
-      {
-        resolveManagedFiles: () => Promise.resolve(managedFiles),
-      } as never,
-      { namesOf: jest.fn().mockResolvedValue([]) } as never,
-      {} as never,
-      { get: () => undefined } as never,
-    );
-
-  const worker = {
-    id: 1001,
-    name: '前端机器人',
-    prompt: '## 角色',
-    skills: [],
-    standards: [
-      {
-        name: 'H5 场景开发规范',
-        description: 'H5 场景开发与交付规范',
-        path: 'fe/h5/README.md',
-        directory: 'fe/h5',
-        url: 'http://gitea.cinta.team/docs/standard/raw/branch/main/fe/h5/README.md',
-        sourceUrl:
-          'http://gitea.cinta.team/docs/standard/src/branch/main/fe/h5/README.md',
-      },
-    ],
-  } as unknown as Worker as never;
-
-  it('要求按仓库结构同步规范文件并维护受管清单', async () => {
-    const prompt = await buildService()['buildPrompt'](worker);
-    expect(prompt).toContain('fe/h5/README.md');
-    expect(prompt).toContain(
-      'http://gitea.cinta.team/docs/standard/raw/branch/main/fe/h5/DEVELOP.md',
-    );
-    expect(prompt).toContain('.agents/rules/.standards-manifest.json');
-    expect(prompt).toContain(
-      '需存在的规范文件（左侧为相对 .agents/rules/ 的路径',
-    );
-    expect(prompt).toContain('目录迁移到 .agents/rules');
-    expect(prompt).toContain('不要删除 docs/ 或其他流程产生的文档');
-  });
-
-  it('把规范名称、说明、工位目录与文档清单写入 AGENTS.md 的规范小节', async () => {
-    const prompt = await buildService()['buildPrompt'](worker);
-    expect(prompt).toContain('## 规范与规则');
-    expect(prompt).toContain('### H5 场景开发规范');
-    expect(prompt).toContain('说明：H5 场景开发与交付规范');
-    expect(prompt).toContain('工位目录：`.agents/rules/fe/h5`');
-    expect(prompt).toContain('`README.md`');
-    expect(prompt).toContain('`DEVELOP.md`');
-    expect(prompt).toContain('把以下内容原样写入 AGENTS.md');
-  });
-
-  it('AGENTS.md 注入多机器人协议与待接受拒绝规则', async () => {
-    const prompt = await buildService()['buildPrompt'](worker);
-    expect(prompt).toContain('多机器人任务协同协议（平台固定）');
-    expect(prompt).toContain('task-defines');
-    expect(prompt).toContain('task-create');
-    expect(prompt).toContain('只能在待接受阶段调用 task-refuse');
-    expect(prompt).toContain('task-question-ask');
-    expect(prompt).toContain('task-handoff-apply');
-  });
-
-  it('AGENTS.md 说明机器人令牌用于所有 .md 接口且不得外泄', async () => {
-    const prompt = await buildService()['buildPrompt'](worker);
-    expect(prompt).toContain('调用平台所有 .md 接口');
-    expect(prompt).toContain('X-Worker-Token: $LITA_WORK_TOKEN');
-    expect(prompt).toContain('.agents/.env');
-    expect(prompt).toContain('不得读取展示、改写或删除');
-    expect(prompt).toContain('不得把令牌写入聊天、交付物或文档');
-  });
-
-  it('AGENTS.md 注入资源权限且默认无权限', async () => {
-    const prompt = await buildService()['buildPrompt'](worker);
-    expect(prompt).toContain('## 资源访问权限');
-    expect(prompt).toContain('当前权限：无权限');
-    expect(prompt).toContain('不要调用 AI Gateway 的资源列表或 SQL 执行接口');
-    expect(prompt).toContain('需管理员在机器人配置页授权');
-  });
-
-  it('AGENTS.md 说明 Lita 用户令牌的位置、加载方式与最高优先级', async () => {
-    const prompt = await buildService()['buildPrompt'](worker);
-    expect(prompt).toContain('.agents/.env');
-    expect(prompt).toContain('LITA_USER_TOKEN');
-    expect(prompt).toContain('LITA_WORK_TOKEN');
-    expect(prompt).toContain('LITA_PROJECT_TOKEN');
-    expect(prompt).toContain('set -a; . .agents/.env; set +a');
-    expect(prompt).toContain('调用 lita-work 等技能前');
-    expect(prompt).toContain('环境变量优先级（硬性）');
-    expect(prompt).toContain('优先级最高');
-    expect(prompt).toContain('高于当前进程环境变量');
-    expect(prompt).toContain('同名变量必须以 `.agents/.env` 为准');
-  });
-
-  it('AGENTS.md 注入工作区边界（平台强制）条款', async () => {
-    const prompt = await buildService()['buildPrompt'](worker);
-    expect(prompt).toContain('工作区边界（平台强制）');
-    expect(prompt).toContain('全部文件读写必须位于当前工位目录内');
-    expect(prompt).toContain('执行器宿主的 ~/.env');
-    expect(prompt).toContain('越界的读取、写入与命令会被直接拒绝');
-    expect(prompt).toContain(
-      '通过 lita-work MCP、文档上传等平台渠道向需求方说明并获取',
-    );
-  });
-
-  it('规范清单为空时只清理旧受管文件，不要求清空 docs', async () => {
-    const empty: ManagedStandardFiles = {
-      branch: 'main',
-      rawBase: '',
-      directories: [],
-      files: [],
-    };
-    const prompt = await buildService(empty)['buildPrompt'](worker);
-    expect(prompt).toContain('（本次规范清单为空');
-    expect(prompt).toContain('不处理其他文档');
-  });
 });
 
-describe('WorkerEnvironmentService.start / stream / snapshotOf', () => {
-  const worker = {
-    id: 1001,
-    runtime: WorkerRuntime.OPENCODE,
-    executorId: 8,
-    providerId: 'deepseek',
-    modelId: 'deepseek-flash',
-  } as Worker as never;
-  // 端口 1 不可达：后台任务会快速失败转为 failed，测试不产生真实网络副作用
-  const executor = { id: 8, ip: '127.0.0.1', port: 1, online: true } as never;
+const mockedCreateExecutorClient = jest.mocked(createExecutorClient);
 
-  const buildService = (
-    workersFindOne: jest.Mock = jest.fn().mockResolvedValue(worker),
-    executorsFindOne: jest.Mock = jest.fn().mockResolvedValue(executor),
-  ): WorkerEnvironmentService =>
-    new WorkerEnvironmentService(
-      { findOne: workersFindOne } as never,
-      { findOne: executorsFindOne } as never,
-      {
-        workdirOf: () => '/tmp/runtime/worker/1001',
-        ensureWorkToken: () => Promise.resolve('test-worker-token'),
-      } as never,
-      {
-        resolveManagedFiles: () =>
-          Promise.resolve({
-            branch: 'main',
-            rawBase: '',
-            directories: [],
-            files: [],
-          }),
-      } as never,
-      {
-        namesOf: jest.fn().mockResolvedValue([]),
-        buildServersConfig: jest.fn().mockResolvedValue({}),
-      } as never,
-      // 事件中心 mock：任务后台执行会真正访问 127.0.0.1:4096 失败并转 failed，不影响断言
-      {
-        retain: () => undefined,
-        release: () => undefined,
-        onEvent: () => () => undefined,
-      } as never,
-      { get: () => 'test-lita-token' } as never,
-    );
+interface FakeClient {
+  files: Map<string, Uint8Array>;
+  writes: string[];
+  removedFiles: string[];
+  removedDirs: string[];
+  upserts: Array<Record<string, string>>;
+  ensureDir: jest.Mock;
+  writeFile: jest.Mock;
+  writeSecretFile: jest.Mock;
+  upsertEnvFile: jest.Mock;
+  readFile: jest.Mock;
+  removeFiles: jest.Mock;
+  removeDir: jest.Mock;
+  shell: jest.Mock;
+}
 
-  it('start 返回运行快照，进行中重复启动幂等返回同一任务', async () => {
-    const service = buildService();
-    const first = await service.start(1001);
-    expect(first.status).toBe('running');
-    expect(first.workerId).toBe(1001);
-    expect(first.lines.length).toBeGreaterThan(0);
-    const second = await service.start(1001);
-    expect(second.status).toBe('running');
-    expect(second.startedAt).toBe(first.startedAt);
-    // 终态兜底：后台任务失败后快照转 failed 且带错误（执行器 mock 地址不可达）
-    expect(['running', 'failed']).toContain(service.snapshotOf(1001).status);
+function fakeClient(initial: Record<string, string> = {}): FakeClient {
+  const files = new Map<string, Uint8Array>(
+    Object.entries(initial).map(([path, content]) => [
+      path,
+      Buffer.from(content, 'utf8'),
+    ]),
+  );
+  const writes: string[] = [];
+  const removedFiles: string[] = [];
+  const removedDirs: string[] = [];
+  const upserts: Array<Record<string, string>> = [];
+  return {
+    files,
+    writes,
+    removedFiles,
+    removedDirs,
+    upserts,
+    ensureDir: jest.fn().mockResolvedValue(undefined),
+    writeFile: jest.fn((_workdir: string, path: string, bytes: Uint8Array) => {
+      writes.push(path);
+      files.set(path, bytes);
+      return Promise.resolve({ path });
+    }),
+    writeSecretFile: jest.fn(
+      (_workdir: string, path: string, content: string) => {
+        writes.push(path);
+        files.set(path, Buffer.from(content, 'utf8'));
+        return Promise.resolve();
+      },
+    ),
+    upsertEnvFile: jest.fn(
+      (_workdir: string, _path: string, entries: Record<string, string>) => {
+        upserts.push(entries);
+        return Promise.resolve();
+      },
+    ),
+    readFile: jest.fn((_workdir: string, path: string) =>
+      Promise.resolve(files.get(path) ?? null),
+    ),
+    removeFiles: jest.fn((_workdir: string, paths: string[]) => {
+      for (const path of paths) {
+        removedFiles.push(path);
+        files.delete(path);
+      }
+      return Promise.resolve();
+    }),
+    removeDir: jest.fn((path: string) => {
+      removedDirs.push(path);
+      const prefix = `${path.replace(/^.*\/worker\/1001\//, '')}/`;
+      for (const key of files.keys()) {
+        if (key.startsWith(prefix)) files.delete(key);
+      }
+      return Promise.resolve();
+    }),
+    shell: jest.fn().mockResolvedValue(undefined),
+  };
+}
+
+const worker = {
+  id: 1001,
+  name: '前端机器人',
+  runtime: WorkerRuntime.OPENCODE,
+  executorId: 8,
+  providerId: 'deepseek',
+  modelId: 'deepseek-flash',
+  prompt: '## 角色\n\n负责前端开发',
+  skills: null,
+  standards: [
+    {
+      name: 'H5 场景开发规范',
+      description: 'H5 场景开发与交付规范',
+      path: 'fe/h5/README.md',
+      directory: 'fe/h5',
+      url: 'http://gitea.cinta.team/docs/standard/raw/branch/main/fe/h5/README.md',
+      sourceUrl:
+        'http://gitea.cinta.team/docs/standard/src/branch/main/fe/h5/README.md',
+    },
+  ],
+  mcps: [],
+  githubPermission: 'develop',
+  resourcePermission: 'none',
+} as unknown as Worker;
+
+const executor = {
+  id: 8,
+  type: ExecutorType.OPENCODE,
+  online: true,
+} as never;
+
+const standards: ManagedStandardFiles = {
+  branch: 'main',
+  rawBase: 'http://gitea.cinta.team/docs/standard/raw/branch/main',
+  directories: ['fe/h5'],
+  files: ['fe/h5/README.md', 'fe/h5/DEVELOP.md'],
+  entries: [
+    { path: 'fe/h5/README.md', sha: 'r1' },
+    { path: 'fe/h5/DEVELOP.md', sha: 'd1' },
+  ],
+};
+
+function buildService(
+  options: {
+    client?: FakeClient;
+    worker?: Worker;
+    standards?: ManagedStandardFiles;
+    skillsFiles?: string[];
+  } = {},
+): {
+  service: WorkerEnvironmentService;
+  client: FakeClient;
+  sourceGet: jest.Mock;
+  resolveStandard: jest.Mock;
+  resolveSkills: jest.Mock;
+} {
+  const activeWorker = options.worker ?? worker;
+  const client = options.client ?? fakeClient();
+  mockedCreateExecutorClient.mockReturnValue(client as never);
+  const resolveStandard = jest
+    .fn()
+    .mockResolvedValue(options.standards ?? standards);
+  const resolveSkills = jest.fn().mockResolvedValue({
+    branch: 'main',
+    rawBase: 'http://gitea.cinta.team/docs/skills/raw/branch/main',
+    directories: ['active/rank'],
+    files: options.skillsFiles ?? [
+      'active/rank/SKILL.md',
+      'active/rank/script/query.py',
+    ],
+    entries: (
+      options.skillsFiles ?? [
+        'active/rank/SKILL.md',
+        'active/rank/script/query.py',
+      ]
+    ).map((path) => ({ path, sha: `sha-${path.length}` })),
+  });
+  const sourceGet = jest.fn((url: string) =>
+    Promise.resolve(Buffer.from(`source:${url}`, 'utf8')),
+  );
+  const service = new WorkerEnvironmentService(
+    { findOne: jest.fn().mockResolvedValue(activeWorker) } as never,
+    { findOne: jest.fn().mockResolvedValue(executor) } as never,
+    {
+      workdirOf: () => '/tmp/runtime/worker/1001',
+      ensureWorkToken: () => Promise.resolve('worker-token'),
+    } as never,
+    { resolveManagedFiles: resolveStandard } as never,
+    { resolveManagedFiles: resolveSkills } as never,
+    { get: sourceGet } as never,
+    {
+      buildServersConfig: jest.fn().mockResolvedValue({
+        'lita-work': { type: 'remote', url: 'http://work/api/mcp/work' },
+      }),
+    } as never,
+    {
+      get: (key: string) => {
+        if (key === 'APP_URL') return 'http://work.cinta.team/';
+        return undefined;
+      },
+    } as never,
+    {
+      statusOf: jest.fn().mockResolvedValue({
+        configured: false,
+        enabled: false,
+        githubAccount: null,
+        rotatedAt: null,
+      }),
+    } as never,
+  );
+  return {
+    service,
+    client,
+    sourceGet,
+    resolveStandard,
+    resolveSkills,
+  };
+}
+
+async function waitForTerminal(
+  service: WorkerEnvironmentService,
+): Promise<ReturnType<WorkerEnvironmentService['snapshotOf']>> {
+  for (let index = 0; index < 100; index += 1) {
+    const snapshot = service.snapshotOf(1001);
+    if (snapshot.status === 'success' || snapshot.status === 'failed') {
+      return snapshot;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  throw new Error('初始化未在测试等待窗口内结束');
+}
+
+describe('WorkerEnvironmentService', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
   });
 
-  it('初始化时把机器人令牌与平台地址写入工位 .agents/.env', async () => {
-    const ensureWorkToken = jest.fn().mockResolvedValue('worker-token-123');
-    const ensureDir = jest.fn().mockResolvedValue(undefined);
-    const upsertEnvFile = jest.fn().mockResolvedValue(undefined);
-    const service = new WorkerEnvironmentService(
-      {} as never,
-      {} as never,
-      { ensureWorkToken } as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {
-        get: jest.fn((key: string) =>
-          key === 'APP_URL' ? 'http://work.cinta.team/' : undefined,
-        ),
-      } as never,
+  it('直接生成 AGENTS.md 并注入协议、权限、规范、MCP 与目录结构', () => {
+    const { service } = buildService();
+    const rules = service['buildRulesSection'](worker, standards);
+    const mcp = service['buildMcpSection'](['demo']);
+    const agents = service['buildAgentsDocument']({
+      worker,
+      githubCredentialStatus: {
+        configured: false,
+        enabled: false,
+        githubAccount: null,
+        rotatedAt: null,
+      },
+      kernel: ExecutorType.OPENCODE,
+      rulesSection: rules,
+      mcpSection: mcp,
+    });
+
+    expect(agents).toContain('负责前端开发');
+    expect(agents).toContain('多机器人任务协同协议（平台固定）');
+    expect(agents).toContain('## GitHub 操作权限');
+    expect(agents).toContain('## 资源访问权限');
+    expect(agents).toContain('### H5 场景开发规范');
+    expect(agents).toContain('`DEVELOP.md`');
+    expect(agents).toContain('- demo');
+    expect(agents).toContain('## 目录结构');
+    expect(agents).not.toContain('DONE');
+  });
+
+  it('内容版本随机器人配置与源文件 SHA 变化，避免无变化重复同步', () => {
+    const { service } = buildService();
+    const input = {
+      worker,
+      kernel: ExecutorType.OPENCODE,
+      githubCredentialStatus: {
+        configured: false,
+        enabled: false,
+        githubAccount: null,
+        rotatedAt: null,
+      },
+      standards,
+      skills: {
+        branch: 'main',
+        rawBase: '',
+        directories: ['active/rank'],
+        files: ['active/rank/SKILL.md'],
+        entries: [{ path: 'active/rank/SKILL.md', sha: 's1' }],
+      },
+      mcpNames: [] as string[],
+    };
+    const first = service['stationRevision'](input);
+    expect(service['stationRevision'](input)).toBe(first);
+    expect(
+      service['stationRevision']({
+        ...input,
+        standards: {
+          ...standards,
+          entries: [{ path: 'fe/h5/README.md', sha: 'changed' }],
+        },
+      }),
+    ).not.toBe(first);
+    expect(
+      service['stationRevision']({
+        ...input,
+        worker: { ...worker, prompt: '新的角色定义' },
+      }),
+    ).not.toBe(first);
+  });
+
+  it('后台同步直接写文件，不创建模型会话，并发布完整 manifest', async () => {
+    const { service, client, sourceGet } = buildService();
+    const initial = await service.start(1001);
+    expect(initial.status).toBe('running');
+    const snapshot = await waitForTerminal(service);
+    expect(snapshot.status).toBe('success');
+    expect(sourceGet).toHaveBeenCalledTimes(4);
+    expect(client.writes).toEqual(
+      expect.arrayContaining([
+        'AGENTS.md',
+        '.agents/skills/active/rank/SKILL.md',
+        '.agents/skills/active/rank/script/query.py',
+        '.agents/rules/fe/h5/README.md',
+        '.agents/rules/fe/h5/DEVELOP.md',
+        '.agents/rules/.standards-manifest.json',
+        '.opencode/rules/fe/h5/README.md',
+        '.agents/.station-manifest.json',
+      ]),
     );
+    const manifest = JSON.parse(
+      Buffer.from(client.files.get('.agents/.station-manifest.json')!).toString(
+        'utf8',
+      ),
+    ) as {
+      revision?: string;
+      files?: Array<{ path?: string }>;
+    };
+    expect(manifest.revision).toMatch(/^[a-f0-9]{64}$/);
+    expect(manifest.files).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: 'AGENTS.md' }),
+        expect.objectContaining({
+          path: '.agents/skills/active/rank/SKILL.md',
+        }),
+      ]),
+    );
+    expect(client.upserts[0]).toMatchObject({
+      LITA_WORK_TOKEN: 'worker-token',
+      LITA_PROJECT_TOKEN: 'worker-token',
+      LITA_APP_URL: 'http://work.cinta.team',
+    });
+    expect(
+      (client as unknown as { createSession?: unknown }).createSession,
+    ).toBeUndefined();
+  });
+
+  it('第二次初始化命中 manifest 时跳过下载与文件发布', async () => {
+    const { service, client, sourceGet } = buildService();
+    await service.start(1001);
+    expect((await waitForTerminal(service)).status).toBe('success');
+    sourceGet.mockClear();
+    client.writes.length = 0;
+
+    await service.start(1001);
+    const snapshot = await waitForTerminal(service);
+    expect(snapshot.status).toBe('success');
+    expect(snapshot.lines.join('\n')).toContain('工位内容未变化');
+    expect(sourceGet).not.toHaveBeenCalled();
+    expect(client.writes).not.toContain('AGENTS.md');
+  });
+
+  it('只删除旧受管规范文件，不清理 docs 或未受管文档', async () => {
+    const client = fakeClient({
+      '.agents/rules/.standards-manifest.json': JSON.stringify({
+        version: 1,
+        files: ['fe/old/README.md', 'fe/h5/README.md'],
+      }),
+    });
+    const { service } = buildService({ client });
+    await service.start(1001);
+    expect((await waitForTerminal(service)).status).toBe('success');
+    expect(client.removedFiles).toContain('.agents/rules/fe/old/README.md');
+    expect(client.removedFiles).not.toContain('.agents/rules/fe/h5/README.md');
+    expect(client.removedFiles).not.toContain('docs/README.md');
+  });
+
+  it('配置缺少执行器时同步抛 400，不创建后台任务', async () => {
+    const { service } = buildService({
+      worker: { ...worker, executorId: null },
+    });
+    await expect(service.start(1001)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(service.snapshotOf(1001).status).toBe('idle');
+  });
+
+  it('初始化不再要求供应商与模型', async () => {
+    const { service } = buildService({
+      worker: {
+        ...worker,
+        providerId: null,
+        modelId: null,
+      },
+    });
+    const snapshot = await service.start(1001);
+    expect(snapshot.status).toBe('running');
+    expect((await waitForTerminal(service)).status).toBe('success');
+  });
+
+  it('合并写入机器人令牌与 Lita 用户令牌，避免同一 env 文件并发更新', async () => {
+    const { service, client } = buildService();
     await service['writeWorkerSecrets'](
-      { ensureDir, upsertEnvFile } as never,
+      client as never,
       1001,
       '/tmp/runtime/worker/1001',
+      'worker-token',
+      'lita-token',
     );
-    expect(ensureWorkToken).toHaveBeenCalledWith(1001);
-    // 令牌、兼容旧名与平台地址合并写入 .agents/.env（权限 600 由 upsertEnvFile 保证）
-    expect(upsertEnvFile).toHaveBeenCalledWith(
-      '/tmp/runtime/worker/1001',
-      '.agents/.env',
+    expect(client.upserts).toEqual([
       {
-        LITA_WORK_TOKEN: 'worker-token-123',
-        LITA_PROJECT_TOKEN: 'worker-token-123',
+        LITA_WORK_TOKEN: 'worker-token',
+        LITA_PROJECT_TOKEN: 'worker-token',
         LITA_APP_URL: 'http://work.cinta.team',
+        LITA_USER_TOKEN: 'lita-token',
       },
-    );
-  });
-
-  it('初始化时把 Lita 用户令牌写入工位 .env 并同步执行器宿主 ~/.env', async () => {
-    const upsertEnvFile = jest.fn().mockResolvedValue(undefined);
-    const shell = jest.fn().mockResolvedValue(undefined);
-    const config = {
-      get: jest.fn((key: string) =>
-        key === 'WORKER_LITA_USER_TOKEN' ? 'lita-user-token-123' : undefined,
-      ),
-    };
-    const service = new WorkerEnvironmentService(
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      config as never,
-    );
-    await service['writeLitaUserToken'](
-      { ensureDir: jest.fn(), upsertEnvFile, shell } as never,
-      '/tmp/runtime/worker/1001',
-    );
-    // 合并写入：保留其他键
-    expect(upsertEnvFile).toHaveBeenCalledWith(
-      '/tmp/runtime/worker/1001',
-      '.agents/.env',
-      { LITA_USER_TOKEN: 'lita-user-token-123' },
-    );
-    // 宿主 ~/.env 同步保留 shell（bridge 执行器无 shell，失败降级告警）
-    expect(shell).toHaveBeenCalledTimes(1);
-    const hostSyncCommand = (shell.mock.calls as unknown as [string][])[0]?.[0];
-    expect(hostSyncCommand).toContain('$HOME/.env');
-  });
-
-  it('同时配置时优先使用 WORKER_LITA_USER_TOKEN 注入工位', async () => {
-    const upsertEnvFile = jest.fn().mockResolvedValue(undefined);
-    const shell = jest.fn().mockResolvedValue(undefined);
-    const service = new WorkerEnvironmentService(
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {
-        get: jest.fn((key: string) => {
-          if (key === 'WORKER_LITA_USER_TOKEN') return 'worker-user-token';
-          if (key === 'LITA_USER_TOKEN') return 'platform-user-token';
-          return undefined;
-        }),
-      } as never,
-    );
-    await service['writeLitaUserToken'](
-      { ensureDir: jest.fn(), upsertEnvFile, shell } as never,
-      '/tmp/runtime/worker/1001',
-    );
-    expect(upsertEnvFile).toHaveBeenCalledWith(
-      '/tmp/runtime/worker/1001',
-      '.agents/.env',
-      { LITA_USER_TOKEN: 'worker-user-token' },
-    );
-  });
-
-  it('未配置专用令牌时回退 LITA_USER_TOKEN，都未配置则跳过', async () => {
-    const fallbackUpsert = jest.fn().mockResolvedValue(undefined);
-    const fallback = new WorkerEnvironmentService(
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {
-        get: jest.fn((key: string) =>
-          key === 'LITA_USER_TOKEN' ? 'fallback-token' : undefined,
-        ),
-      } as never,
-    );
-    await fallback['writeLitaUserToken'](
-      {
-        ensureDir: jest.fn(),
-        upsertEnvFile: fallbackUpsert,
-        shell: jest.fn(),
-      } as never,
-      '/tmp/runtime/worker/1001',
-    );
-    expect(fallbackUpsert).toHaveBeenCalledWith(
-      '/tmp/runtime/worker/1001',
-      '.agents/.env',
-      { LITA_USER_TOKEN: 'fallback-token' },
-    );
-
-    const emptyUpsert = jest.fn();
-    const emptyShell = jest.fn();
-    const empty = new WorkerEnvironmentService(
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      { get: () => undefined } as never,
-    );
-    await empty['writeLitaUserToken'](
-      {
-        ensureDir: jest.fn(),
-        upsertEnvFile: emptyUpsert,
-        shell: emptyShell,
-      } as never,
-      '/tmp/runtime/worker/1001',
-    );
-    expect(emptyUpsert).not.toHaveBeenCalled();
-    expect(emptyShell).not.toHaveBeenCalled();
-  });
-
-  it('配置不完整时 start 同步抛 400，不创建任务', async () => {
-    const service = buildService(
-      jest.fn().mockResolvedValue({ id: 2, runtime: 'opencode' }),
-    );
-    await expect(service.start(2)).rejects.toThrow(
-      '请先配置执行器、供应商与模型',
-    );
-    expect(service.snapshotOf(2).status).toBe('idle');
+    ]);
   });
 
   it('snapshotOf 无任务时返回 idle 快照', () => {
-    const service = buildService();
-    const snapshot = service.snapshotOf(9999);
-    expect(snapshot).toEqual({
+    const { service } = buildService();
+    expect(service.snapshotOf(9999)).toEqual({
       workerId: 9999,
       status: 'idle',
       lines: [],
@@ -443,7 +430,7 @@ describe('WorkerEnvironmentService.start / stream / snapshotOf', () => {
   });
 
   it('stream 无任务时推送 idle 快照后完成', async () => {
-    const service = buildService();
+    const { service } = buildService();
     const events = await firstValueFrom(service.stream(1001).pipe(toArray()));
     expect(events).toHaveLength(1);
     const payload = events[0].data as {

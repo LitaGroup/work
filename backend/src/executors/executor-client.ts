@@ -81,6 +81,19 @@ export interface ExecutorClient {
   ensureDir(directory: string): Promise<void>;
 
   /**
+   * 读取工位内的文本/二进制文件；不存在返回 null。
+   * 用于工位同步 manifest 对账，不读取令牌与 MCP 凭据。
+   */
+  readFile(
+    directory: string,
+    path: string,
+    signal?: AbortSignal,
+  ): Promise<Uint8Array | null>;
+
+  /** 删除工位内的受管文件（不存在时忽略），用于规范 manifest 差量清理 */
+  removeFiles(directory: string, paths: string[]): Promise<void>;
+
+  /**
    * 写入敏感文件（令牌 / MCP 配置），权限 600。
    * 内容不得进入 Prompt、SSE 进度或日志（各实现自行保证）。
    */

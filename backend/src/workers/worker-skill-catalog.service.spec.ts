@@ -118,6 +118,62 @@ describe('WorkerSkillCatalogService', () => {
     );
   });
 
+  it('解析技能目录下的全部文件并保留 blob SHA', async () => {
+    const service = buildService();
+    const fetchMock = jest
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation((input) => {
+        const url = requestUrl(input);
+        if (url.endsWith('/api/v1/repos/docs/skills')) {
+          return jsonResponse({ default_branch: 'main' });
+        }
+        if (url.includes('/git/trees/main')) {
+          return jsonResponse({
+            truncated: false,
+            tree: [
+              { path: 'active/rank/SKILL.md', type: 'blob', sha: 's1' },
+              {
+                path: 'active/rank/script/query.py',
+                type: 'blob',
+                sha: 's2',
+              },
+              { path: 'other/demo/SKILL.md', type: 'blob', sha: 's3' },
+            ],
+          });
+        }
+        throw new Error(`未预期的请求：${url}`);
+      });
+    try {
+      const managed = await service.resolveManagedFiles([
+        {
+          name: '榜单技能',
+          path: 'active/rank/SKILL.md',
+          url: 'http://gitea.cinta.team/docs/skills/raw/branch/main/active/rank/SKILL.md',
+        },
+      ]);
+      expect(managed.branch).toBe('main');
+      expect(managed.directories).toEqual(['active/rank']);
+      expect(managed.files).toHaveLength(2);
+      expect(managed.files).toEqual(
+        expect.arrayContaining([
+          'active/rank/SKILL.md',
+          'active/rank/script/query.py',
+        ]),
+      );
+      expect(managed.entries).toEqual(
+        expect.arrayContaining([
+          { path: 'active/rank/SKILL.md', sha: 's1' },
+          { path: 'active/rank/script/query.py', sha: 's2' },
+        ]),
+      );
+      expect(managed.rawBase).toBe(
+        'http://gitea.cinta.team/docs/skills/raw/branch/main',
+      );
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
   it('分页遍历目录树，收录后续分页中的技能', async () => {
     const service = buildService();
     const treeCalls: string[] = [];

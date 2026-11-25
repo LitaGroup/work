@@ -476,9 +476,9 @@ export function WorkerEditPage({ personal = false }: { personal?: boolean }) {
     setInitError(null)
     setInitStatus('idle')
     setInitLines([])
-    // 初始化必须在机器人选择的执行器上执行，默认模型用于创建同步会话
+    // 初始化必须在机器人选择的执行器上执行；默认模型用于后续任务会话
     if (!executorId || !providerId || !modelId) {
-      setError('请先选择执行器与默认模型；否则无法初始化工作环境')
+      setError('请先选择执行器与默认模型；否则机器人无法执行任务')
       return
     }
     // 取编辑器当前内容：onChange 有防抖，避免刚输入就保存丢字

@@ -880,6 +880,64 @@ export class OpencodeClient implements ExecutorClient {
     await this.shell(`mkdir -p ${shellQuote(directory)}`);
   }
 
+  /** 读取工位内文件（GET /api/fs/read/<相对路径>；不存在返回 null） */
+  async readFile(
+    directory: string,
+    path: string,
+    signal?: AbortSignal,
+  ): Promise<Uint8Array | null> {
+    const relative = path;
+    if (
+      !relative ||
+      relative.startsWith('/') ||
+      relative.split('/').includes('..')
+    ) {
+      throw new OpencodeClientError(`非法文件路径：${path}`, 400);
+    }
+    const encoded = relative
+      .split('/')
+      .map((segment) => encodeURIComponent(segment))
+      .join('/');
+    const query = new URLSearchParams({
+      'location[directory]': directory,
+    });
+    let res: Response;
+    try {
+      res = await fetch(
+        `${this.baseUrl}/api/fs/read/${encoded}?${query.toString()}`,
+        { headers: this.headers, signal },
+      );
+    } catch (e) {
+      throw new OpencodeClientError(
+        `执行器连接失败: ${(e as Error).message}`,
+        0,
+      );
+    }
+    if (res.status === 404) return null;
+    if (!res.ok) {
+      throw new OpencodeClientError(
+        `读取文件失败：HTTP ${res.status}`,
+        res.status,
+      );
+    }
+    return new Uint8Array(await res.arrayBuffer());
+  }
+
+  /** 删除工位内受管文件（rm -f，分批避免命令过长） */
+  async removeFiles(directory: string, paths: string[]): Promise<void> {
+    const targets = paths.map((path) => {
+      if (!path || path.startsWith('/') || path.split('/').includes('..')) {
+        throw new OpencodeClientError(`非法文件路径：${path}`, 400);
+      }
+      return shellQuote(joinExecutorPath(directory, path));
+    });
+    for (let index = 0; index < targets.length; index += 40) {
+      await this.shell(
+        `rm -f -- ${targets.slice(index, index + 40).join(' ')}`,
+      );
+    }
+  }
+
   /** 敏感文件写入（printf + chmod；内容只经服务端拼进命令，不进日志） */
   async writeSecretFile(
     directory: string,

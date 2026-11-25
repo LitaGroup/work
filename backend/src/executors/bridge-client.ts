@@ -159,6 +159,39 @@ export class BridgeClient implements ExecutorClient {
     });
   }
 
+  async readFile(
+    directory: string,
+    path: string,
+    signal?: AbortSignal,
+  ): Promise<Uint8Array | null> {
+    try {
+      const payload = await this.request<{ contentBase64?: string }>(
+        '/fs/read-file',
+        {
+          method: 'POST',
+          body: JSON.stringify({ directory, path }),
+          signal,
+        },
+      );
+      return payload?.contentBase64 !== undefined
+        ? Buffer.from(payload.contentBase64, 'base64')
+        : null;
+    } catch (error) {
+      if (error instanceof OpencodeClientError && error.status === 404) {
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  async removeFiles(directory: string, paths: string[]): Promise<void> {
+    if (!paths.length) return;
+    await this.request('/fs/remove-files', {
+      method: 'POST',
+      body: JSON.stringify({ directory, paths }),
+    });
+  }
+
   async writeSecretFile(
     directory: string,
     path: string,
