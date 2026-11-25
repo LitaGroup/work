@@ -310,6 +310,7 @@ claude mcp add --transport http lita-work http://your-host:3100/api/mcp/work \
 | `create_eval_suite` | `name`、`description?`、`purpose?`、`passThreshold?`、`defaultTimeoutSec?`、`maxQuestions?`、`tags?` | 创建测试集（阈值默认 80、超时 1800 秒、提问上限 3） |
 | `update_eval_suite` | `suiteId` + 同上字段、`status?`、`tags?` | 编辑测试集（`tags` 整体替换，编辑递增版本） |
 | `archive_eval_suite` | `suiteId` | 归档测试集 |
+| `delete_eval_suite` | `suiteId` | 删除测试集（已发起评估时拒绝，可改为归档） |
 | `upsert_eval_case` | `suiteId`、`caseId?`、`caseKey`、`title?`、`prompt`、`clarify?`、`passThreshold?`、`timeoutSec?`、`enabled?`、`points[]` | 新增/更新用例（要点整体替换，至少 1 条，序号自动生成） |
 | `delete_eval_case` | `suiteId`、`caseId` | 删除用例与要点 |
 | `import_eval_suite` | `suiteId`、`payload`（`{ suite?, cases[] }`） | 按 `caseKey` 导入（存在覆盖、不存在新增） |

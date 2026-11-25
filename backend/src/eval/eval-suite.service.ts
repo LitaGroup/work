@@ -6,6 +6,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import { EvalSuitePurpose, EvalSuiteStatus } from '../common/enums';
+import { EvalRun } from './eval-run.entity';
 import { EvalCase, EvalCasePoint, EvalSuite } from './eval-suite.entity';
 
 /** 要点更新入参 */
@@ -100,6 +101,8 @@ export class EvalSuiteService {
     private readonly cases: Repository<EvalCase>,
     @InjectRepository(EvalCasePoint)
     private readonly points: Repository<EvalCasePoint>,
+    @InjectRepository(EvalRun)
+    private readonly runs: Repository<EvalRun>,
   ) {}
 
   async list(): Promise<
@@ -180,14 +183,16 @@ export class EvalSuiteService {
   ): Promise<EvalSuite> {
     const suite = await this.suites.findOne({ where: { id: suiteId } });
     if (!suite) throw new NotFoundException('测试集不存在');
-    if (input.name?.trim() && input.name.trim() !== suite.name) {
-      const exists = await this.suites.findOne({
-        where: { name: input.name.trim() },
-      });
-      if (exists) throw new BadRequestException('测试集名称已存在');
+    if (input.name !== undefined) {
+      const name = input.name.trim();
+      if (!name) throw new BadRequestException('测试集名称不能为空');
+      if (name !== suite.name) {
+        const exists = await this.suites.findOne({ where: { name } });
+        if (exists) throw new BadRequestException('测试集名称已存在');
+      }
     }
     const patch: Partial<EvalSuite> = {};
-    if (input.name?.trim()) patch.name = input.name.trim();
+    if (input.name !== undefined) patch.name = input.name.trim();
     if (input.description !== undefined)
       patch.description = input.description?.trim() || null;
     if (input.purpose) patch.purpose = input.purpose;
@@ -220,6 +225,25 @@ export class EvalSuiteService {
 
   async archive(suiteId: number): Promise<EvalSuite> {
     return this.update(suiteId, { status: EvalSuiteStatus.ARCHIVED });
+  }
+
+  /** 删除测试集及其用例、要点；已有评估批次时拒绝，避免历史报告关联失效 */
+  async remove(suiteId: number): Promise<void> {
+    const suite = await this.suites.findOne({ where: { id: suiteId } });
+    if (!suite) throw new NotFoundException('测试集不存在');
+    const hasRuns = await this.runs.exists({ where: { suiteId } });
+    if (hasRuns) {
+      throw new BadRequestException('该测试集已发起评估，不能删除，可改为归档');
+    }
+    const cases = await this.cases.find({
+      where: { suiteId },
+      select: { id: true },
+    });
+    if (cases.length > 0) {
+      await this.points.delete({ caseId: In(cases.map((row) => row.id)) });
+    }
+    await this.cases.delete({ suiteId });
+    await this.suites.delete({ id: suiteId });
   }
 
   async detail(suiteId: number): Promise<{

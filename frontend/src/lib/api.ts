@@ -5074,6 +5074,8 @@ export const api = {
     }),
   archiveEvalSuite: (suiteId: number) =>
     request<EvalSuite>(`/eval/suites/${suiteId}/archive`, { method: 'POST' }),
+  deleteEvalSuite: (suiteId: number) =>
+    request<void>(`/eval/suites/${suiteId}`, { method: 'DELETE' }),
   addEvalCase: (suiteId: number, input: EvalCaseInput) =>
     request<EvalCase>(`/eval/suites/${suiteId}/cases`, {
       method: 'POST',

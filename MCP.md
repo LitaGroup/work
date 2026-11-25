@@ -13,7 +13,7 @@ type: docs
 | 服务 | 地址 | 用途 | 工具数 |
 |---|---|---|---|
 | `lita-work` | `http://work.cinta.team/api/mcp/work` | 基础业务操作：需求 / 迭代项 / 文档 / 知识库 / 脚本运行 / 缺陷 / 反馈 / 灵感 / 代码分支 / 任务协同 / 工单 / 话题 / 飞书 / 定时唤醒 | 94 |
-| `lita-work-admin` | `http://work.cinta.team/api/mcp/work-admin` | 管理面（仅管理员）：机器人 / 任务定义 / 测试集与评估 / 执行记录 / 平台设置 | 37 |
+| `lita-work-admin` | `http://work.cinta.team/api/mcp/work-admin` | 管理面（仅管理员）：机器人 / 任务定义 / 测试集与评估 / 执行记录 / 平台设置 | 38 |
 | `lita-bots` | `http://work.cinta.team/api/mcp/bots` | 把平台机器人当**子 Agent** 调用（多轮会话、提问、中断、断线找回） | 6 |
 | `lita-proxy` | `http://proxy.cinta.team/mcp` | 内部资源运维：MySQL/ClickHouse/MaxCompute（ODPS）SQL、Redis 命令、阿里云 SLS 只读日志、Nacos 配置、XXL-JOB 任务、Firebase Firestore 只读查询、线上操作工单、GitHub PR 创建 | 31 |
 
@@ -110,7 +110,7 @@ Claude Code 的 `--header`、Codex 的 `bearer_token_env_var` 均见下文各节
 | 分类 | 代表工具 |
 |---|---|
 | 机器人与任务定义 | `list_workers`、`get_worker`、`create_worker`、`update_worker`、`delete_worker`、`list_worker_skill_catalog`、`list_worker_standard_catalog`、`list_task_templates`、`get_task_template`、`create_task_template`、`update_task_template`、`delete_task_template`、`list_task_defines` |
-| 测试集 / 用例 / 评估 | `list_eval_suites`、`get_eval_suite`、`create_eval_suite`、`update_eval_suite`、`archive_eval_suite`、`upsert_eval_case`、`delete_eval_case`、`import_eval_suite`、`export_eval_suite`、`list_eval_runs`、`create_eval_run`、`run_eval`（发起并等待终态）、`get_eval_run`（状态与进度）、`get_worker_eval_summary`（机器人评估成绩）、`get_eval_run_report`、`cancel_eval_run`、`get_eval_item`、`rerun_eval_item`、`rejudge_eval_item` |
+| 测试集 / 用例 / 评估 | `list_eval_suites`、`get_eval_suite`、`create_eval_suite`、`update_eval_suite`、`archive_eval_suite`、`delete_eval_suite`、`upsert_eval_case`、`delete_eval_case`、`import_eval_suite`、`export_eval_suite`、`list_eval_runs`、`create_eval_run`、`run_eval`（发起并等待终态）、`get_eval_run`（状态与进度）、`get_worker_eval_summary`（机器人评估成绩）、`get_eval_run_report`、`cancel_eval_run`、`get_eval_item`、`rerun_eval_item`、`rejudge_eval_item` |
 | 执行记录 / 设置 | `list_task_traces`、`read_task_trace`、`get_trace_stats`、`get_settings`、`pull_scripts` |
 
 - 仅管理员：公共 Agent 令牌、绑定管理员的真人机器人，或 `accessLevel=管理员` 的 AI 机器人；其它身份 403；

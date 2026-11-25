@@ -39,6 +39,7 @@ function buildTools(): {
     create: jest.Mock;
     update: jest.Mock;
     updateTags: jest.Mock;
+    remove: jest.Mock;
     addCase: jest.Mock;
     updateCase: jest.Mock;
     import: jest.Mock;
@@ -58,6 +59,7 @@ function buildTools(): {
     create: jest.fn().mockResolvedValue({ id: 2, name: '新测试集' }),
     update: jest.fn().mockResolvedValue({ id: 2, name: '改名' }),
     updateTags: jest.fn().mockResolvedValue({ id: 2, tags: ['登录'] }),
+    remove: jest.fn().mockResolvedValue(undefined),
     addCase: jest.fn().mockResolvedValue({ id: 10, caseKey: 'c1' }),
     updateCase: jest.fn().mockResolvedValue({ id: 10, caseKey: 'c1' }),
     import: jest.fn().mockResolvedValue({ added: 1, updated: 0 }),
@@ -123,6 +125,7 @@ describe('AdminEvalTools', () => {
         'create_eval_suite',
         'update_eval_suite',
         'archive_eval_suite',
+        'delete_eval_suite',
         'upsert_eval_case',
         'delete_eval_case',
         'import_eval_suite',
@@ -139,6 +142,15 @@ describe('AdminEvalTools', () => {
         'rejudge_eval_item',
       ]),
     );
+  });
+
+  it('delete_eval_suite 复用测试集删除规则', async () => {
+    const { tools, suites } = buildTools();
+    const result = (await tools.get('delete_eval_suite')!({ suiteId: 2 })) as {
+      content: { text: string }[];
+    };
+    expect(suites.remove).toHaveBeenCalledWith(2);
+    expect(result.content[0].text).toContain('已删除测试集 #2');
   });
 
   it('upsert_eval_case 自动补齐 title 与要点序号', async () => {

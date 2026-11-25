@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import {
   Table,
@@ -22,6 +22,16 @@ import {
   DialogFooter,
   DialogClose,
 } from '@appica/ui-react/dialog'
+import {
+  AlertDialog,
+  AlertDialogTrigger,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogClose,
+} from '@appica/ui-react/alert-dialog'
 import {
   api,
   EVAL_SUITE_PURPOSES,
@@ -50,6 +60,41 @@ export function EvaluationsPage() {
     defaultTimeoutSec: 1800,
     maxQuestions: 3,
   })
+  const [renameTarget, setRenameTarget] = useState<EvalSuiteSummary | null>(
+    null,
+  )
+  const [renameName, setRenameName] = useState('')
+  const [renaming, setRenaming] = useState(false)
+  const [renameFeedback, setRenameFeedback] = useState<{
+    success?: string
+    error?: string
+  } | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<EvalSuiteSummary | null>(
+    null,
+  )
+  const [deleting, setDeleting] = useState(false)
+  const [deleteFeedback, setDeleteFeedback] = useState<{
+    success?: string
+    error?: string
+  } | null>(null)
+  const renameTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const deleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const clearTimer = (ref: {
+    current: ReturnType<typeof setTimeout> | null
+  }) => {
+    if (ref.current !== null) {
+      clearTimeout(ref.current)
+      ref.current = null
+    }
+  }
+
+  useEffect(() => {
+    return () => {
+      clearTimer(renameTimerRef)
+      clearTimer(deleteTimerRef)
+    }
+  }, [])
 
   const load = useCallback(() => {
     api
@@ -88,6 +133,89 @@ export function EvaluationsPage() {
     }
   }
 
+  const showRenameFeedback = (
+    next: { success?: string; error?: string },
+    after?: () => void,
+  ) => {
+    clearTimer(renameTimerRef)
+    setRenameFeedback(next)
+    renameTimerRef.current = setTimeout(() => {
+      renameTimerRef.current = null
+      setRenameFeedback(null)
+      after?.()
+    }, noticeDurationMs(next.error))
+  }
+
+  const showDeleteFeedback = (
+    next: { success?: string; error?: string },
+    after?: () => void,
+  ) => {
+    clearTimer(deleteTimerRef)
+    setDeleteFeedback(next)
+    deleteTimerRef.current = setTimeout(() => {
+      deleteTimerRef.current = null
+      setDeleteFeedback(null)
+      after?.()
+    }, noticeDurationMs(next.error))
+  }
+
+  const openRename = (suite: EvalSuiteSummary) => {
+    clearTimer(renameTimerRef)
+    setRenameTarget(suite)
+    setRenameName(suite.name)
+    setRenameFeedback(null)
+  }
+
+  const closeRename = () => {
+    clearTimer(renameTimerRef)
+    setRenameTarget(null)
+    setRenameFeedback(null)
+  }
+
+  const saveRename = async () => {
+    if (!renameTarget || renaming) return
+    const name = renameName.trim()
+    if (!name) {
+      showRenameFeedback({ error: '测试集名称不能为空' })
+      return
+    }
+    setRenaming(true)
+    try {
+      const updated = await api.updateEvalSuite(renameTarget.id, { name })
+      setSuites((prev) =>
+        prev
+          ? prev.map((row) =>
+              row.id === updated.id ? { ...row, ...updated } : row,
+            )
+          : prev,
+      )
+      showRenameFeedback({ success: '名称已更新' }, () => setRenameTarget(null))
+    } catch (e) {
+      showRenameFeedback({ error: (e as Error).message })
+    } finally {
+      setRenaming(false)
+    }
+  }
+
+  const confirmDelete = async () => {
+    if (!deleteTarget || deleting) return
+    const suiteId = deleteTarget.id
+    setDeleting(true)
+    try {
+      await api.deleteEvalSuite(suiteId)
+      showDeleteFeedback({ success: '测试集已删除' }, () => {
+        setSuites((prev) =>
+          prev ? prev.filter((row) => row.id !== suiteId) : prev,
+        )
+        setDeleteTarget(null)
+      })
+    } catch (e) {
+      showDeleteFeedback({ error: (e as Error).message })
+    } finally {
+      setDeleting(false)
+    }
+  }
+
   return (
     <div>
       <div className="mb-4 flex items-center justify-between">
@@ -119,7 +247,7 @@ export function EvaluationsPage() {
               <TableHead className="w-24">用例数</TableHead>
               <TableHead className="w-20">版本</TableHead>
               <TableHead className="w-20">状态</TableHead>
-              <TableHead className="w-28 text-right">操作</TableHead>
+              <TableHead className="w-56 text-right">操作</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -130,7 +258,7 @@ export function EvaluationsPage() {
                     to={`/admin/evaluations/${suite.id}`}
                     className="font-medium hover:underline"
                   >
-                    {suite.name}
+                    「{suite.id}」{suite.name}
                   </Link>
                   {suite.description && (
                     <p className="mt-0.5 max-w-2xl truncate text-xs text-foreground-muted">
@@ -175,11 +303,80 @@ export function EvaluationsPage() {
                 <TableCell>v{suite.version}</TableCell>
                 <TableCell>{suite.status}</TableCell>
                 <TableCell className="text-right">
-                  <Link to={`/admin/evaluations/${suite.id}`}>
-                    <Button variant="outline" size="sm">
-                      编辑 / 查看
+                  <div className="flex items-center justify-end gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => openRename(suite)}
+                    >
+                      编辑名称
                     </Button>
-                  </Link>
+                    <Link to={`/admin/evaluations/${suite.id}`}>
+                      <Button variant="outline" size="sm">
+                        查看
+                      </Button>
+                    </Link>
+                    <AlertDialog
+                      open={deleteTarget?.id === suite.id}
+                      onOpenChange={(open) => {
+                        if (open) {
+                          setDeleteTarget(suite)
+                          setDeleteFeedback(null)
+                          return
+                        }
+                        const deleted = !!deleteFeedback?.success
+                        clearTimer(deleteTimerRef)
+                        setDeleteTarget(null)
+                        setDeleteFeedback(null)
+                        if (deleted) load()
+                      }}
+                    >
+                      <AlertDialogTrigger
+                        render={
+                          <Button variant="outline" size="sm">
+                            删除
+                          </Button>
+                        }
+                      />
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>
+                            删除测试集「{suite.id}」{suite.name}？
+                          </AlertDialogTitle>
+                          <AlertDialogDescription>
+                            将同时删除该测试集的全部用例和要点，且不可恢复。已有评估批次的测试集不能删除，可改为归档。
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogClose
+                            render={<Button variant="outline" size="sm" />}
+                          >
+                            取消
+                          </AlertDialogClose>
+                          <PopoverNotice
+                            open={!!deleteFeedback}
+                            onOpenChange={(open) => {
+                              if (!open) {
+                                clearTimer(deleteTimerRef)
+                                setDeleteFeedback(null)
+                              }
+                            }}
+                            success={deleteFeedback?.success}
+                            error={deleteFeedback?.error}
+                          >
+                            <Button
+                              variant="destructive"
+                              size="sm"
+                              disabled={deleting || !!deleteFeedback?.success}
+                              onClick={() => void confirmDelete()}
+                            >
+                              {deleting ? '删除中…' : '确认删除'}
+                            </Button>
+                          </PopoverNotice>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
+                  </div>
                 </TableCell>
               </TableRow>
             ))}
@@ -291,6 +488,54 @@ export function EvaluationsPage() {
             >
               <Button onClick={create} disabled={saving || !form.name.trim()}>
                 {saving ? '创建中…' : '创建'}
+              </Button>
+            </PopoverNotice>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={!!renameTarget}
+        onOpenChange={(open) => {
+          if (!open) closeRename()
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>编辑测试集名称</DialogTitle>
+          </DialogHeader>
+          <DialogBody className="grid gap-3">
+            <label className="grid gap-1 text-sm">
+              名称
+              <Input
+                autoFocus
+                maxLength={128}
+                value={renameName}
+                onChange={(e) => setRenameName(e.target.value)}
+                placeholder="例如：查数能力"
+              />
+            </label>
+          </DialogBody>
+          <DialogFooter>
+            <DialogClose render={<Button variant="outline" />}>
+              取消
+            </DialogClose>
+            <PopoverNotice
+              open={!!renameFeedback}
+              onOpenChange={(open) => {
+                if (!open) {
+                  clearTimer(renameTimerRef)
+                  setRenameFeedback(null)
+                }
+              }}
+              success={renameFeedback?.success}
+              error={renameFeedback?.error}
+            >
+              <Button
+                onClick={() => void saveRename()}
+                disabled={renaming || !renameName.trim()}
+              >
+                {renaming ? '保存中…' : '保存'}
               </Button>
             </PopoverNotice>
           </DialogFooter>

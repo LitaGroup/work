@@ -117,6 +117,7 @@ const WRITE_TOOLS = new Set([
   'create_eval_suite',
   'update_eval_suite',
   'archive_eval_suite',
+  'delete_eval_suite',
   'upsert_eval_case',
   'delete_eval_case',
   'import_eval_suite',

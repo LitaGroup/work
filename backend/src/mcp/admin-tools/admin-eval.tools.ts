@@ -227,6 +227,23 @@ export class AdminEvalTools implements WorkToolRegistrar {
         ),
     );
 
+    server.registerTool(
+      'delete_eval_suite',
+      {
+        title: '删除测试集',
+        description:
+          '删除测试集及其用例与要点。已有评估批次时拒绝删除（可改为归档）。',
+        inputSchema: {
+          suiteId: z.number().int().positive().describe('测试集 ID'),
+        },
+      },
+      (args) =>
+        executeTool(this.logger, 'delete_eval_suite', principal, async () => {
+          await this.suites.remove(args.suiteId);
+          return markdownResult(`已删除测试集 #${args.suiteId}。`);
+        }),
+    );
+
     // ---- 用例 ----
 
     server.registerTool(

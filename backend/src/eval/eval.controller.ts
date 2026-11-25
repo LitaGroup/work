@@ -111,6 +111,15 @@ export class EvalController {
     return this.suites.archive(suiteId);
   }
 
+  @Delete('suites/:suiteId')
+  deleteSuite(
+    @Req() req: AuthedRequest,
+    @Param('suiteId', ParseIntPipe) suiteId: number,
+  ) {
+    this.requireAdmin(req);
+    return this.suites.remove(suiteId);
+  }
+
   @Post('suites/:suiteId/cases')
   addCase(
     @Req() req: AuthedRequest,
