@@ -55,8 +55,8 @@ export function TaskTracePanel({ taskId }: { taskId: number }) {
   }
 
   return (
-    <div className="grid gap-3">
-      <div className="flex flex-wrap items-center gap-2 text-xs text-foreground-muted">
+    <section className="flex h-full min-h-0 flex-col overflow-hidden rounded-none bg-background">
+      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-4 py-3 text-xs text-foreground-muted">
         <Badge variant="secondary" size="sm">
           {trace.status}
         </Badge>
@@ -73,51 +73,57 @@ export function TaskTracePanel({ taskId }: { taskId: number }) {
         </span>
       </div>
 
-      {Array.from(turns.entries())
-        .sort(([a], [b]) => a - b)
-        .map(([turn, list]) => (
-          <div key={turn} className="rounded-md border border-border">
-            <div className="border-b border-border px-3 py-1.5 text-sm font-medium">
-              第 {turn || '-'} 轮
-            </div>
-            <div className="grid gap-1 p-3 text-xs">
-              {list.map((step) => (
-                <div key={step.seq} className="grid gap-0.5">
-                  <button
-                    className="flex w-full items-start gap-2 text-left hover:bg-background-muted"
-                    onClick={() =>
-                      setExpanded((prev) => {
-                        const next = new Set(prev)
-                        if (next.has(step.seq)) next.delete(step.seq)
-                        else next.add(step.seq)
-                        return next
-                      })
-                    }
-                  >
-                    <span className="w-20 shrink-0 text-foreground-muted">
-                      {new Date(step.at).toLocaleTimeString('zh-CN')}
-                    </span>
-                    <span className="shrink-0 font-medium">
-                      {stepLabel(String(step.type))}
-                    </span>
-                    <span className="truncate text-foreground-muted">
-                      {stepSummary(step)}
-                    </span>
-                  </button>
-                  {expanded.has(step.seq) && (
-                    <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded bg-background p-2 text-xs">
-                      {JSON.stringify(step, null, 2)}
-                    </pre>
-                  )}
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+        <div className="grid gap-3">
+          {Array.from(turns.entries())
+            .sort(([a], [b]) => a - b)
+            .map(([turn, list]) => (
+              <div key={turn} className="rounded-md border border-border">
+                <div className="border-b border-border px-3 py-1.5 text-sm font-medium">
+                  第 {turn || '-'} 轮
                 </div>
-              ))}
-            </div>
-          </div>
-        ))}
-      {steps.length === 0 && (
-        <p className="text-xs text-foreground-muted">暂无步骤（记录尚未写入）。</p>
-      )}
-    </div>
+                <div className="grid gap-1 p-3 text-xs">
+                  {list.map((step) => (
+                    <div key={step.seq} className="grid gap-0.5">
+                      <button
+                        className="flex w-full items-start gap-2 text-left hover:bg-background-muted"
+                        onClick={() =>
+                          setExpanded((prev) => {
+                            const next = new Set(prev)
+                            if (next.has(step.seq)) next.delete(step.seq)
+                            else next.add(step.seq)
+                            return next
+                          })
+                        }
+                      >
+                        <span className="w-20 shrink-0 text-foreground-muted">
+                          {new Date(step.at).toLocaleTimeString('zh-CN')}
+                        </span>
+                        <span className="shrink-0 font-medium">
+                          {stepLabel(String(step.type))}
+                        </span>
+                        <span className="truncate text-foreground-muted">
+                          {stepSummary(step)}
+                        </span>
+                      </button>
+                      {expanded.has(step.seq) && (
+                        <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded bg-background p-2 text-xs">
+                          {JSON.stringify(step, null, 2)}
+                        </pre>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          {steps.length === 0 && (
+            <p className="text-xs text-foreground-muted">
+              暂无步骤（记录尚未写入）。
+            </p>
+          )}
+        </div>
+      </div>
+    </section>
   )
 }
 
