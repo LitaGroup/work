@@ -1,10 +1,22 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Button } from '@appica/ui-react/button'
 import { Card } from '@appica/ui-react/card'
 import { Input } from '@appica/ui-react/input'
 import { Textarea } from '@appica/ui-react/textarea'
 import { Switch } from '@appica/ui-react/switch'
+import {
+  Combobox,
+  ComboboxTrigger,
+  ComboboxValue,
+  ComboboxInput,
+  ComboboxContent,
+  ComboboxEmpty,
+  ComboboxList,
+  ComboboxItem,
+  createComboboxItems,
+} from '@appica/ui-react/combobox'
+import { ScrollArea } from '@appica/ui-react/scroll-area'
 import {
   Dialog,
   DialogContent,
@@ -31,6 +43,7 @@ import {
 } from '../lib/api'
 import { PopoverNotice, noticeDurationMs } from '../components/PopoverNotice'
 import { EvalSuiteTags } from '../components/EvalSuiteTags'
+import { matchesPinyinSearch } from '../lib/pinyin-search'
 
 /** 空用例模板 */
 function emptyCase(seq: number): EvalCaseWithPoints {
@@ -70,8 +83,8 @@ export function EvaluationSuitePage() {
   const [runForm, setRunForm] = useState({
     targetWorkerId: 0,
     evaluatorWorkerId: 0,
-    repeatCount: 3,
-    concurrency: 3,
+    repeatCount: 1,
+    concurrency: 1,
   })
 
   const load = useCallback(() => {
@@ -107,6 +120,16 @@ export function EvaluationSuitePage() {
       )
       .catch(() => undefined)
   }, [])
+
+  // 机器人数量多：可搜索 Combobox（名称 / ID，原文 + 拼音），列表限高滚动
+  const workerItems = useMemo(
+    () =>
+      createComboboxItems(workers, {
+        getValue: (worker) => String(worker.id),
+        getLabel: (worker) => `${worker.name}（#${worker.id}）`,
+      }),
+    [workers],
+  )
 
   const selectCase = (row: EvalCaseWithPoints) => {
     setSelectedCaseId(row.id)
@@ -561,40 +584,87 @@ export function EvaluationSuitePage() {
           <DialogBody className="grid gap-3">
             <label className="grid gap-1 text-sm">
               被测机器人
-              <select
-                className="h-9 rounded-md border border-border bg-background px-2"
-                value={runForm.targetWorkerId}
-                onChange={(e) =>
-                  setRunForm({ ...runForm, targetWorkerId: Number(e.target.value) })
+              <Combobox
+                items={workerItems}
+                value={
+                  runForm.targetWorkerId ? String(runForm.targetWorkerId) : null
                 }
+                onValueChange={(value) =>
+                  setRunForm((prev) => ({
+                    ...prev,
+                    targetWorkerId: value == null ? 0 : Number(value),
+                  }))
+                }
+                filter={(worker: Worker, query: string) =>
+                  matchesPinyinSearch(query, [worker.id, worker.name])
+                }
+                icon={false}
               >
-                <option value={0}>请选择</option>
-                {workers.map((worker) => (
-                  <option key={worker.id} value={worker.id}>
-                    {worker.name}（#{worker.id}）
-                  </option>
-                ))}
-              </select>
+                <ComboboxTrigger aria-label="被测机器人">
+                  <ComboboxValue placeholder="选择被测机器人" />
+                </ComboboxTrigger>
+                <ComboboxContent>
+                  <div className="px-2 pb-2 group-data-empty/combobox-content:pt-2">
+                    <ComboboxInput
+                      placeholder="搜索机器人名称、ID 或拼音"
+                      aria-label="搜索被测机器人"
+                    />
+                  </div>
+                  <ScrollArea className="max-h-64">
+                    <ComboboxEmpty>没有匹配的机器人</ComboboxEmpty>
+                    <ComboboxList className="overflow-y-visible">
+                      {(worker: Worker) => (
+                        <ComboboxItem key={worker.id} value={String(worker.id)}>
+                          {worker.name}（#{worker.id}）
+                        </ComboboxItem>
+                      )}
+                    </ComboboxList>
+                  </ScrollArea>
+                </ComboboxContent>
+              </Combobox>
             </label>
             <label className="grid gap-1 text-sm">
               评估机器人
-              <select
-                className="h-9 rounded-md border border-border bg-background px-2"
-                value={runForm.evaluatorWorkerId}
-                onChange={(e) =>
-                  setRunForm({
-                    ...runForm,
-                    evaluatorWorkerId: Number(e.target.value),
-                  })
+              <Combobox
+                items={workerItems}
+                value={
+                  runForm.evaluatorWorkerId
+                    ? String(runForm.evaluatorWorkerId)
+                    : null
                 }
+                onValueChange={(value) =>
+                  setRunForm((prev) => ({
+                    ...prev,
+                    evaluatorWorkerId: value == null ? 0 : Number(value),
+                  }))
+                }
+                filter={(worker: Worker, query: string) =>
+                  matchesPinyinSearch(query, [worker.id, worker.name])
+                }
+                icon={false}
               >
-                <option value={0}>请选择（专职评估机器人）</option>
-                {workers.map((worker) => (
-                  <option key={worker.id} value={worker.id}>
-                    {worker.name}（#{worker.id}）
-                  </option>
-                ))}
-              </select>
+                <ComboboxTrigger aria-label="评估机器人">
+                  <ComboboxValue placeholder="选择评估机器人（专职）" />
+                </ComboboxTrigger>
+                <ComboboxContent>
+                  <div className="px-2 pb-2 group-data-empty/combobox-content:pt-2">
+                    <ComboboxInput
+                      placeholder="搜索机器人名称、ID 或拼音"
+                      aria-label="搜索评估机器人"
+                    />
+                  </div>
+                  <ScrollArea className="max-h-64">
+                    <ComboboxEmpty>没有匹配的机器人</ComboboxEmpty>
+                    <ComboboxList className="overflow-y-visible">
+                      {(worker: Worker) => (
+                        <ComboboxItem key={worker.id} value={String(worker.id)}>
+                          {worker.name}（#{worker.id}）
+                        </ComboboxItem>
+                      )}
+                    </ComboboxList>
+                  </ScrollArea>
+                </ComboboxContent>
+              </Combobox>
             </label>
             <div className="grid grid-cols-2 gap-3">
               <label className="grid gap-1 text-sm">
