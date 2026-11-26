@@ -14,6 +14,7 @@ import {
   isSystemKnowledgeRoot,
   isSystemManagedKnowledgePath,
   normalizeKnowledgePath,
+  workerWorkspaceRootPath,
 } from './knowledge.path';
 import { KnowledgeStore } from './knowledge.store';
 import { assertSystemRootMetadataChange } from './system-knowledge.guard';
@@ -425,6 +426,15 @@ export class KnowledgeService {
     }
   }
 
+  /** 幂等确保机器人的专属知识工作区 /95-workspace/{id} 存在 */
+  async ensureWorkerWorkspace(worker: { id: number }): Promise<void> {
+    this.assertEnabled();
+    await this.store.ensureSystemDirectory(
+      workerWorkspaceRootPath(worker.id),
+      `机器人 #${worker.id} 工作区`,
+    );
+  }
+
   /** 平台系统配置镜像写入（仅内部调用，不经过通用知识写接口） */
   async upsertSystemArticle(input: {
     path: string;
@@ -742,6 +752,8 @@ export class KnowledgeService {
           ]
         : []),
       '',
+      '> `/95-workspace` 根目录及机器人 ID 目录由平台维护；`/95-workspace/{机器人ID}/**` 的普通知识可读写。',
+      '>',
       '> `/01-backlogs/**`、`/98-tasks/**` 与 `/99-system/**` 的受管内容由业务流程维护，只读，不能通过上述接口修改或删除。',
       '',
     ].join('\n');

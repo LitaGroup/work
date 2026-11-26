@@ -62,6 +62,7 @@ interface KnowledgeLocation {
 /** 系统级目录：路径固定，只允许修改名称 */
 const SYSTEM_ROOTS: Record<string, string> = {
   '/01-backlogs': '需求迭代',
+  '/95-workspace': '机器人工作区',
   '/98-tasks': '任务记录',
   '/99-system': '系统设计',
 }
@@ -95,6 +96,7 @@ function isSystemManagedPath(path: string): boolean {
     path.startsWith('/project/') ||
     path === '/01-backlogs' ||
     path.startsWith('/01-backlogs/') ||
+    path === '/95-workspace' ||
     path === '/98-tasks' ||
     path.startsWith('/98-tasks/')
   ) {
@@ -110,6 +112,7 @@ function managedLabel(path: string): string {
   if (path.startsWith('/01-backlogs') || path.startsWith('/project')) {
     return '需求文档模块维护'
   }
+  if (path === '/95-workspace') return '按机器人自动初始化'
   if (path.startsWith('/99-system')) return '系统自动同步'
   return '系统维护'
 }

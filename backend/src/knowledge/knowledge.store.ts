@@ -15,6 +15,7 @@ import {
   projectDocumentPath,
   projectRootPath,
   SYSTEM_KNOWLEDGE_DIRECTORIES,
+  WORKER_WORKSPACE_ROOT,
 } from './knowledge.path';
 import type {
   KnowledgeDirectory,
@@ -557,6 +558,56 @@ export class KnowledgeStore implements OnApplicationBootstrap, OnModuleDestroy {
         [id, next],
       );
       return mapNode(updated.rows[0]);
+    });
+  }
+
+  /**
+   * 幂等确保系统目录存在。已存在的同名目录保留原标题，只把来源归正为 system，
+   * 避免 `/95-workspace/{id}` 这类固定目录被通用知识接口移动或删除。
+   */
+  async ensureSystemDirectory(path: string, title: string): Promise<void> {
+    const normalized = normalizeKnowledgePath(path);
+    if (normalized.path === '/' || normalized.path === WORKER_WORKSPACE_ROOT) {
+      throw new Error('机器人工作区必须是具体目录路径');
+    }
+    return this.withTransaction(async (client) => {
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+        'knowledge-path',
+      ]);
+      await this.ensureDirectory(client, normalized.parentPath, 'system');
+      await client.query(
+        `INSERT INTO knowledge_nodes
+           (kind, path, parent_path, name, title, source, content_hash, index_status)
+         VALUES ('directory', $1, $2, $3, $4, 'system', '', 'ready')
+         ON CONFLICT (path) DO NOTHING`,
+        [
+          normalized.path,
+          normalized.parentPath,
+          normalized.name,
+          title.trim() || normalized.name,
+        ],
+      );
+      const existing = await client.query<{
+        kind: KnowledgeNodeKind;
+        source: KnowledgeNodeSource;
+      }>(
+        'SELECT kind, source FROM knowledge_nodes WHERE path = $1 FOR UPDATE',
+        [normalized.path],
+      );
+      const row = existing.rows[0];
+      if (!row || row.kind !== 'directory') {
+        throw new Error(
+          `系统目录路径 ${normalized.path} 已被文章占用，请先迁移该文章`,
+        );
+      }
+      if (row.source !== 'system') {
+        await client.query(
+          `UPDATE knowledge_nodes
+           SET source = 'system', updated_at = now()
+           WHERE path = $1 AND kind = 'directory'`,
+          [normalized.path],
+        );
+      }
     });
   }
 

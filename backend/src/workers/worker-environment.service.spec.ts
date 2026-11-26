@@ -154,6 +154,7 @@ function buildService(
   sourceGet: jest.Mock;
   resolveStandard: jest.Mock;
   resolveSkills: jest.Mock;
+  ensureWorkerWorkspace: jest.Mock;
 } {
   const activeWorker = options.worker ?? worker;
   const client = options.client ?? fakeClient();
@@ -179,6 +180,7 @@ function buildService(
   const sourceGet = jest.fn((url: string) =>
     Promise.resolve(Buffer.from(`source:${url}`, 'utf8')),
   );
+  const ensureWorkerWorkspace = jest.fn().mockResolvedValue(undefined);
   const service = new WorkerEnvironmentService(
     { findOne: jest.fn().mockResolvedValue(activeWorker) } as never,
     { findOne: jest.fn().mockResolvedValue(executor) } as never,
@@ -208,6 +210,10 @@ function buildService(
         rotatedAt: null,
       }),
     } as never,
+    {
+      isEnabled: true,
+      ensureWorkerWorkspace,
+    } as never,
   );
   return {
     service,
@@ -215,6 +221,7 @@ function buildService(
     sourceGet,
     resolveStandard,
     resolveSkills,
+    ensureWorkerWorkspace,
   };
 }
 
@@ -259,6 +266,11 @@ describe('WorkerEnvironmentService', () => {
     expect(agents).toContain('## 资源访问权限');
     expect(agents).toContain('### H5 场景开发规范');
     expect(agents).toContain('`DEVELOP.md`');
+    expect(agents).toContain('/95-workspace/1001/');
+    expect(agents).toContain(
+      'http://work.cinta.team/docs/detail/95-workspace/1001/tech-design',
+    );
+    expect(agents).toContain('不要把工位本地绝对路径');
     expect(agents).toContain('- demo');
     expect(agents).toContain('## 目录结构');
     expect(agents).not.toContain('DONE');
@@ -266,10 +278,7 @@ describe('WorkerEnvironmentService', () => {
 
   it('管理员机器人额外注入 lita-work-admin，非管理员不注入', () => {
     const { service } = buildService();
-    const adminMcp = service['buildMcpSection']([
-      'lita-work-admin',
-      'demo',
-    ]);
+    const adminMcp = service['buildMcpSection'](['lita-work-admin', 'demo']);
     expect(adminMcp).toContain('lita-work-admin');
     expect(adminMcp).toContain('本机器人访问级别为管理员');
     expect(adminMcp).toContain('- demo');
@@ -320,11 +329,15 @@ describe('WorkerEnvironmentService', () => {
   });
 
   it('后台同步直接写文件，不创建模型会话，并发布完整 manifest', async () => {
-    const { service, client, sourceGet } = buildService();
+    const { service, client, sourceGet, ensureWorkerWorkspace } =
+      buildService();
     const initial = await service.start(1001);
     expect(initial.status).toBe('running');
     const snapshot = await waitForTerminal(service);
     expect(snapshot.status).toBe('success');
+    expect(ensureWorkerWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 1001 }),
+    );
     expect(sourceGet).toHaveBeenCalledTimes(4);
     expect(client.writes).toEqual(
       expect.arrayContaining([
@@ -468,29 +481,42 @@ describe('工位同步 revision 覆盖平台固定文案', () => {
     const appUrl = 'http://work.cinta.team';
     const kernel = ExecutorType.OPENCODE;
     const expected = createHash('sha256')
-      .update(buildTaskCollaborationAgents(appUrl))
+      .update(buildTaskCollaborationAgents(appUrl, 1001))
       .update('\n')
       .update(buildDirectoryAgentsSection(kernel))
       .digest('hex');
-    expect(stationTemplateFingerprint(appUrl, kernel)).toBe(expected);
-    expect(stationTemplateFingerprint(appUrl, kernel)).toBe(
-      stationTemplateFingerprint(appUrl, kernel),
+    expect(stationTemplateFingerprint(appUrl, kernel, 1001)).toBe(expected);
+    expect(stationTemplateFingerprint(appUrl, kernel, 1001)).toBe(
+      stationTemplateFingerprint(appUrl, kernel, 1001),
     );
   });
 
-  it('平台地址或内核变化时指纹随之变化', () => {
+  it('平台地址、内核或机器人 ID 变化时指纹随之变化', () => {
     const a = stationTemplateFingerprint(
       'http://work.cinta.team',
       ExecutorType.OPENCODE,
+      1001,
     );
     expect(
       stationTemplateFingerprint(
         'http://project.cinta.team',
         ExecutorType.OPENCODE,
+        1001,
       ),
     ).not.toBe(a);
     expect(
-      stationTemplateFingerprint('http://work.cinta.team', ExecutorType.DROID),
+      stationTemplateFingerprint(
+        'http://work.cinta.team',
+        ExecutorType.DROID,
+        1001,
+      ),
+    ).not.toBe(a);
+    expect(
+      stationTemplateFingerprint(
+        'http://work.cinta.team',
+        ExecutorType.OPENCODE,
+        1002,
+      ),
     ).not.toBe(a);
   });
 });

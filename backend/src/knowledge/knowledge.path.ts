@@ -84,11 +84,14 @@ export function isKnowledgePathWithin(path: string, parent: string): boolean {
 /** 系统级知识目录：路径固定，只有标题可由用户修改 */
 export interface SystemKnowledgeDirectoryDefinition {
   /** 稳定的代码标识，不参与路径 */
-  key: 'backlogs' | 'tasks' | 'system';
+  key: 'backlogs' | 'tasks' | 'workspace' | 'system';
   path: string;
   name: string;
   title: string;
 }
+
+/** 机器人专属知识工作区根目录；其下按机器人 ID 建立固定子目录 */
+export const WORKER_WORKSPACE_ROOT = '/95-workspace';
 
 export const SYSTEM_KNOWLEDGE_DIRECTORIES: SystemKnowledgeDirectoryDefinition[] =
   [
@@ -97,6 +100,12 @@ export const SYSTEM_KNOWLEDGE_DIRECTORIES: SystemKnowledgeDirectoryDefinition[] 
       path: '/01-backlogs',
       name: '01-backlogs',
       title: '需求迭代',
+    },
+    {
+      key: 'workspace',
+      path: WORKER_WORKSPACE_ROOT,
+      name: '95-workspace',
+      title: '机器人工作区',
     },
     {
       key: 'tasks',
@@ -148,6 +157,7 @@ export function isSystemManagedKnowledgePath(path: string): boolean {
   if (
     normalized === '/01-backlogs' ||
     normalized.startsWith('/01-backlogs/') ||
+    normalized === WORKER_WORKSPACE_ROOT ||
     normalized === '/98-tasks' ||
     normalized.startsWith('/98-tasks/')
   ) {
@@ -209,6 +219,11 @@ export function projectRootPath(project: {
 
 export function systemWorkerRootPath(workerId: number): string {
   return `/99-system/workers/${workerId}`;
+}
+
+/** 机器人对话交付与临时文档目录：/95-workspace/{机器人ID} */
+export function workerWorkspaceRootPath(workerId: number): string {
+  return `${WORKER_WORKSPACE_ROOT}/${workerId}`;
 }
 
 export function systemTaskDefinitionRootPath(templateId: number): string {

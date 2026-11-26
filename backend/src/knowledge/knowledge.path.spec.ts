@@ -11,6 +11,7 @@ import {
   systemTaskDefinitionRootPath,
   systemWorkerRootPath,
   taskRecordRootPath,
+  workerWorkspaceRootPath,
 } from './knowledge.path';
 
 describe('knowledge path', () => {
@@ -59,6 +60,7 @@ describe('knowledge path', () => {
       }),
     ).toBe('/98-tasks/20261126/42');
     expect(systemWorkerRootPath(1001)).toBe('/99-system/workers/1001');
+    expect(workerWorkspaceRootPath(1001)).toBe('/95-workspace/1001');
     expect(systemTaskDefinitionRootPath(7)).toBe(
       '/99-system/task-definitions/7',
     );
@@ -73,7 +75,10 @@ describe('knowledge path', () => {
 
   it('系统根目录路径固定，受管子树不允许通用知识写入', () => {
     expect(isSystemKnowledgeRoot('/98-tasks')).toBe(true);
+    expect(isSystemKnowledgeRoot('/95-workspace')).toBe(true);
     expect(isSystemKnowledgeRoot('/98-tasks/20261126/1')).toBe(false);
+    expect(isSystemManagedKnowledgePath('/95-workspace')).toBe(true);
+    expect(isSystemManagedKnowledgePath('/95-workspace/1001')).toBe(false);
     expect(isSystemManagedKnowledgePath('/98-tasks/20261126/1/API')).toBe(true);
     expect(isSystemManagedKnowledgePath('/01-backlogs/20261126/1')).toBe(true);
     expect(isSystemManagedKnowledgePath('/99-system/workers/1001/README')).toBe(

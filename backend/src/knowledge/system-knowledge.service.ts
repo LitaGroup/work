@@ -457,7 +457,13 @@ export class SystemKnowledgeService
     try {
       const worker = await this.workers.findOne({ where: { id: workerId } });
       const root = systemWorkerRootPath(workerId);
-      if (!worker || worker.personalAgentUserId) {
+      if (!worker) {
+        await this.knowledge.removeSystemPath(root);
+        return;
+      }
+      // 个人 AGENT 不进入共享配置镜像，但仍需要自己的对话交付工作区。
+      await this.knowledge.ensureWorkerWorkspace(worker);
+      if (worker.personalAgentUserId) {
         await this.knowledge.removeSystemPath(root);
         return;
       }

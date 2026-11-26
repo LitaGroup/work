@@ -110,7 +110,7 @@ export class WorkKnowledgeTools implements WorkToolRegistrar {
       {
         title: '创建知识',
         description:
-          '创建知识文章或目录：parentPath 目录必须存在，路径冲突返回 400。/01-backlogs/**、/98-tasks/** 与 /99-system/** 受管内容只读。',
+          '创建知识文章或目录：parentPath 目录必须存在，路径冲突返回 400。机器人对话交付可写 /95-workspace/{机器人ID}/**（根目录与机器人 ID 目录由平台维护）；/01-backlogs/**、/98-tasks/** 与 /99-system/** 受管内容只读。',
         inputSchema: {
           kind: z.enum(['directory', 'article']).describe('节点类型'),
           parentPath: z.string().optional().describe('父目录绝对路径，缺省 /'),

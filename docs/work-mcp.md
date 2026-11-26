@@ -130,10 +130,12 @@ claude mcp add --transport http lita-work http://your-host:3100/api/mcp/work \
 | `search_knowledge` | `query`、`path?`、`page?`、`pageSize?` | 全文 + 向量混合检索（RAG） |
 | `list_knowledge_dir` | `path?` | 浏览目录（子目录 + 文章） |
 | `read_knowledge` | `path` | 读取文章全文（含项目/任务文档镜像，只读） |
-| `create_knowledge` | `kind`、`parentPath?`、`name`、`title?`、`content?` | 创建文章或目录 |
+| `create_knowledge` | `kind`、`parentPath?`、`name`、`title?`、`content?` | 创建文章或目录；机器人对话交付写 `/95-workspace/{机器人ID}/**` |
 | `update_knowledge` | `path`、`title?`、`content?`、`name?`、`parentPath?` | 更新 / 移动 / 重命名 |
 | `delete_knowledge` | `path`、`recursive?` | 删除（非空目录需 `recursive=true`） |
 | `read_feishu_doc` | `url` | 飞书文档转 Markdown（不落库） |
+
+> `/95-workspace/{机器人ID}/` 是机器人专属交付工作区，平台幂等创建；根目录与机器人 ID 目录不可移动、改名或删除，子目录和文章可正常维护。对话中交付 Markdown 文档时应写入此处并返回平台网页地址，不要返回工位本地路径或相对文件链接；非 Markdown 文件仍用 `upload_file`。
 
 ### 缺陷
 

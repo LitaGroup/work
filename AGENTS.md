@@ -211,9 +211,10 @@
 ### 知识库
 
 - `knowledge_nodes` 维护目录/文章树，`path` 唯一；`knowledge_chunks` 按 Markdown 标题切片并保存全文向量和 Embedding。
-- 知识库支持从飞书或 APIPOST 导入文章到当前原生目录（`POST /api/docs/nodes/import`）：路径按来源标识哈希自动生成且保持稳定，同一目录同来源重复导入覆盖原文章（判重键为 `parentPath + source + sourceKey`）；APIPOST swagger 转为 Markdown 后入库。导入文章 `source` 为 `feishu` / `apipost`，可在导入时填写自定义标题（留空使用来源标题），自定义标题在「更新同步」（`POST /api/docs/nodes/:id/sync`）时保留；正文不允许本地修改、移动，可从知识库删除。`/project`、`/task` 及 `/01-backlogs`、`/98-tasks`、`/99-system` 的受管子树不开放通用导入或手工写入。
+- 知识库支持从飞书或 APIPOST 导入文章到当前原生目录（`POST /api/docs/nodes/import`）：路径按来源标识哈希自动生成且保持稳定，同一目录同来源重复导入覆盖原文章（判重键为 `parentPath + source + sourceKey`）；APIPOST swagger 转为 Markdown 后入库。导入文章 `source` 为 `feishu` / `apipost`，可在导入时填写自定义标题（留空使用来源标题），自定义标题在「更新同步」（`POST /api/docs/nodes/:id/sync`）时保留；正文不允许本地修改、移动，可从知识库删除。`/project`、`/task` 及 `/01-backlogs`、`/95-workspace` 根、`/98-tasks`、`/99-system` 的受管内容不开放通用导入或手工写入。
 - 检索为全文 + Embedding 的 RRF 混合检索，支持 `path/page/pageSize`，`pageSize` 最大 100。向量不可用时降级全文；低相似纯向量候选不进入 RRF。
-- 系统级知识目录固定为 `/01-backlogs/`（需求迭代）、`/98-tasks/`（任务记录）、`/99-system/`（系统设计）：路径、名称和父目录不可修改，不可删除，只允许修改展示标题；服务启动时确保存在且不覆盖用户改过的标题。旧 `/project/**`、`/task/**` 保留只读别名用于迁移后旧链接访问。
+- 系统级知识目录固定为 `/01-backlogs/`（需求迭代）、`/95-workspace/`（机器人工作区）、`/98-tasks/`（任务记录）、`/99-system/`（系统设计）：路径、名称和父目录不可修改，不可删除，只允许修改展示标题；服务启动时确保存在且不覆盖用户改过的标题。旧 `/project/**`、`/task/**` 保留只读别名用于迁移后旧链接访问。
+- `/95-workspace/{机器人ID}/` 是每个机器人的专属交付工作区，平台在机器人配置同步和工位初始化时幂等创建，机器人删除后保留已有文档。目录本身由平台维护（`source=system`，子目录和文章可写），机器人交付 Markdown 文档或临时文本时应写入此处，并以 `/docs/detail/95-workspace/{机器人ID}/...` 网页地址分享；任务/需求/迭代已有归档规则的文档仍写各自业务目录。PDF/Excel/ZIP 等非 Markdown 文件走 `upload_file`，不存入知识库。
 - `/01-backlogs/**` 是需求文档系统镜像，`/98-tasks/**` 是任务交付/复盘文档目录，均只读，分别走文档和任务流程。`/99-system/workers/{id}/README`、`/99-system/task-definitions/{id}/README`、`/99-system/evaluations/{suites|runs}/.../README` 为机器人设定、任务定义和机器人评测的自动只读镜像，不包含令牌、Secret、MCP 凭据、执行日志或原始工具调用。`/99-system/**` 仅管理员可读取、维护和搜索命中；普通成员与普通机器人浏览、搜索时隐藏该系统目录，避免验证集 Prompt、评分要点和返工提示泄露。
 - Agent 知识写操作按 path 定位；目录与文章的 URL 规则不可混淆。
 - 飞书云文档实时搜索已下线，不要恢复为搜索依赖；飞书文档仍可通过只读转换接口导入。

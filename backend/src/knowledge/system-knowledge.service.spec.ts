@@ -14,6 +14,7 @@ function repo(over: Record<string, jest.Mock> = {}): Record<string, jest.Mock> {
 function build(worker?: Partial<Worker>) {
   const knowledge = {
     isEnabled: true,
+    ensureWorkerWorkspace: jest.fn().mockResolvedValue(undefined),
     upsertSystemArticle: jest.fn().mockResolvedValue({}),
     removeSystemPath: jest.fn().mockResolvedValue(0),
   };
@@ -76,6 +77,9 @@ describe('SystemKnowledgeService', () => {
 
     await service.syncWorker(1001);
 
+    expect(knowledge.ensureWorkerWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 1001 }),
+    );
     expect(knowledge.upsertSystemArticle).toHaveBeenCalledWith(
       expect.objectContaining({
         path: '/99-system/workers/1001/README',
@@ -112,6 +116,9 @@ describe('SystemKnowledgeService', () => {
 
     await service.syncWorker(1001);
 
+    expect(knowledge.ensureWorkerWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 1001 }),
+    );
     expect(knowledge.upsertSystemArticle).not.toHaveBeenCalled();
     expect(knowledge.removeSystemPath).toHaveBeenCalledWith(
       '/99-system/workers/1001',

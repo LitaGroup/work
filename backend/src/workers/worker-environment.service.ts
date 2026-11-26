@@ -49,6 +49,8 @@ import {
 } from './worker-skill-catalog.service';
 import { WorkerSourceCacheService } from './worker-source-cache.service';
 import { resolveAccessLevel } from '../auth/worker-access';
+import { KnowledgeService } from '../knowledge/knowledge.service';
+import { workerWorkspaceRootPath } from '../knowledge/knowledge.path';
 
 /** 工位同步协议版本：同步逻辑变更时递增，强制重建全部工位 */
 const STATION_SYNC_VERSION = 2;
@@ -77,8 +79,12 @@ const MAX_LINES = 500;
  * 平台统一注入工位 AGENTS.md 的多机器人协同协议（角色定义之后原样保留）。
  * `appUrl` 为平台对外地址（含协议），用于写明 .md 端点的基础地址。
  */
-export function buildTaskCollaborationAgents(appUrl: string): string {
+export function buildTaskCollaborationAgents(
+  appUrl: string,
+  workerId: number,
+): string {
   const base = appUrl.replace(/\/+$/, '');
+  const workspace = workerWorkspaceRootPath(workerId);
   return `## 多机器人任务协同协议（平台固定）
 
 ### 平台地址（硬性）
@@ -118,6 +124,16 @@ export function buildTaskCollaborationAgents(appUrl: string): string {
 - 任务协同与工单同样已提供 MCP 工具：任务 \`list_my_tasks\` / \`get_task\` / \`create_task\` / \`create_subtask\` / \`accept_task\` / \`refuse_task\` / \`ask_task_question\` / \`answer_task_question\` / \`reply_task_message\` / \`list_task_documents\` / \`upsert_task_document\` / \`read_task_handoff\` / \`update_task_handoff\` / \`apply_task_acceptance\` / \`accept_task_handoff\` / \`refuse_task_handoff\` / \`fail_task\`；工单 \`get_task_ticket\` / \`route_task_ticket\` / \`get_ticket\` / \`reject_ticket_node\` / 工单文档工具。MCP 不可用时再回退下方 \`.md\` 端点。
 - 机器人、任务定义、测试集与评估等管理能力在独立服务 \`lita-work-admin\`（\`/api/mcp/work-admin\`，仅管理员可用）：访问级别为管理员的机器人由平台额外注入该服务（见下方「已配置的 MCP 服务」）；非管理员机器人没有该服务，不要尝试调用。
 - 任务动作优先使用 MCP：接受邀约 \`accept_task\`、拒绝 \`refuse_task\`、提问 \`ask_task_question\`、更新交付 \`update_task_handoff\`、申请验收 \`apply_task_acceptance\`、验收 \`accept_task_handoff\` / \`refuse_task_handoff\`、判失败 \`fail_task\`。
+
+### 向用户交付文档与文件
+
+- 你的专属知识工作区：\`${workspace}/\`（平台维护该目录本身，不要移动、重命名或删除）。
+- 需要在对话中以文档形式交付技术方案、报告、说明或临时 Markdown 产物时，必须使用 lita-work MCP 的 \`create_knowledge\` / \`update_knowledge\` 写入该工作区或其子目录。
+- 不要把工位本地绝对路径或 \`tech-design.md\` 这类相对路径作为用户可点击的交付地址；用户无法访问你的工位目录。
+- 创建或更新成功后，使用工具返回的「网页」地址并拼接平台地址，给出完整链接，例如 \`[技术方案](${base}/docs/detail${workspace}/tech-design)\`；知识网页地址不带 \`.md\`。
+- 任务、需求、迭代已有归档规则的文档仍写入各自业务目录（\`/98-tasks/**\`、\`/01-backlogs/**\`）并分享其网页地址，不要重复复制到工作区。
+- PDF、Excel、ZIP 等非 Markdown 文件使用 \`upload_file\` 并返回其公共 URL；知识工作区只存 Markdown 知识文章。
+- 工作区根目录由平台维护；子目录和文章可用 \`create_knowledge\` / \`update_knowledge\` / \`delete_knowledge\` 正常维护，建议按日期或用途建立子目录。
 
 ### 任务状态与动作
 
@@ -219,9 +235,10 @@ interface InitializeJob {
 export function stationTemplateFingerprint(
   appUrl: string,
   kernel: ExecutorType,
+  workerId: number,
 ): string {
   return createHash('sha256')
-    .update(buildTaskCollaborationAgents(appUrl))
+    .update(buildTaskCollaborationAgents(appUrl, workerId))
     .update('\n')
     .update(buildDirectoryAgentsSection(kernel))
     .digest('hex');
@@ -278,6 +295,8 @@ export class WorkerEnvironmentService implements OnModuleDestroy {
     private readonly config: ConfigService,
     @Optional()
     private readonly githubCredentials?: GithubPermissionCredentialService,
+    @Optional()
+    private readonly knowledge?: KnowledgeService,
   ) {}
 
   /**
@@ -305,6 +324,18 @@ export class WorkerEnvironmentService implements OnModuleDestroy {
       throw new BadRequestException(
         `执行器 #${worker.executorId} 离线或不存在，无法初始化工作环境`,
       );
+    }
+    // 工位初始化可能早于系统知识周期对账，先兜底确保交付目录存在。
+    if (this.knowledge?.isEnabled) {
+      try {
+        await this.knowledge.ensureWorkerWorkspace(worker);
+      } catch (error) {
+        this.logger.warn(
+          `机器人 #${worker.id} 知识工作区初始化失败：${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
     }
 
     const running = this.jobs.get(id);
@@ -740,7 +771,7 @@ export class WorkerEnvironmentService implements OnModuleDestroy {
       input;
     const sections = [
       (worker.prompt ?? '').trim(),
-      buildTaskCollaborationAgents(this.appUrl()),
+      buildTaskCollaborationAgents(this.appUrl(), worker.id),
       this.buildGithubAgentsSection(worker, githubCredentialStatus),
       this.buildResourceAgentsSection(worker),
       rulesSection,
@@ -901,7 +932,11 @@ export class WorkerEnvironmentService implements OnModuleDestroy {
         JSON.stringify({
           version: STATION_SYNC_VERSION,
           appUrl: this.appUrl(),
-          template: stationTemplateFingerprint(this.appUrl(), kernel),
+          template: stationTemplateFingerprint(
+            this.appUrl(),
+            kernel,
+            worker.id,
+          ),
           kernel,
           prompt: worker.prompt ?? '',
           githubPermission: worker.githubPermission,

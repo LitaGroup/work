@@ -12,6 +12,7 @@ describe('系统知识目录保护', () => {
       '/99-system/workers/1001/README',
       '/99-system/task-definitions/7/README',
       '/99-system/evaluations/runs/20261126/9/README',
+      '/95-workspace',
       '/task/20261126/TK-0001/API',
       '/project/7/document/9',
     ]) {
@@ -26,6 +27,18 @@ describe('系统知识目录保护', () => {
     expect(() =>
       assertSystemKnowledgeWritable('/99-system/design'),
     ).not.toThrow();
+  });
+
+  it('机器人工作区根由平台维护，机器人目录内允许写普通知识', () => {
+    expect(() =>
+      assertSystemKnowledgeWritable('/95-workspace/1001'),
+    ).not.toThrow();
+    expect(() =>
+      assertSystemKnowledgeWritable('/95-workspace/1001/tech-design'),
+    ).not.toThrow();
+    expect(() => assertSystemRootRemovable('/95-workspace')).toThrow(
+      '不能删除',
+    );
   });
 
   it('系统根目录只允许修改名称', () => {

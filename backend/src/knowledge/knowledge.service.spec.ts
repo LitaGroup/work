@@ -39,6 +39,7 @@ describe('KnowledgeService.search', () => {
     updateSystemDirectoryTitle: jest.Mock;
     listChildren: jest.Mock;
     createNode: jest.Mock;
+    ensureSystemDirectory: jest.Mock;
     findExternalNode: jest.Mock;
     createExternalNode: jest.Mock;
     updateExternalNode: jest.Mock;
@@ -67,6 +68,7 @@ describe('KnowledgeService.search', () => {
         directories: [],
         articles: [],
       }),
+      ensureSystemDirectory: jest.fn().mockResolvedValue(undefined),
       createNode: jest.fn().mockResolvedValue({
         id: 'n2',
         kind: 'article',
@@ -108,6 +110,15 @@ describe('KnowledgeService.search', () => {
     expect(result.project.results).toHaveLength(1);
     expect(result.results).toEqual(result.project.results);
     expect(result.source).toBe('project');
+  });
+
+  it('按机器人 ID 幂等创建专属知识工作区', async () => {
+    await service.ensureWorkerWorkspace({ id: 1001 });
+
+    expect(store.ensureSystemDirectory).toHaveBeenCalledWith(
+      '/95-workspace/1001',
+      '机器人 #1001 工作区',
+    );
   });
 
   it('飞书数据源已下线，source=feishu/all 直接报错', async () => {
