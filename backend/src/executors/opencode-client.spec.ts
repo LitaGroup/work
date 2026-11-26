@@ -271,3 +271,31 @@ describe('OpencodeClient.latestTodos', () => {
     await expect(client.latestTodos('ses')).resolves.toBeNull();
   });
 });
+
+describe('OpencodeClient.upsertEnvFile', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('flock 串行化读改写，使用唯一临时文件并原子替换', async () => {
+    const client = new OpencodeClient({ ip: '127.0.0.1', port: 4096 });
+    const shell = jest.spyOn(client, 'shell').mockResolvedValue(undefined);
+
+    await client.upsertEnvFile('/worker/1001', '.agents/.env', {
+      LITA_WORK_TOKEN: 'new-token',
+      LITA_APP_URL: 'http://work.example.com',
+    });
+
+    const command = String(shell.mock.calls[0]?.[0] ?? '');
+    // shellQuote 会把内层单引号编码为 '\''，还原后检查实际脚本内容
+    const script = command.replace(/'\\''/g, "'");
+    expect(script).toContain("flock -x -w 10 '/worker/1001/.agents/.env.lock'");
+    expect(script).toContain('mktemp');
+    expect(script).toContain('.env.tmp.XXXXXX');
+    expect(script).toContain('grep -v');
+    expect(script).toContain("-e '^LITA_WORK_TOKEN='");
+    expect(script).toContain("-e '^LITA_APP_URL='");
+    expect(script).toContain('mv "$tmp" \'/worker/1001/.agents/.env\'');
+    expect(script.match(/grep -v/g)).toHaveLength(1);
+  });
+});

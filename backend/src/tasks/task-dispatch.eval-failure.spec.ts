@@ -1,4 +1,9 @@
-import { TaskStatus, TaskSubStatus } from '../common/enums';
+import {
+  ExecutorType,
+  TaskStatus,
+  TaskSubStatus,
+  WorkerRuntime,
+} from '../common/enums';
 import { Task } from './task.entity';
 import { TaskDispatchService } from './task-dispatch.service';
 
@@ -25,13 +30,19 @@ function buildService(task: Task) {
   const workerInbox = {
     requeueDelivered: jest.fn().mockResolvedValue(undefined),
   };
+  const workerRepo = { findOne: jest.fn() };
+  const executorRepo = { findOne: jest.fn() };
+  const evalItems = { findOne: jest.fn() };
   const service = new TaskDispatchService(
     tasksRepo as never,
     eventsRepo as never,
+    executorRepo as never,
+    workerRepo as never,
     { findOne: jest.fn() } as never,
-    { findOne: jest.fn() } as never,
-    { findOne: jest.fn() } as never,
-    { workdirOf: jest.fn() } as never,
+    {
+      workdirOf: jest.fn(),
+      evalSandboxWorkdir: jest.fn().mockReturnValue('/sandbox/24/227'),
+    } as never,
     { onEvent: jest.fn(), retain: jest.fn(), release: jest.fn() } as never,
     taskNotify as never,
     taskRealtime as never,
@@ -40,7 +51,7 @@ function buildService(task: Task) {
     { start: jest.fn() } as never,
     workerInbox as never,
     { buildServersConfig: jest.fn() } as never,
-    { findOne: jest.fn() } as never,
+    evalItems as never,
     {
       recordTurnStart: jest.fn().mockResolvedValue(undefined),
       recordMessageIn: jest.fn().mockResolvedValue(undefined),
@@ -50,7 +61,7 @@ function buildService(task: Task) {
     { transaction: jest.fn() } as never,
     { get: jest.fn() } as never,
   );
-  return { service, taskChat, taskNotify };
+  return { service, taskChat, taskNotify, workerRepo, executorRepo, evalItems };
 }
 
 const buildTask = (over: Partial<Task> = {}): Task =>
@@ -80,6 +91,44 @@ type FreshnessInternals = {
   turnStartedAt: Map<number, number>;
   isStaleTurnTerminal(taskId: number, data: Record<string, unknown>): boolean;
 };
+
+describe('TaskDispatchService 评估派发凭据', () => {
+  it('评估任务在派发前调用刷新回调；刷新失败则不创建会话', async () => {
+    const task = buildTask({
+      isEval: true,
+      evalItemId: 227,
+      executorId: 9,
+      opencodeSessionId: 'ses-old',
+    });
+    const { service, workerRepo, executorRepo, evalItems } = buildService(task);
+    workerRepo.findOne.mockResolvedValue({
+      id: 1001,
+      enabled: true,
+      runtime: WorkerRuntime.OPENCODE,
+      executorId: 9,
+      providerId: 'provider',
+      modelId: 'model',
+    });
+    executorRepo.findOne.mockResolvedValue({
+      id: 9,
+      online: true,
+      type: ExecutorType.OPENCODE,
+    });
+    evalItems.findOne.mockResolvedValue({ sandboxId: '24/227' });
+    const hook = jest.fn().mockRejectedValue(new Error('refresh failed'));
+    service.evalBeforeDispatchHook = hook;
+
+    await expect(service.dispatch(task.id, null)).rejects.toThrow(
+      'refresh failed',
+    );
+    expect(hook).toHaveBeenCalledWith(
+      task,
+      expect.objectContaining({ id: 9 }),
+      expect.anything(),
+      '/sandbox/24/227',
+    );
+  });
+});
 
 describe('TaskDispatchService 评估任务失败收尾', () => {
   it('评估任务会话失败：结束本轮并回调评估引擎（带失败原因）', async () => {

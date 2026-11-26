@@ -14,9 +14,9 @@ interface EvalTokenPayload extends jwt.JwtPayload {
 
 /**
  * 评估令牌（TECH_DESIGN 9.3）：
- * 短期 JWT，身份=被测机器人（判定令牌身份=评估机器人），附加 eval 声明与作用域，
- * 有效期 = 用例超时 + 10 分钟，评估项结束时立即吊销（进程内吊销集合）。
- * 签名密钥从 AUTH_JWT_SECRET 派生，重启后可重建同载荷令牌（评估项在重启后继续需要）。
+ * 短期 JWT，身份=被测机器人（判定令牌身份=评估机器人），附加 eval 声明与作用域。
+ * 执行令牌固定 24 小时，并在每次评估任务派发前重签刷新；判定令牌 30 分钟。
+ * 签名密钥从 AUTH_JWT_SECRET 派生，重启后可重建同载荷令牌。
  */
 export interface EvalTokenClaims {
   kind: 'eval';
@@ -38,13 +38,15 @@ export interface EvalContext {
   judge: boolean;
 }
 
+/** 判定令牌有效期：判定会话本身最长 5 分钟，保留 30 分钟余量 */
+export const EVAL_JUDGE_TOKEN_TTL_MS = 30 * 60 * 1000;
 /**
- * 评估令牌有效期。
- * 30 分钟等于单轮评估预算（suite timeoutSec 默认 1800），返工第二轮开始即过期，
- * 沙箱内机器人所有 .md / MCP 调用会 401（2026-11-26 #227 实证）。
- * 临时放宽到 4 小时，覆盖「首轮 + 返工 + 续跑」；后续改为按测试集预算动态签发。
+ * 被测机器人执行令牌有效期。
+ * 评估任务可能跨多轮返工/自动续跑，固定 24 小时覆盖长时间执行；
+ * 每次派发前仍会重签并刷新沙箱凭据，避免单轮超过 24 小时或旧令牌残留。
+ * 该值取代此前临时放宽到 4 小时的统一 TTL。
  */
-const EVAL_TOKEN_TTL_MS = 4 * 60 * 60 * 1000;
+export const EVAL_EXECUTION_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 
 @Injectable()
 export class EvalTokenService {
@@ -60,8 +62,8 @@ export class EvalTokenService {
       .digest('hex');
   }
 
-  /** 签发评估令牌（ttlMs 默认 4 小时） */
-  sign(claims: EvalTokenClaims, ttlMs = EVAL_TOKEN_TTL_MS): string {
+  /** 签发评估令牌（默认按判定令牌 30 分钟；执行令牌由调用方传 24 小时） */
+  sign(claims: EvalTokenClaims, ttlMs = EVAL_JUDGE_TOKEN_TTL_MS): string {
     return jwt.sign(claims, this.secret, {
       expiresIn: Math.max(60, Math.round(ttlMs / 1000)),
     });

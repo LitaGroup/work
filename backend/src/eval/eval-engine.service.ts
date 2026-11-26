@@ -8,7 +8,10 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, In, MoreThan, Repository } from 'typeorm';
-import { createExecutorClient } from '../executors/executor-client';
+import {
+  createExecutorClient,
+  type ExecutorClient,
+} from '../executors/executor-client';
 import { Executor } from '../executors/executor.entity';
 import { TaskStatus, TaskSubStatus, WorkerRuntime } from '../common/enums';
 import {
@@ -37,7 +40,11 @@ import { EvalEvent } from './eval-judgement.entity';
 import { EvalJudgement } from './eval-judgement.entity';
 import { EvalMcpPolicy, FrozenEvalCase } from './eval-worker-snapshot.entity';
 import { EvalSandboxService } from './eval-sandbox.service';
-import { EvalTokenService } from './eval-token.service';
+import {
+  EVAL_EXECUTION_TOKEN_TTL_MS,
+  EVAL_JUDGE_TOKEN_TTL_MS,
+  EvalTokenService,
+} from './eval-token.service';
 import { EvalJudgeService } from './eval-judge.service';
 import { EvalProgressService } from './eval-progress.service';
 
@@ -203,6 +210,9 @@ export class EvalEngineService implements OnModuleInit {
     // 评估任务的会话失败由引擎收尾（派发侧只结束本轮）：回调注入避免模块循环依赖
     this.dispatch.evalTurnFailedHook = (task, reason) =>
       this.onEvalTurnFailed(task, reason);
+    // 所有评估派发入口（邀约/返工/LOOP 恢复/继续对话）统一在 prompt 前刷新执行令牌
+    this.dispatch.evalBeforeDispatchHook = (task, executor, client, workdir) =>
+      this.refreshExecutionCredentials(task, executor, client, workdir);
     this.startTicker();
   }
 
@@ -389,13 +399,7 @@ export class EvalEngineService implements OnModuleInit {
     // 2. 沙箱：复制真实工位 → 剔除 docs/ 与凭据 → 注入评估令牌与过滤后的 MCP
     if (!(await this.hasAnyEvent(item.id, EvalEventType.SANDBOX_READY))) {
       // 评估令牌（作用域=评估任务；协议层按 9.3 校验）
-      const evalToken = this.token.sign({
-        kind: 'eval',
-        workerId: target.id,
-        evalItemId: item.id,
-        taskId: task.id,
-        judge: false,
-      });
+      const evalToken = this.signExecutionToken(target.id, item.id, task.id);
       const client = createExecutorClient(executor);
       const workdir = this.workersService.workdirOf(target.id);
       if (!workdir) {
@@ -434,6 +438,59 @@ export class EvalEngineService implements OnModuleInit {
     await this.updateItem(item.id, { status: EvalItemStatus.INVITED });
     this.logger.log(
       `评估项 #${item.id} 已就绪：任务 #${task.id} 沙箱 ${sandboxId}`,
+    );
+  }
+
+  /** 被测机器人执行令牌（固定 24 小时，派发前重新签发） */
+  private signExecutionToken(
+    workerId: number,
+    evalItemId: number,
+    taskId: number,
+  ): string {
+    return this.token.sign(
+      {
+        kind: 'eval',
+        workerId,
+        evalItemId,
+        taskId,
+        judge: false,
+      },
+      EVAL_EXECUTION_TOKEN_TTL_MS,
+    );
+  }
+
+  /**
+   * 评估任务派发前刷新执行凭据：重签 24 小时令牌并覆盖沙箱 .env 与 MCP 配置。
+   * 只刷新凭据，不复制工位、不重建沙箱/会话，保留机器人已有工作内容。
+   */
+  private async refreshExecutionCredentials(
+    task: Task,
+    executor: Executor,
+    client: ExecutorClient,
+    workdir: string,
+  ): Promise<void> {
+    if (!task.isEval || !task.evalItemId || !task.agentId) return;
+    const item = await this.items.findOne({ where: { id: task.evalItemId } });
+    if (!item) throw new NotFoundException('评估项不存在，无法刷新执行令牌');
+    if (TERMINAL_ITEM_STATUSES.includes(item.status)) {
+      throw new ConflictException('评估项已结束，不再刷新执行令牌');
+    }
+    const run = await this.runs.findOne({ where: { id: item.runId } });
+    if (!run) throw new NotFoundException('评估批次不存在，无法刷新执行令牌');
+    const target = await this.workers.findOne({
+      where: { id: task.agentId },
+    });
+    if (!target) throw new NotFoundException('被测机器人不存在');
+    const evalToken = this.signExecutionToken(target.id, item.id, task.id);
+    const mcpServers = this.buildSandboxMcpServers(run, target, evalToken);
+    await this.sandbox.refreshCredentials(
+      client,
+      workdir,
+      executor.type,
+      mcpServers,
+      evalToken,
+      this.appUrl,
+      this.denyExternalDirectory,
     );
   }
 
@@ -799,13 +856,16 @@ export class EvalEngineService implements OnModuleInit {
     await this.updateItem(item.id, { status: EvalItemStatus.JUDGING });
     await this.addEvent(item.id, EvalEventType.JUDGE_STARTED, { round });
 
-    const judgeToken = this.token.sign({
-      kind: 'eval',
-      workerId: evaluator.id,
-      evalItemId: item.id,
-      taskId: task.id,
-      judge: true,
-    });
+    const judgeToken = this.token.sign(
+      {
+        kind: 'eval',
+        workerId: evaluator.id,
+        evalItemId: item.id,
+        taskId: task.id,
+        judge: true,
+      },
+      EVAL_JUDGE_TOKEN_TTL_MS,
+    );
     const sandboxRoot = this.workersService.evalSandboxRoot();
     if (!sandboxRoot) {
       await this.markItemError(

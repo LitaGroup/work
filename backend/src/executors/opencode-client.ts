@@ -952,7 +952,11 @@ export class OpencodeClient implements ExecutorClient {
     );
   }
 
-  /** 按 key 更新 env 文件（保留其他键，权限 600；文件不存在时创建） */
+  /**
+   * 按 key 更新 env 文件（保留其他键，权限 600；文件不存在时创建）。
+   * flock 串行化完整的读-改-写；临时文件用 mktemp 生成唯一名后原子替换，
+   * 避免并发派发共用 .tmp 导致丢更新或出现重复 key。
+   */
   async upsertEnvFile(
     directory: string,
     path: string,
@@ -962,18 +966,27 @@ export class OpencodeClient implements ExecutorClient {
     if (keys.length === 0) {
       throw new OpencodeClientError('upsertEnvFile 至少需要一个键', 400);
     }
-    const target = shellQuote(joinExecutorPath(directory, path));
-    const tmp = shellQuote(`${joinExecutorPath(directory, path)}.tmp`);
-    const filters = keys
-      .map((key) => `grep -v ${shellQuote(`^${key}=`)} ${target} 2>/dev/null`)
-      .join(' | ');
+    const targetPath = joinExecutorPath(directory, path);
+    const target = shellQuote(targetPath);
+    const lock = shellQuote(`${targetPath}.lock`);
+    const tmpTemplate = shellQuote(`${targetPath}.tmp.XXXXXX`);
+    // 单个 grep + 多个 -e：多个 grep 各自带文件参数会忽略管道输入，
+    // 导致除最后一个 key 外的旧行无法被过滤，反复 upsert 后不断堆积。
+    const patterns = keys
+      .map((key) => `-e ${shellQuote(`^${key}=`)}`)
+      .join(' ');
+    const filters = `grep -v ${patterns} ${target} 2>/dev/null`;
     const lines = Object.entries(entries)
       .map(([key, value]) => shellQuote(`${key}=${value}`))
       .join(' ');
-    await this.shell(
-      `{ ${filters}; printf '%s\\n' ${lines}; } > ${tmp} && ` +
-        `chmod 600 ${tmp} && mv ${tmp} ${target}`,
-    );
+    const script = [
+      `tmp=$(mktemp ${tmpTemplate}) || exit 1`,
+      `trap 'rm -f "$tmp"' EXIT`,
+      `{ ${filters}; printf '%s\\n' ${lines}; } > "$tmp" || exit 1`,
+      `chmod 600 "$tmp" || exit 1`,
+      `mv "$tmp" ${target}`,
+    ].join('; ');
+    await this.shell(`flock -x -w 10 ${lock} sh -c ${shellQuote(script)}`);
   }
 
   /** 递归复制目录（cp -a + 剔除 exclude；opencode 经 /api/shell 执行） */

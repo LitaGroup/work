@@ -141,6 +141,42 @@ describe('EvalSandboxService 沙箱构建', () => {
     expect(clientMock.shell).not.toHaveBeenCalled();
   });
 
+  it('刷新凭据只覆盖 .env 与 MCP 配置，不复制工位', async () => {
+    const { client, clientMock } = createClient();
+
+    await createService().refreshCredentials(
+      client,
+      sandbox,
+      ExecutorType.OPENCODE,
+      {
+        ['lita-work']: {
+          type: 'remote',
+          url: 'http://work.example.com/api/mcp/work',
+          headers: { 'X-Worker-Token': 'new-eval-token' },
+        },
+      },
+      'new-eval-token',
+      'http://work.example.com',
+      true,
+    );
+
+    expect(clientMock.copyDir).not.toHaveBeenCalled();
+    expect(clientMock.upsertEnvFile).toHaveBeenCalledWith(
+      sandbox,
+      '.agents/.env',
+      {
+        LITA_WORK_TOKEN: 'new-eval-token',
+        LITA_PROJECT_TOKEN: 'new-eval-token',
+        LITA_APP_URL: 'http://work.example.com',
+      },
+    );
+    expect(clientMock.writeSecretFile).toHaveBeenCalledWith(
+      sandbox,
+      '.opencode/opencode.json',
+      expect.stringContaining('new-eval-token'),
+    );
+  });
+
   it('bridge 根目录只含单个工位时给出 BRIDGE_ROOT 提示', async () => {
     const { client, clientMock } = createClient(
       '/home/ecs-user/runtime/worker/1017',

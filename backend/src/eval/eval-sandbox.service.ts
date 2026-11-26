@@ -124,14 +124,39 @@ export class EvalSandboxService {
       exclude: SANDBOX_EXCLUDE_PATHS,
     });
     await client.ensureDir(`${sandbox}/${WORKER_DOCS_PATH}`);
-    // 2. 注入评估令牌与平台地址（LITA_WORK_TOKEN=评估令牌，评估沙箱内唯一身份）
+    // 2. 注入评估令牌与平台地址，并重建内核 MCP 配置
+    await this.refreshCredentials(
+      client,
+      sandbox,
+      executorType,
+      mcpServers,
+      evalToken,
+      appUrl,
+      denyExternalDirectory,
+    );
+    await client.ensureDir(`${sandbox}/home`);
+  }
+
+  /**
+   * 只刷新沙箱凭据与 MCP 配置，不复制工位、不清空 docs、不重建会话。
+   * 评估任务每次派发前调用：重签执行令牌后覆盖 .agents/.env 与当前内核 MCP 配置。
+   */
+  async refreshCredentials(
+    client: ExecutorClient,
+    sandbox: string,
+    executorType: ExecutorType | null | undefined,
+    mcpServers: Record<string, unknown>,
+    evalToken: string,
+    appUrl: string,
+    denyExternalDirectory: boolean,
+  ): Promise<void> {
     await client.ensureDir(`${sandbox}/${WORKER_AGENTS_DIR}`);
     await client.upsertEnvFile(sandbox, WORKER_ENV_PATH, {
       LITA_WORK_TOKEN: evalToken,
       LITA_PROJECT_TOKEN: evalToken,
       LITA_APP_URL: appUrl,
     });
-    // 3. MCP 配置（lita-work 指向评估令牌；自定义 MCP 按评估策略过滤后由调用方传入）
+    // lita-work 指向评估令牌；自定义 MCP 按评估策略过滤后由调用方传入
     await writeKernelMcpConfig(
       client,
       sandbox,
@@ -139,7 +164,6 @@ export class EvalSandboxService {
       mcpServers as never,
       { denyExternalDirectory },
     );
-    await client.ensureDir(`${sandbox}/home`);
   }
 
   /**

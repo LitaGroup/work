@@ -10,9 +10,11 @@ import {
   EvalItemResult,
   EvalItemStatus,
   EvalRunStatus,
+  ExecutorType,
   TaskStatus,
   TaskSubStatus,
 } from '../common/enums';
+import { EVAL_EXECUTION_TOKEN_TTL_MS } from './eval-token.service';
 
 /**
  * 并发占位测试桩：内存里的评估批次与评估项，
@@ -429,6 +431,110 @@ describe('评估项判定对账（判定中兜底）', () => {
     };
     await engine.startJudge({ id: 7, runId: 1 }, { id: 9 }, 1);
     expect(touched).toBe(false);
+  });
+});
+
+describe('评估任务派发前刷新执行凭据', () => {
+  function credentialEngine(itemStatus: EvalItemStatus) {
+    const engine = Object.create(EvalEngineService.prototype) as unknown as {
+      items: { findOne(query: unknown): Promise<unknown> };
+      runs: { findOne(query: unknown): Promise<unknown> };
+      workers: { findOne(query: unknown): Promise<unknown> };
+      sandbox: { refreshCredentials: jest.Mock };
+      token: { sign: jest.Mock };
+      appUrl: string;
+      denyExternalDirectory: boolean;
+      refreshExecutionCredentials(
+        task: unknown,
+        executor: unknown,
+        client: unknown,
+        workdir: string,
+      ): Promise<void>;
+    };
+    engine.items = {
+      findOne: () =>
+        Promise.resolve({
+          id: 227,
+          runId: 24,
+          status: itemStatus,
+        }),
+    };
+    engine.runs = {
+      findOne: () => Promise.resolve({ id: 24, mcpPolicy: null }),
+    };
+    engine.workers = {
+      findOne: () => Promise.resolve({ id: 1063, mcps: [] }),
+    };
+    engine.sandbox = {
+      refreshCredentials: jest.fn().mockResolvedValue(undefined),
+    };
+    engine.token = { sign: jest.fn().mockReturnValue('new-eval-token') };
+    engine.appUrl = 'http://work.example.com';
+    engine.denyExternalDirectory = true;
+    return { engine, sandbox: engine.sandbox, token: engine.token };
+  }
+
+  const task = {
+    id: 709,
+    isEval: true,
+    evalItemId: 227,
+    agentId: 1063,
+  };
+  const executor = { id: 1, type: ExecutorType.OPENCODE };
+  const client = { name: 'executor-client' };
+
+  it('每次派发重签 24 小时令牌并刷新 .env/MCP，不重建沙箱', async () => {
+    const { engine, sandbox, token } = credentialEngine(
+      EvalItemStatus.REWORKING,
+    );
+
+    await engine.refreshExecutionCredentials(
+      task,
+      executor,
+      client,
+      '/sandbox/24/227',
+    );
+
+    expect(token.sign).toHaveBeenCalledWith(
+      {
+        kind: 'eval',
+        workerId: 1063,
+        evalItemId: 227,
+        taskId: 709,
+        judge: false,
+      },
+      EVAL_EXECUTION_TOKEN_TTL_MS,
+    );
+    expect(sandbox.refreshCredentials).toHaveBeenCalledWith(
+      client,
+      '/sandbox/24/227',
+      ExecutorType.OPENCODE,
+      {
+        'lita-work': {
+          type: 'remote',
+          url: 'http://work.example.com/api/mcp/work',
+          oauth: false,
+          headers: { 'X-Worker-Token': 'new-eval-token' },
+        },
+      },
+      'new-eval-token',
+      'http://work.example.com',
+      true,
+    );
+  });
+
+  it('评估项已结束时拒绝刷新，避免继续派发', async () => {
+    const { engine, token } = credentialEngine(EvalItemStatus.DONE);
+
+    await expect(
+      engine.refreshExecutionCredentials(
+        task,
+        executor,
+        client,
+        '/sandbox/24/227',
+      ),
+    ).rejects.toThrow('评估项已结束');
+    expect(token.sign).not.toHaveBeenCalled();
   });
 });
 

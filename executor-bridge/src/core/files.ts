@@ -2,7 +2,16 @@
  * 结构化文件端点：令牌 / MCP 配置写入的唯一通道（bridge 不提供 shell）。
  * 路径安全：所有写入必须位于 BRIDGE_ROOT 内，拒绝越界。
  */
-import { cp, mkdir, readFile, rm, writeFile, chmod } from 'fs/promises';
+import { randomBytes } from 'crypto';
+import {
+  cp,
+  mkdir,
+  readFile,
+  rm,
+  writeFile,
+  chmod,
+  rename,
+} from 'fs/promises';
 import { dirname, relative, resolve, sep } from 'path';
 import { HttpError } from './sessions.js';
 
@@ -52,6 +61,8 @@ export interface RemoveFilesInput {
 
 export class FileOps {
   private readonly root: string;
+  /** env 文件写队列：同一路径的读-改-写串行执行，避免并发 upsert 丢更新 */
+  private readonly envWrites = new Map<string, Promise<unknown>>();
 
   constructor(root: string) {
     this.root = resolve(root);
@@ -88,6 +99,32 @@ export class FileOps {
     if (keys.length === 0) throw new HttpError(400, 'entries 不能为空');
     const directory = this.within(input.directory);
     const full = this.within(resolve(directory, input.path));
+    return this.serializeEnvWrite(full, () =>
+      this.upsertEnvFile(full, keys, input.entries),
+    );
+  }
+
+  /** 同一路径的 env 写入串行化；键使用解析后的绝对路径 */
+  private serializeEnvWrite<T>(
+    path: string,
+    task: () => Promise<T>,
+  ): Promise<T> {
+    const previous = this.envWrites.get(path) ?? Promise.resolve();
+    const run = previous
+      .catch(() => undefined)
+      .then(task);
+    this.envWrites.set(path, run);
+    return run.finally(() => {
+      if (this.envWrites.get(path) === run) this.envWrites.delete(path);
+    });
+  }
+
+  /** 读-改-写并原子替换；调用方保证同一路径已串行化 */
+  private async upsertEnvFile(
+    full: string,
+    keys: string[],
+    entries: Record<string, string>,
+  ): Promise<{ path: string }> {
     let existing = '';
     try {
       existing = await readFile(full, 'utf8');
@@ -102,12 +139,22 @@ export class FileOps {
         const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=/);
         return !(match && keySet.has(match[1] ?? ''));
       });
-    const appended = Object.entries(input.entries).map(
+    const appended = Object.entries(entries).map(
       ([key, value]) => `${key}=${value}`,
     );
     await mkdir(dirname(full), { recursive: true });
-    await writeFile(full, `${[...kept, ...appended].join('\n')}\n`, 'utf8');
-    await chmod(full, 0o600);
+    const tmp = `${full}.${randomBytes(8).toString('hex')}.tmp`;
+    try {
+      await writeFile(tmp, `${[...kept, ...appended].join('\n')}\n`, {
+        encoding: 'utf8',
+        mode: 0o600,
+      });
+      await chmod(tmp, 0o600);
+      await rename(tmp, full);
+    } catch (error) {
+      await rm(tmp, { force: true }).catch(() => undefined);
+      throw error;
+    }
     return { path: full };
   }
 

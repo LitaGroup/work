@@ -217,6 +217,19 @@ export class TaskDispatchService
   evalTurnFailedHook: ((task: Task, reason: string) => Promise<void>) | null =
     null;
 
+  /**
+   * 评估任务派发前的凭据刷新回调：由评估引擎在启动时注入，避免模块循环依赖。
+   * 每次邀约/返工/LOOP 恢复/继续对话前重签执行令牌并刷新沙箱，避免长时间运行后 401。
+   */
+  evalBeforeDispatchHook:
+    | ((
+        task: Task,
+        executor: Executor,
+        client: ExecutorClient,
+        workdir: string,
+      ) => Promise<void>)
+    | null = null;
+
   /** 启动时先对账一次：恢复执行中任务的事件流订阅并补推进漏收终态 */
   async onApplicationBootstrap(): Promise<void> {
     await this.reconcileExecuting().catch((error: Error) => {
@@ -443,9 +456,15 @@ export class TaskDispatchService
           : '未配置 WORKER_BASE_DIR，无法确定工位目录',
       );
     }
-    // 评估任务沙箱由评估引擎预建（含评估令牌与过滤后的 MCP 配置），
-    // 派发不再写真实工位的骨架/令牌/内核 MCP 配置，避免覆盖沙箱凭据。
     const client = createExecutorClient(executor);
+    if (task.isEval) {
+      // 评估任务沙箱由评估引擎预建；每次派发前重签执行令牌并覆盖凭据/MCP，
+      // 不写真实工位骨架，也不复制沙箱或重建会话。
+      if (!this.evalBeforeDispatchHook) {
+        throw new NotFoundException('评估任务凭据刷新未就绪，暂不可派发');
+      }
+      await this.evalBeforeDispatchHook(task, executor, client, workdir);
+    }
     this.dispatching.add(task.id);
     try {
       if (!task.isEval) {
