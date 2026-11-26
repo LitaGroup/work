@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Badge } from '@appica/ui-react/badge'
 import { MessageCircleQuestion } from '@appica/icons-react'
 import type {
@@ -316,7 +316,15 @@ export function TaskConversationView({
   )
 }
 
-function ConversationMessage({ message }: { message: TaskChatMessage }) {
+/**
+ * memo：流式更新时只有当前机器人消息对象会变，历史消息保持同一引用，
+ * 避免每次增量都重新解析全部历史 Markdown。
+ */
+const ConversationMessage = memo(function ConversationMessage({
+  message,
+}: {
+  message: TaskChatMessage
+}) {
   const isUser = message.role === 'user'
   const running = message.status === 'running'
   const content = message.content?.trim() ?? ''
@@ -363,7 +371,7 @@ function ConversationMessage({ message }: { message: TaskChatMessage }) {
       </div>
     </article>
   )
-}
+})
 
 /** 待回答提问：直接嵌入可交互卡片（选项 / 自由输入 / 跳过） */
 function PendingQuestionCard({
@@ -394,7 +402,7 @@ function PendingQuestionCard({
   )
 }
 
-function QuestionTimeline({
+const QuestionTimeline = memo(function QuestionTimeline({
   message,
   question,
 }: {
@@ -470,4 +478,4 @@ function QuestionTimeline({
       </div>
     </article>
   )
-}
+})

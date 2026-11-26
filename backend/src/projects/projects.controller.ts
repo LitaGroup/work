@@ -120,6 +120,12 @@ export class ProjectsController {
     return this.ticketsService.listByProject(id);
   }
 
+  /** 需求详情轻量视图：仅核心字段 + 文档清单（需求详情页使用，须声明在 :id 之前） */
+  @Get(':id/requirement')
+  findRequirement(@Param('id', ParseIntPipe) id: number): Promise<Project> {
+    return this.projectsService.findRequirementDetail(id);
+  }
+
   @Get(':id')
   findOne(@Param('id', ParseIntPipe) id: number): Promise<Project> {
     return this.projectsService.findOne(id);

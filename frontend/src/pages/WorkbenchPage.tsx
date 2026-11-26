@@ -40,6 +40,8 @@ export function WorkbenchPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [now, setNow] = useState(() => Date.now())
+  /** 左栏与概览共用的刷新节奏，避免各自维护定时器 */
+  const [refreshTick, setRefreshTick] = useState(0)
   /** 无 taskId 时展示概览（工作台默认落地页） */
   const selectedId = taskId ? Number(taskId) : null
 
@@ -61,8 +63,13 @@ export function WorkbenchPage() {
   }, [loadSummary])
 
   useEffect(() => {
-    // 操作台任务状态由多方推进，5s 轮询足够保持左栏动作提示
-    const timer = window.setInterval(() => void loadSummary(), 5_000)
+    // 操作台任务状态由多方推进，5s 轮询足够保持左栏动作提示；
+    // 标签页隐藏时暂停，恢复可见后由下一次 tick 自然对齐。
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== 'visible') return
+      void loadSummary()
+      setRefreshTick((value) => value + 1)
+    }, 5_000)
     return () => window.clearInterval(timer)
   }, [loadSummary])
 
@@ -255,7 +262,10 @@ export function WorkbenchPage() {
               onOpenTask={openRelatedTask}
             />
           ) : (
-            <WorkbenchOverview onOpenTask={selectTask} />
+            <WorkbenchOverview
+              onOpenTask={selectTask}
+              refreshToken={refreshTick}
+            />
           )}
         </div>
       </main>

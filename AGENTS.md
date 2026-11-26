@@ -144,6 +144,7 @@
 
 - 顶级分区「业务」（原「项目」）左侧只保留五个业务栏目：需求 `/requirements`、迭代 `/iterations`、灵感 `/ideas`、调研（占位，未启用）、反馈 `/feedback`；落地页 `/` 重定向到需求池，概览页仅保留 `/overview` 路由不挂导航。
 - 需求池复用项目实体（飞书需求池单向同步 + 平台内新建）。需求详情页为 `/requirements/{id}`，内容分区与 URL hash 一一对应：**详情**（`#details`，信息属性、需求摘要、需求描述三个纵向块，均可编辑）、**资料**（`#docs`，文档清单与新建/导入/按来源同步）、**讨论**（`#topics`，`TopicsPanel` 与迭代项「话题」一致并显示计数）、**操作**（`#ops`，仅删除需求）。迭代入口在标题右上角：存在未取消迭代项时「进入迭代」直达 `/backlogs/{id}`，否则管理员可见「移入迭代」（`TransferToIterationButton`）；需求状态为推导值，不可手动修改。不再展示任务/资源/节点/检查/测试/缺陷等研发过程数据，也没有「安排项目机器人」「提测」按钮（分别走 `POST /api/projects/{id}/delivery-task` 与迭代项详情提测）。需求不维护成员，只保留需求方（`projects.owner`），人员/成员统一由迭代项 `backlogs.members` 维护。
+- 需求详情页使用轻量 JSON 接口 `GET /api/projects/{id}/requirement`（核心字段 + 文档清单，不含检查/测试/缺陷/资源/节点等研发过程数据）；完整项目详情 `GET /api/projects/{id}` 保留给任务、运行等旧页面。
 - 需求 Agent 视图：`GET /api/requirements/{id}.md`（基本信息 + 对应迭代 + 文档资料 + 少量需求级 AI 操作）、`GET /api/requirements/search.md`、`POST /api/requirements/{id}/update.md`；旧 `/api/projects/{id}.md`、`/api/projects/search.md`、`/api/projects/{id}/update.md` 视图已下线。JSON 接口仍为 `/api/projects*`，提测入口为 `POST /api/backlogs/release[.md]`（旧的 `POST /api/projects/{id}/release[.md]` 已下线）。`/projects` 重定向到 `/requirements`，项目子路由（`/projects/:id/...`）保留；`/projects/:id` 详情路由已移除。
 - 研发类操作指南（脚本运行、节点、代码分支、提测、缺陷）随系统任务定义 ID=7 / ID=9 的说明下发给执行机器人（`system-task-templates.ts` 的 `DEVELOPMENT_OPERATION_GUIDE`），不再放在需求详情 .md 中。
 - 迭代独立建模（`iterations` + `backlogs`，见「迭代与 Backlog」）；`projects.iterationCycle` 仅保留为飞书同步的参考字段与需求筛选值（界面统一展示为「计划周(w)」，字段名不变），旧分组接口 `GET /api/projects/iterations` 不再作为迭代页数据源。
@@ -284,6 +285,7 @@
 - 工单交付文档独立存 `ticket_documents`，链接与正文两种形态互斥。只有来源任务当前执行机器人可写；交付文档不自动改变任务状态。
 - 历史工单的 `tickets.taskId` 和工作流节点任务都需兼容；旧 `ticket-route` 仅服务存量调度工单。
 - 节点拒绝/失败必须按当前节点和流转规则推进，不得仅修改展示状态。
+- 工单列表 `GET /api/tickets` 为轻量分页（`page`/`pageSize`，默认 20、上限 100，返回 `{items,total,page,pageSize}`），列表项不再加载工作流节点/边与运行明细；状态筛选在 SQL 侧按 `workflowStatus` 或关联任务推导后分页，避免逐条 `workflowView` 查询。详情 `GET /api/tickets/{id}` 保持完整视图。
 
 ### 模型配置与 AI 标题
 

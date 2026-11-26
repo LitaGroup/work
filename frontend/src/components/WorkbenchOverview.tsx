@@ -34,14 +34,19 @@ function roleOf(task: WorkbenchTask): string {
 /** 工作台概览：与我相关的全部任务，按创建时间倒序分页 */
 export function WorkbenchOverview({
   onOpenTask,
+  refreshToken = 0,
 }: {
   onOpenTask: (id: number) => void
+  /** 父级统一刷新节奏：变化即重新拉取当前页，不再单独维护定时器 */
+  refreshToken?: number
 }) {
   const [data, setData] = useState<WorkbenchOverviewPage | null>(null)
   const [page, setPage] = useState(1)
   const [error, setError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
+    // refreshToken 由父级定时器递增，仅用于触发当前页重新拉取
+    void refreshToken
     try {
       const result = await api.getWorkbenchTasks({ page, pageSize: PAGE_SIZE })
       // 当前页被清空时回退到有效页，避免停在不存在的分页
@@ -56,17 +61,11 @@ export function WorkbenchOverview({
     } catch (e) {
       setError((e as Error).message)
     }
-  }, [page])
+  }, [page, refreshToken])
 
   useEffect(() => {
     // oxlint-disable-next-line react/set-state-in-effect
     void load()
-  }, [load])
-
-  useEffect(() => {
-    // 与左栏任务清单同一节奏刷新，保持状态同步
-    const timer = window.setInterval(() => void load(), 5_000)
-    return () => window.clearInterval(timer)
   }, [load])
 
   const total = data?.total ?? 0

@@ -76,15 +76,7 @@ export function RobotChatPage() {
     // oxlint-disable-next-line react/set-state-in-effect
     setSnapshot(null)
     setSessionError(null)
-    api
-      .getWorkerChatSnapshot(selectedId)
-      .then((data) => {
-        if (seq === loadSeq.current) setSnapshot((current) => current ?? data)
-      })
-      .catch((error: Error) => {
-        if (seq === loadSeq.current) setSessionError(error.message)
-      })
-
+    // SSE 订阅成功后会先推送一次完整快照，不再额外拉取同一份快照接口
     const source = visibleEventSource(workerChatStreamUrl(selectedId))
     source.onopen = () => {
       if (seq === loadSeq.current) {

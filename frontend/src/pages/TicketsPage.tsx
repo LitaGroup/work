@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Badge } from '@appica/ui-react/badge'
-import { buttonVariants } from '@appica/ui-react/button'
+import { Button, buttonVariants } from '@appica/ui-react/button'
 import { Input } from '@appica/ui-react/input'
 import {
   Select,
@@ -46,6 +46,9 @@ const STATUS_ITEMS = {
   ...Object.fromEntries(TICKET_STATUSES.map((status) => [status, status])),
 }
 
+/** 工单列表每页条数（轻量分页，筛选与分页均由后端完成） */
+const PAGE_SIZE = 20
+
 interface TicketsPageProps {
   /** 指定工单配置时仅展示该配置下的工单（保留按配置进入的链接） */
   definitionId?: number
@@ -57,10 +60,16 @@ interface TicketsPageProps {
 export function TicketsPage({ definitionId, scope = 'all' }: TicketsPageProps) {
   const [definition, setDefinition] =
     useState<TicketWorkflowDefinitionDetail | null>(null)
-  const [tickets, setTickets] = useState<Ticket[] | null>(null)
+  const [tickets, setTickets] = useState<Ticket[]>([])
+  const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(1)
+  const [loaded, setLoaded] = useState(false)
+  const [loading, setLoading] = useState(false)
   const [keyword, setKeyword] = useState('')
   const [status, setStatus] = useState('all')
   const [error, setError] = useState<string | null>(null)
+  /** 丢弃过期分页响应，避免快速切换筛选时旧结果覆盖新结果 */
+  const requestSeq = useRef(0)
 
   useEffect(() => {
     if (!definitionId) return
@@ -81,6 +90,8 @@ export function TicketsPage({ definitionId, scope = 'all' }: TicketsPageProps) {
   const reload = useCallback(() => {
     const statusFilter = status === 'all' ? undefined : status
     const query = keyword.trim() || undefined
+    const seq = ++requestSeq.current
+    setLoading(true)
     // 工单配置页面只展示该配置下的工单，配置信息同时用于页面标题与「新建工单」入口
     const request = api.listTickets(
       definitionId
@@ -88,25 +99,53 @@ export function TicketsPage({ definitionId, scope = 'all' }: TicketsPageProps) {
             workflowDefinitionId: definitionId,
             status: statusFilter,
             q: query,
+            page,
+            pageSize: PAGE_SIZE,
           }
         : {
             scope: scope === 'mine' ? 'mine' : undefined,
             status: statusFilter,
             q: query,
+            page,
+            pageSize: PAGE_SIZE,
           },
     )
     request
-      .then((rows) => {
-        setTickets(rows)
+      .then((result) => {
+        if (seq !== requestSeq.current) return
+        const pageCount = Math.max(1, Math.ceil(result.total / PAGE_SIZE))
+        if (page > pageCount) {
+          setPage(pageCount)
+          return
+        }
+        setTickets(result.items)
+        setTotal(result.total)
+        setLoaded(true)
         setError(null)
       })
-      .catch((e: Error) => setError(e.message))
+      .catch((e: Error) => {
+        if (seq !== requestSeq.current) return
+        setLoaded(true)
+        setError(e.message)
+      })
+      .finally(() => {
+        if (seq === requestSeq.current) setLoading(false)
+      })
+  }, [definitionId, keyword, page, scope, status])
+
+  // 筛选条件变化后回到第一页，避免停留在超出范围的页码
+  useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect
+    setPage(1)
   }, [definitionId, keyword, scope, status])
 
   useEffect(() => {
     const timer = window.setTimeout(reload, 250)
     return () => window.clearTimeout(timer)
   }, [reload])
+
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  const currentPage = Math.min(page, pageCount)
 
   const basePath = definitionId ? `/tickets/wf/${definitionId}` : null
   const available = Boolean(definition?.enabled && definition.latestPublishedVersion)
@@ -196,7 +235,7 @@ export function TicketsPage({ definitionId, scope = 'all' }: TicketsPageProps) {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {(tickets ?? []).map((ticket) => (
+          {tickets.map((ticket) => (
             <TableRow key={ticket.id}>
               <TableCell className="text-center">
                 <Link
@@ -225,7 +264,7 @@ export function TicketsPage({ definitionId, scope = 'all' }: TicketsPageProps) {
               </TableCell>
             </TableRow>
           ))}
-          {tickets !== null && tickets.length === 0 && (
+          {loaded && tickets.length === 0 && (
             <TableRow>
               <TableCell colSpan={6} className="text-foreground-muted">
                 {emptyText}
@@ -234,6 +273,31 @@ export function TicketsPage({ definitionId, scope = 'all' }: TicketsPageProps) {
           )}
         </TableBody>
       </Table>
+
+      <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-foreground-muted">
+        <span>
+          共 {total} 条，第 {currentPage} / {pageCount} 页
+          {loading && ' · 加载中…'}
+        </span>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={currentPage <= 1 || loading}
+            onClick={() => setPage((value) => Math.max(1, value - 1))}
+          >
+            上一页
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={currentPage >= pageCount || loading}
+            onClick={() => setPage((value) => Math.min(pageCount, value + 1))}
+          >
+            下一页
+          </Button>
+        </div>
+      </div>
     </div>
   )
 }

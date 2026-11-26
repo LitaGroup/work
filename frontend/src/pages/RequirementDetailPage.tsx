@@ -111,8 +111,9 @@ export function RequirementDetailPage() {
 
   const reload = useCallback(() => {
     if (!Number.isInteger(projectId) || projectId <= 0) return
+    // 需求详情使用轻量接口：只取核心字段与文档清单，避免加载研发过程数据
     api
-      .getProject(projectId)
+      .getRequirement(projectId)
       .then(setProject)
       .catch((e: Error) => setError(e.message))
     api

@@ -618,6 +618,23 @@ export class ProjectsService {
   }
 
   /**
+   * 需求详情轻量视图（GET /projects/:id/requirement）：
+   * 只返回需求详情页需要的核心字段 + 文档清单（不含正文），
+   * 不再加载检查/测试/导出/缺陷/资源/节点/代码分支/提测/任务等工作台数据。
+   */
+  async findRequirementDetail(id: number): Promise<Project> {
+    const project = await this.projects.findOne({ where: { id } });
+    if (!project) throw new NotFoundException(`Project ${id} not found`);
+    // 文档列表不取正文大字段（正文在文档详情接口按需加载）
+    project.documents = await this.projects.manager.find(Document, {
+      where: { projectId: id },
+      select: DOCUMENT_LIST_SELECT,
+    });
+    await this.applyDerivedStatuses([project]);
+    return project;
+  }
+
+  /**
    * 项目 + 关联（文档/检查/测试/导出/任务/缺陷/资源/节点）。
    * 不用 relations 巨型 LEFT JOIN：测试 RDS 上该 JOIN 要 ~2.5s，
    * 拆成并行小查询仅 ~250ms（见 AGENTS.md 工作约定）。

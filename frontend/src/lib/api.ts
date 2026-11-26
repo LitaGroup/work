@@ -2221,6 +2221,14 @@ export interface Ticket {
   updatedAt: string
 }
 
+/** 工单列表分页结果：只含列表展示字段，不加载工作流运行视图 */
+export interface TicketListPage {
+  items: Ticket[]
+  total: number
+  page: number
+  pageSize: number
+}
+
 /** 工单工作流节点类型：起始 / 操作 / 审批 / 验收 / 判断 / 飞书群消息 */
 export const WORKFLOW_NODE_KINDS = [
   'start',
@@ -3240,6 +3248,8 @@ export const api = {
       body: JSON.stringify({ members }),
     }),
   getProject: (id: number) => request<Project>(`/projects/${id}`),
+  /** 需求详情轻量视图：核心字段 + 文档清单（不含研发过程数据） */
+  getRequirement: (id: number) => request<Project>(`/projects/${id}/requirement`),
   /** 需求相关工单（全部迭代项的提测工单 + 交付任务树关联工单） */
   listProjectTickets: (projectId: number) =>
     request<ProjectTicketSummary[]>(`/projects/${projectId}/tickets`),
@@ -4492,6 +4502,8 @@ export const api = {
     q?: string
     workflowDefinitionId?: number
     scope?: 'mine'
+    page?: number
+    pageSize?: number
   }) => {
     const qs = new URLSearchParams()
     if (params?.category) qs.set('category', params.category)
@@ -4500,8 +4512,10 @@ export const api = {
     if (params?.status) qs.set('status', params.status)
     if (params?.q) qs.set('q', params.q)
     if (params?.scope) qs.set('scope', params.scope)
+    if (params?.page) qs.set('page', String(params.page))
+    if (params?.pageSize) qs.set('pageSize', String(params.pageSize))
     const q = qs.toString()
-    return request<Ticket[]>(`/tickets${q ? `?${q}` : ''}`)
+    return request<TicketListPage>(`/tickets${q ? `?${q}` : ''}`)
   },
   /** 工单详情：工单 + 关联任务 + 工作流运行视图 */
   getTicket: (id: number) => request<Ticket>(`/tickets/${id}`),

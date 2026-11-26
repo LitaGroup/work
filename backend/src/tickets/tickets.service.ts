@@ -74,6 +74,34 @@ export interface TicketView extends Ticket {
   workflow?: Awaited<ReturnType<TicketWorkflowRuntimeService['workflowView']>>;
 }
 
+/** 工单列表轻量项：只带列表展示需要的字段，不加载工作流节点/边与运行明细 */
+export interface TicketListItem extends Ticket {
+  status: string;
+  task: Task | null;
+}
+
+export interface TicketListPage {
+  items: TicketListItem[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+export interface TicketListQuery {
+  category?: string;
+  status?: string;
+  q?: string;
+  workflowDefinitionId?: number;
+  /** 用户 ID：仅返回该用户参与的工单（「我的工单」） */
+  participantUserId?: number;
+  page?: number;
+  pageSize?: number;
+}
+
+/** 列表默认页大小与上限：避免一次拉回全部工单 */
+const TICKET_LIST_DEFAULT_PAGE_SIZE = 20;
+const TICKET_LIST_MAX_PAGE_SIZE = 100;
+
 function markdownText(value: string | null | undefined): string {
   return value?.trim() || '（暂无）';
 }
@@ -163,14 +191,12 @@ export class TicketsService {
     return rows.map((row) => row.id);
   }
 
-  async findAll(params: {
-    category?: string;
-    status?: string;
-    q?: string;
-    workflowDefinitionId?: number;
-    /** 用户 ID：仅返回该用户参与的工单（「我的工单」） */
-    participantUserId?: number;
-  }): Promise<TicketView[]> {
+  async findAll(params: TicketListQuery): Promise<TicketListPage> {
+    const page = Math.max(1, params.page ?? 1);
+    const pageSize = Math.min(
+      TICKET_LIST_MAX_PAGE_SIZE,
+      Math.max(1, params.pageSize ?? TICKET_LIST_DEFAULT_PAGE_SIZE),
+    );
     const qb = this.tickets.createQueryBuilder('t');
     if (params.participantUserId !== undefined) {
       const workerIds = await this.participantWorkerIds(
@@ -225,7 +251,9 @@ export class TicketsService {
       });
     } else if (params.category) {
       const category = findTicketCategory(params.category);
-      if (!category) return [];
+      if (!category) {
+        return { items: [], total: 0, page, pageSize };
+      }
       qb.andWhere('t.category = :category', { category });
     }
     const q = params.q?.trim().toLowerCase();
@@ -234,10 +262,39 @@ export class TicketsService {
         q: `%${q}%`,
       });
     }
-    const rows = await qb
+    // 状态在 SQL 侧推导后再过滤，保证分页 total 与筛选结果一致：
+    // 工作流工单取 workflowStatus；历史工单按关联任务主/子状态推导（见 deriveTicketStatus）。
+    const status = params.status?.trim();
+    if (status) {
+      qb.leftJoin(Task, 'statusTask', 'statusTask.id = t.taskId').andWhere(
+        `(CASE
+          WHEN t.workflowVersionId IS NOT NULL THEN COALESCE(t.workflowStatus, :statusProcessing)
+          WHEN statusTask.id IS NULL THEN :statusCanceled
+          WHEN statusTask.status = :taskFinished AND statusTask.subStatus = :taskCompleted THEN :statusCompleted
+          WHEN statusTask.status = :taskFinished AND statusTask.subStatus = :taskCanceled THEN :statusCanceled
+          WHEN statusTask.status = :taskFinished THEN :statusFailed
+          WHEN statusTask.status = :taskRunning THEN :statusProcessing
+          ELSE statusTask.subStatus
+        END) = :status`,
+        {
+          status,
+          statusProcessing: '处理中',
+          statusCompleted: '已完成',
+          statusFailed: '已失败',
+          statusCanceled: '已取消',
+          taskFinished: TaskStatus.FINISHED,
+          taskRunning: TaskStatus.RUNNING,
+          taskCompleted: TaskSubStatus.COMPLETED,
+          taskCanceled: TaskSubStatus.CANCELED,
+        },
+      );
+    }
+    const [rows, total] = await qb
       .orderBy('t.createdAt', 'DESC')
       .addOrderBy('t.id', 'DESC')
-      .getMany();
+      .skip((page - 1) * pageSize)
+      .take(pageSize)
+      .getManyAndCount();
     const tasks = rows.some((row) => row.taskId)
       ? await this.tasks.find({
           where: {
@@ -264,31 +321,21 @@ export class TicketsService {
         })
       : [];
     const agentById = new Map(agents.map((agent) => [agent.id, agent]));
-    const status = params.status?.trim();
-    const views = await Promise.all(
-      rows.map(async (ticket) => {
-        const task = ticket.taskId
-          ? (taskById.get(ticket.taskId) ?? null)
-          : null;
-        const agent = agentById.get(ticket.assigneeId);
-        const assigneeName =
-          agent?.personalAgentUserId && agent.ownerName
-            ? agent.ownerName
-            : ticket.assigneeName;
-        const workflow = ticket.workflowDefinitionId
-          ? await this.workflowRuntime.workflowView(ticket)
-          : null;
-        const workflowStatus = workflow?.status;
-        return {
-          ...ticket,
-          assigneeName,
-          task,
-          status: workflowStatus ?? deriveTicketStatus(task),
-          workflow,
-        };
-      }),
-    );
-    return views.filter((ticket) => !status || ticket.status === status);
+    // 列表不再逐条加载工作流运行视图（已按状态列/关联任务在 SQL 侧筛选）：
+    // 每条工单原本要额外 4 次查询，列表越大越慢。
+    const items: TicketListItem[] = rows.map((ticket) => {
+      const task = ticket.taskId ? (taskById.get(ticket.taskId) ?? null) : null;
+      const agent = agentById.get(ticket.assigneeId);
+      const assigneeName =
+        agent?.personalAgentUserId && agent.ownerName
+          ? agent.ownerName
+          : ticket.assigneeName;
+      const status = ticket.workflowVersionId
+        ? (ticket.workflowStatus ?? '处理中')
+        : deriveTicketStatus(task);
+      return { ...ticket, assigneeName, task, status };
+    });
+    return { items, total, page, pageSize };
   }
 
   /**

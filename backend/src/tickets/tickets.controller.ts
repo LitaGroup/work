@@ -54,6 +54,8 @@ export class TicketsController {
     @Query('q') q?: string,
     @Query('workflowDefinitionId') workflowDefinitionId?: string,
     @Query('scope') scope?: string,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
   ) {
     const definitionId = Number(workflowDefinitionId);
     const mine = scope?.trim() === 'mine';
@@ -69,6 +71,10 @@ export class TicketsController {
           ? definitionId
           : undefined,
       participantUserId: mine ? req.user?.id : undefined,
+      page: Number.isFinite(Number(page)) ? Number(page) : undefined,
+      pageSize: Number.isFinite(Number(pageSize))
+        ? Number(pageSize)
+        : undefined,
     });
   }
 

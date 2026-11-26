@@ -439,6 +439,11 @@ const POLL_MS = 1_000;
 /** 会话保留期：7 天不活跃才丢弃（重进页面仍复用原 opencode 会话） */
 const SESSION_TTL_MS = 7 * 24 * 60 * 60_000;
 const CLEANUP_MS = 10 * 60_000;
+/**
+ * 调试会话全量快照推送合并窗口：文本/思考增量事件很密集，
+ * 逐条推送会让前端反复重渲染整段对话；合并到 ~80ms 一帧更接近真实流式体验。
+ */
+const UPDATE_THROTTLE_MS = 80;
 
 /**
  * 机器人调试会话：每个「登录用户 + 机器人」固定绑定一个 opencode 会话。
@@ -455,6 +460,9 @@ export class WorkerDebugService implements OnModuleInit, OnModuleDestroy {
   private readonly persistQueues = new Map<string, Promise<void>>();
   /** 流式期间的落库防抖（最多每 2s 写一次，进程异常退出也能保留大部分内容） */
   private readonly persistTimers = new Map<string, NodeJS.Timeout>();
+  /** SSE 全量快照推送合并（会话 key → 定时器 / 最新待推送快照） */
+  private readonly updateTimers = new Map<string, NodeJS.Timeout>();
+  private readonly pendingUpdates = new Map<string, DebugSession>();
   private readonly cleanupTimer: NodeJS.Timeout;
   private sequence = 0;
   private offEvent: (() => void) | null = null;
@@ -1684,12 +1692,25 @@ export class WorkerDebugService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  /** 向该调试会话的所有 SSE 订阅者推送全量快照 */
+  /**
+   * 向该调试会话的所有 SSE 订阅者推送全量快照。
+   * 同一会话在同一窗口内的多次变更只推最新一次，避免增量事件把整段对话反复下发。
+   */
   private emitUpdate(session: DebugSession): void {
-    this.updates.emit(session.key, {
-      type: 'snapshot',
-      snapshot: this.toSnapshot(session),
-    } satisfies DebugStreamPayload);
+    this.pendingUpdates.set(session.key, session);
+    if (this.updateTimers.has(session.key)) return;
+    const timer = setTimeout(() => {
+      this.updateTimers.delete(session.key);
+      const latest = this.pendingUpdates.get(session.key);
+      this.pendingUpdates.delete(session.key);
+      if (!latest) return;
+      this.updates.emit(latest.key, {
+        type: 'snapshot',
+        snapshot: this.toSnapshot(latest),
+      } satisfies DebugStreamPayload);
+    }, UPDATE_THROTTLE_MS);
+    timer.unref?.();
+    this.updateTimers.set(session.key, timer);
   }
 
   /** 调试会话 SSE：订阅即推当前快照，后续变更实时推送，20s 心跳保活 */
@@ -2242,6 +2263,9 @@ export class WorkerDebugService implements OnModuleInit, OnModuleDestroy {
     this.sessions.clear();
     for (const timer of this.persistTimers.values()) clearTimeout(timer);
     this.persistTimers.clear();
+    for (const timer of this.updateTimers.values()) clearTimeout(timer);
+    this.updateTimers.clear();
+    this.pendingUpdates.clear();
     this.persistQueues.clear();
   }
 }

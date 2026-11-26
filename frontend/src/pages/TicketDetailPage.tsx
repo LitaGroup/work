@@ -162,25 +162,34 @@ export function TicketDetailPage() {
   const [handoffDoc, setHandoffDoc] = useState<TaskHandoffDocument | null>(null)
   const [documents, setDocuments] = useState<TaskDocumentsView | null>(null)
   const [reviewDoc, setReviewDoc] = useState<TaskDocumentContent | null>(null)
-  const [taskLoading, setTaskLoading] = useState(false)
+  /** 文档清单 / 复盘仅在有对应分区时按需加载 */
+  const [extrasLoading, setExtrasLoading] = useState(false)
+  const [extrasError, setExtrasError] = useState<string | null>(null)
+  const [extrasRevision, setExtrasRevision] = useState(0)
   const [taskError, setTaskError] = useState<string | null>(null)
   const [replying, setReplying] = useState(false)
 
+  const ticketSeq = useRef(0)
   const load = useCallback(async () => {
+    const seq = ++ticketSeq.current
     try {
       const row = await api.getTicket(id)
+      if (seq !== ticketSeq.current) return row
       setTicket(row)
       setError(null)
       return row
     } catch (e) {
-      setError((e as Error).message)
+      if (seq === ticketSeq.current) setError((e as Error).message)
       return null
     }
   }, [id])
 
   useEffect(() => {
     void load()
-    const timer = window.setInterval(() => void load(), 10_000)
+    // 主刷新走节点任务 SSE；这里只做低频兜底，并在标签页隐藏时暂停
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void load()
+    }, 30_000)
     return () => window.clearInterval(timer)
   }, [load])
 
@@ -276,34 +285,50 @@ export function TicketDetailPage() {
   const currentNodeTaskId = currentNodeRun?.taskId ?? null
 
   const taskSeq = useRef(0)
+  /** 核心数据：会话快照 + 交付文档 + 工作台角色（申请验收依赖交付文档，始终加载） */
   const loadTaskData = useCallback(async () => {
     if (!activeTaskId) return
     const seq = ++taskSeq.current
-    setTaskLoading(true)
     try {
-      const [chat, handoff, docs, review, workbench] = await Promise.all([
+      const [chat, handoff, workbench] = await Promise.all([
         api.getTaskChat(activeTaskId),
         api.getTaskHandoff(activeTaskId),
-        api.listTaskDocuments(activeTaskId),
-        api.getTaskReview(activeTaskId),
         api.getWorkbenchTask(activeTaskId).catch(() => null),
       ])
       if (seq !== taskSeq.current) return
       setTaskChat(chat)
       setHandoffDoc(handoff)
-      setDocuments(docs)
-      setReviewDoc(review)
       setWorkbenchTask(workbench?.id === activeTaskId ? workbench : null)
       setTaskError(null)
     } catch (e) {
       if (seq === taskSeq.current) setTaskError((e as Error).message)
+    }
+  }, [activeTaskId])
+
+  /** 文档清单 + 复盘：仅在「文档 / 复盘」分区按需加载 */
+  const extrasSeq = useRef(0)
+  const loadTaskExtras = useCallback(async () => {
+    if (!activeTaskId) return
+    const seq = ++extrasSeq.current
+    setExtrasLoading(true)
+    try {
+      const [docs, review] = await Promise.all([
+        api.listTaskDocuments(activeTaskId),
+        api.getTaskReview(activeTaskId),
+      ])
+      if (seq !== extrasSeq.current) return
+      setDocuments(docs)
+      setReviewDoc(review)
+      setExtrasError(null)
+    } catch (e) {
+      if (seq === extrasSeq.current) setExtrasError((e as Error).message)
     } finally {
-      if (seq === taskSeq.current) setTaskLoading(false)
+      if (seq === extrasSeq.current) setExtrasLoading(false)
     }
   }, [activeTaskId])
 
   useEffect(() => {
-    // 切换节点任务后丢弃旧任务的数据，重新拉取事件/任务树/文档/复盘
+    // 切换节点任务后丢弃旧任务的数据，重新拉取会话/交付文档/角色
     // oxlint-disable-next-line react/set-state-in-effect
     setTaskChat(null)
     // oxlint-disable-next-line react/set-state-in-effect
@@ -315,10 +340,26 @@ export function TicketDetailPage() {
     // oxlint-disable-next-line react/set-state-in-effect
     setReviewDoc(null)
     // oxlint-disable-next-line react/set-state-in-effect
+    setExtrasError(null)
+    // oxlint-disable-next-line react/set-state-in-effect
     setTaskError(null)
+    // 让仍在途的旧任务文档请求失效
+    extrasSeq.current += 1
     // oxlint-disable-next-line react/set-state-in-effect
     void loadTaskData()
   }, [loadTaskData])
+
+  /** 文档/复盘按 taskId + 刷新版本去重，避免切换分区重复请求 */
+  const needsTaskExtras =
+    contentTab === 'documents' || contentTab === 'review'
+  const extrasKey = activeTaskId ? `${activeTaskId}:${extrasRevision}` : null
+  const extrasSeenRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!activeTaskId || !needsTaskExtras || !extrasKey) return
+    if (extrasSeenRef.current === extrasKey) return
+    extrasSeenRef.current = extrasKey
+    void loadTaskExtras()
+  }, [activeTaskId, needsTaskExtras, extrasKey, loadTaskExtras])
 
   useEffect(() => {
     // 节点任务实时流：就绪/刷新重拉快照，消息与阶段增量就地合并
@@ -336,6 +377,8 @@ export function TicketDetailPage() {
       switch (data.type) {
         case 'ready':
           void loadTaskData()
+          // 文档/复盘尚未打开时只递增版本，进入分区后按需加载
+          setExtrasRevision((value) => value + 1)
           break
         case 'message.upsert':
           if (data.message.taskId !== activeTaskId) break
@@ -369,6 +412,7 @@ export function TicketDetailPage() {
           break
         case 'refresh':
           void loadTaskData()
+          setExtrasRevision((value) => value + 1)
           break
         default:
           // ping 仅保活
@@ -457,6 +501,7 @@ export function TicketDetailPage() {
           answers ? { answers } : { reject: true },
         )
         await loadTaskData()
+        setExtrasRevision((value) => value + 1)
       } finally {
         setReplying(false)
       }
@@ -470,6 +515,7 @@ export function TicketDetailPage() {
       if (!currentNodeTaskId) return
       await api.sendTaskMessage(currentNodeTaskId, content)
       await loadTaskData()
+      setExtrasRevision((value) => value + 1)
     },
     [currentNodeTaskId, loadTaskData],
   )
@@ -479,6 +525,7 @@ export function TicketDetailPage() {
     const row = await load()
     const nextTaskId = latestTaskId(row?.workflow)
     if (nextTaskId && nextTaskId === activeTaskId) await loadTaskData()
+    setExtrasRevision((value) => value + 1)
   }, [load, activeTaskId, loadTaskData])
 
   if (!ticket && error) {
@@ -934,8 +981,8 @@ export function TicketDetailPage() {
               (activeTaskId ? (
                 <TaskDocumentsPanel
                   data={documents}
-                  loading={taskLoading}
-                  error={taskError}
+                  loading={extrasLoading}
+                  error={extrasError}
                 />
               ) : (
                 <EmptyTabPanel text="暂无任务文档" />
@@ -952,8 +999,8 @@ export function TicketDetailPage() {
                       : null
                   }
                   content={reviewDoc?.content}
-                  loading={taskLoading && !reviewDoc}
-                  error={!reviewDoc ? taskError : null}
+                  loading={extrasLoading && !reviewDoc}
+                  error={!reviewDoc ? extrasError : null}
                   emptyText={
                     ticket.status === '已完成'
                       ? '该工单按工作流完成，未生成复盘文档'

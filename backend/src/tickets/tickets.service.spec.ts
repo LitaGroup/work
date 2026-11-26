@@ -253,9 +253,12 @@ describe('TicketsService', () => {
   it('查询我的工单时按参与身份过滤', async () => {
     const query = {
       andWhere: jest.fn().mockReturnThis(),
+      leftJoin: jest.fn().mockReturnThis(),
       orderBy: jest.fn().mockReturnThis(),
       addOrderBy: jest.fn().mockReturnThis(),
-      getMany: jest.fn().mockResolvedValue([]),
+      skip: jest.fn().mockReturnThis(),
+      take: jest.fn().mockReturnThis(),
+      getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
     };
     tickets.createQueryBuilder.mockReturnValue(query);
     workers.find.mockResolvedValue([{ id: 51 }, { id: 52 }]);
@@ -284,9 +287,12 @@ describe('TicketsService', () => {
   it('用户没有绑定机器人时仍按创建人和历史处理人过滤', async () => {
     const query = {
       andWhere: jest.fn().mockReturnThis(),
+      leftJoin: jest.fn().mockReturnThis(),
       orderBy: jest.fn().mockReturnThis(),
       addOrderBy: jest.fn().mockReturnThis(),
-      getMany: jest.fn().mockResolvedValue([]),
+      skip: jest.fn().mockReturnThis(),
+      take: jest.fn().mockReturnThis(),
+      getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
     };
     tickets.createQueryBuilder.mockReturnValue(query);
 
@@ -304,16 +310,41 @@ describe('TicketsService', () => {
   it('未知工单类别筛选直接返回空列表', async () => {
     const query = {
       andWhere: jest.fn().mockReturnThis(),
+      leftJoin: jest.fn().mockReturnThis(),
       orderBy: jest.fn().mockReturnThis(),
       addOrderBy: jest.fn().mockReturnThis(),
-      getMany: jest.fn().mockResolvedValue([]),
+      skip: jest.fn().mockReturnThis(),
+      take: jest.fn().mockReturnThis(),
+      getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
     };
     tickets.createQueryBuilder.mockReturnValue(query);
 
-    const rows = await service.findAll({ category: '不存在的工单' });
+    const page = await service.findAll({ category: '不存在的工单' });
 
-    expect(rows).toEqual([]);
+    expect(page.items).toEqual([]);
+    expect(page.total).toBe(0);
     expect(query.andWhere).not.toHaveBeenCalled();
+  });
+
+  it('列表按页返回并限制页大小', async () => {
+    const query = {
+      andWhere: jest.fn().mockReturnThis(),
+      leftJoin: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      addOrderBy: jest.fn().mockReturnThis(),
+      skip: jest.fn().mockReturnThis(),
+      take: jest.fn().mockReturnThis(),
+      getManyAndCount: jest.fn().mockResolvedValue([[], 987]),
+    };
+    tickets.createQueryBuilder.mockReturnValue(query);
+
+    const page = await service.findAll({ page: 3, pageSize: 999 });
+
+    expect(query.skip).toHaveBeenCalledWith(200);
+    expect(query.take).toHaveBeenCalledWith(100);
+    expect(page.total).toBe(987);
+    expect(page.page).toBe(3);
+    expect(page.pageSize).toBe(100);
   });
 
   it('按需求聚合相关工单：迭代项提测工单与交付任务树工单去重后按更新时间倒序', async () => {

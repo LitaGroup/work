@@ -163,14 +163,7 @@ export function DetailAgentPanel({
     let closed = false
     setSnapshot(null)
     setError(null)
-    api
-      .getWorkbenchAgentSnapshot(taskId, context)
-      .then((data) => {
-        if (!closed) setSnapshot(data)
-      })
-      .catch((e: Error) => {
-        if (!closed) setError(e.message)
-      })
+    // SSE 订阅成功后会先推送一次完整快照，不再额外拉取同一份快照接口
     const source = visibleEventSource(workbenchAgentStreamUrl(taskId, context))
     source.onopen = () => {
       if (!closed) setError(null)

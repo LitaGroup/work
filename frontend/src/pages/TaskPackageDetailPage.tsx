@@ -150,8 +150,13 @@ export function TaskDetailView({
   const [documents, setDocuments] = useState<TaskDocumentsView | null>(null)
   const [docsLoading, setDocsLoading] = useState(true)
   const [docsError, setDocsError] = useState<string | null>(null)
+  /** 文档清单 / 复盘仅在有对应分区时按需加载 */
+  const [extrasLoading, setExtrasLoading] = useState(false)
+  const [extrasError, setExtrasError] = useState<string | null>(null)
   /** 文档写入（交付/复盘/普通文档）后由任务 SSE 递增，驱动只读预览刷新 */
   const [docsRevision, setDocsRevision] = useState(0)
+  /** 按需数据（文档清单 / 复盘）的刷新版本，独立于交付文档 */
+  const [extrasRevision, setExtrasRevision] = useState(0)
   const [collaborationOpen, setCollaborationOpen] = useState(false)
   const [collaborationUnread, setCollaborationUnread] = useState(0)
   const [handoffEditing, setHandoffEditing] = useState(false)
@@ -300,23 +305,17 @@ export function TaskDetailView({
     void loadWorkbenchTask()
   }, [load, loadWorkbenchTask])
 
-  /** 任务文档数据：交付 / 复盘 / 文档清单；SSE 文档刷新时整体重读 */
+  /** 交付文档：申请验收依赖当前版本，首屏与刷新时始终读取（单个小请求） */
   const docsSeq = useRef(0)
-  const loadTaskDocuments = useCallback(async () => {
+  const loadHandoffDoc = useCallback(async () => {
     const seq = ++docsSeq.current
     setDocsLoading(true)
     try {
-      const [handoff, review, documentList] = await Promise.all([
-        api.getTaskHandoff(taskId),
-        api.getTaskReview(taskId),
-        api.listTaskDocuments(taskId),
-      ])
+      const handoff = await api.getTaskHandoff(taskId)
       if (seq !== docsSeq.current) return
       setHandoffDoc((current) =>
         handoffEditingRef.current && current ? current : handoff,
       )
-      setReviewDoc(review)
-      setDocuments(documentList)
       setDocsError(null)
     } catch (e) {
       if (seq === docsSeq.current) setDocsError((e as Error).message)
@@ -325,21 +324,75 @@ export function TaskDetailView({
     }
   }, [taskId])
 
+  const loadHandoffRef = useRef(loadHandoffDoc)
   useEffect(() => {
-    // 打开详情及每次文档变更事件后重读任务文档
-    // oxlint-disable-next-line react/set-state-in-effect
-    void loadTaskDocuments()
-  }, [loadTaskDocuments, docsRevision])
+    loadHandoffRef.current = loadHandoffDoc
+  }, [loadHandoffDoc])
 
-  /** 会话发送、答复提问或助理回合结束后同步刷新任务、角色与文档 */
+  useEffect(() => {
+    // 打开详情及每次交付文档变更事件后重读交付文档
+    // oxlint-disable-next-line react/set-state-in-effect
+    void loadHandoffDoc()
+  }, [loadHandoffDoc, docsRevision])
+
+  /** 文档清单与复盘：仅进入「文档 / 复盘」分区时按需加载 */
+  const extrasSeq = useRef(0)
+  const loadTaskExtras = useCallback(async () => {
+    const seq = ++extrasSeq.current
+    setExtrasLoading(true)
+    try {
+      const [review, documentList] = await Promise.all([
+        api.getTaskReview(taskId),
+        api.listTaskDocuments(taskId),
+      ])
+      if (seq !== extrasSeq.current) return
+      setReviewDoc(review)
+      setDocuments(documentList)
+      setExtrasError(null)
+    } catch (e) {
+      if (seq === extrasSeq.current) setExtrasError((e as Error).message)
+    } finally {
+      if (seq === extrasSeq.current) setExtrasLoading(false)
+    }
+  }, [taskId])
+
+  const needsTaskExtras =
+    contentTab === 'documents' || contentTab === 'review'
+  /** 以任务 + 刷新版本去重：切换任务必须重读，离开再回来不重复请求 */
+  const extrasKey = `${taskId}:${extrasRevision}`
+  const extrasRevisionSeen = useRef<string | null>(null)
+
+  useEffect(() => {
+    // 切换任务后丢弃按需数据，并让仍在途的旧请求失效
+    extrasSeq.current += 1
+    extrasRevisionSeen.current = null
+    // oxlint-disable-next-line react/set-state-in-effect
+    setDocuments(null)
+    // oxlint-disable-next-line react/set-state-in-effect
+    setReviewDoc(null)
+    // oxlint-disable-next-line react/set-state-in-effect
+    setExtrasError(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskId])
+
+  useEffect(() => {
+    if (!needsTaskExtras) return
+    if (extrasRevisionSeen.current === extrasKey) return
+    extrasRevisionSeen.current = extrasKey
+    void loadTaskExtras()
+  }, [needsTaskExtras, extrasKey, loadTaskExtras])
+
+  /** 会话发送、答复提问或助理回合结束后同步刷新任务、角色与交付文档 */
   const refreshTaskPanel = useCallback(async () => {
     await Promise.all([
       loadRef.current(),
       loadWorkbenchTaskRef.current(),
-      loadTaskDocuments(),
+      loadHandoffRef.current(),
     ])
+    // 文档清单/复盘在使用中时随任务刷新，未打开对应分区则等进入时再加载
+    setExtrasRevision((value) => value + 1)
     await onTaskChangeRef.current?.()
-  }, [loadTaskDocuments])
+  }, [])
 
   /** 工作台维护交付文档：保存时以读取到的版本为基准，版本冲突由后端返回 409 */
   const saveHandoff = useCallback(async () => {
@@ -364,8 +417,8 @@ export function TaskDetailView({
       setHandoffDoc(document)
       setHandoffEditing(false)
       await Promise.all([loadRef.current(), loadWorkbenchTaskRef.current()])
-      // 编辑态引用会在下一次渲染后更新，此处触发文档重读以同步文档 Tab 与状态
-      setDocsRevision((value) => value + 1)
+      // 保存响应已带回最新交付文档；同步刷新文档清单（若已打开）
+      setExtrasRevision((value) => value + 1)
       await onTaskChangeRef.current?.()
     } catch (error) {
       setHandoffError((error as Error).message)
@@ -413,6 +466,7 @@ export function TaskDetailView({
             void loadRef.current()
             void loadWorkbenchTaskRef.current()
             setDocsRevision((value) => value + 1)
+            setExtrasRevision((value) => value + 1)
           }
           break
         case 'message.upsert':
@@ -436,8 +490,9 @@ export function TaskDetailView({
             refreshTimer = undefined
             void loadRef.current()
             void loadWorkbenchTaskRef.current()
-            // 文档、交付、复盘与任务详情共用同一个刷新信号
+            // 交付文档与按需数据（文档清单/复盘）共用同一个刷新信号
             setDocsRevision((value) => value + 1)
+            setExtrasRevision((value) => value + 1)
           }, 120)
           break
         default:
@@ -858,8 +913,8 @@ export function TaskDetailView({
             {contentTab === 'documents' && (
               <TaskDocumentsPanel
                 data={documents}
-                loading={docsLoading}
-                error={docsError}
+                loading={extrasLoading}
+                error={extrasError}
               />
             )}
 
@@ -887,8 +942,8 @@ export function TaskDetailView({
                     : null
                 }
                 content={reviewDoc?.content}
-                loading={docsLoading && !reviewDoc}
-                error={!reviewDoc ? docsError : null}
+                loading={extrasLoading && !reviewDoc}
+                error={!reviewDoc ? extrasError : null}
                 emptyText={
                   currentTask.status === '已结束' &&
                   currentTask.subStatus === '完成'

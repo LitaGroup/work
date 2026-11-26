@@ -1,5 +1,6 @@
 import {
   isValidElement,
+  memo,
   type ComponentPropsWithoutRef,
   type ReactNode,
 } from 'react'
@@ -60,8 +61,10 @@ const MARKDOWN_COMPONENTS = {
 /**
  * 通用 Markdown 只读渲染（GFM + Mermaid）。
  * 聊天、任务信息、项目描述、提测内容与测试运行报告共用同一套排版和代码块行为。
+ *
+ * memo：流式对话每次只有一条消息内容变化，历史消息不应重新解析 Markdown。
  */
-export function MarkdownViewer({
+export const MarkdownViewer = memo(function MarkdownViewer({
   text,
   className,
 }: {
@@ -84,4 +87,4 @@ export function MarkdownViewer({
       </ReactMarkdown>
     </div>
   )
-}
+})
