@@ -11,10 +11,12 @@ import { mdFrontmatter } from '../common/frontmatter';
 import { KnowledgeEmbeddingService } from './knowledge-embedding.service';
 import {
   encodeKnowledgePath,
+  isSystemKnowledgeRoot,
+  isSystemManagedKnowledgePath,
   normalizeKnowledgePath,
-  projectDocumentPath,
 } from './knowledge.path';
 import { KnowledgeStore } from './knowledge.store';
+import { assertSystemRootMetadataChange } from './system-knowledge.guard';
 import type {
   ExternalKnowledgeSource,
   KnowledgeDirectory,
@@ -79,27 +81,52 @@ export class KnowledgeService {
     return node;
   }
 
-  async readDirectory(path: string): Promise<KnowledgeDirectory> {
+  /** 读取节点；旧系统路径通过迁移别名定位到当前节点 */
+  private async findNodeForRead(path: string): Promise<KnowledgeNode | null> {
+    const node = await this.store.getByPath(path);
+    if (node) return node;
+    const target = await this.store.resolvePathAlias(path);
+    return target ? this.store.getByPath(target) : null;
+  }
+
+  async readDirectory(
+    path: string,
+    options: { excludePaths?: string[] } = {},
+  ): Promise<KnowledgeDirectory> {
     this.assertEnabled();
     const normalized = this.normalize(path);
     let title = '知识库';
+    let actualPath = normalized;
     if (normalized !== '/') {
-      const node = await this.store.getByPath(normalized);
+      const node = await this.findNodeForRead(normalized);
       if (!node) throw new NotFoundException(`目录 ${normalized} 不存在`);
       if (node.kind !== 'directory') {
         throw new NotFoundException(`${normalized} 是文章，不是目录`);
       }
       title = node.title;
+      actualPath = node.path ?? normalized;
     }
-    const directory = await this.store.listChildren(normalized);
-    return { ...directory, title };
+    const directory = await this.store.listChildren(actualPath);
+    const excluded = (options.excludePaths ?? []).map(
+      (entry) => normalizeKnowledgePath(entry).path,
+    );
+    const allowed = (nodePath: string): boolean =>
+      !excluded.some(
+        (prefix) => nodePath === prefix || nodePath.startsWith(`${prefix}/`),
+      );
+    return {
+      ...directory,
+      title,
+      directories: directory.directories.filter((node) => allowed(node.path)),
+      articles: directory.articles.filter((node) => allowed(node.path)),
+    };
   }
 
   async readArticle(path: string): Promise<KnowledgeNode> {
     this.assertEnabled();
     const normalized = this.normalize(path);
     if (normalized === '/') throw new NotFoundException('根路径是目录');
-    const node = await this.store.getByPath(normalized);
+    const node = await this.findNodeForRead(normalized);
     if (!node) throw new NotFoundException(`文章 ${normalized} 不存在`);
     if (node.kind !== 'article') {
       throw new NotFoundException(`${normalized} 是目录，不是文章`);
@@ -132,10 +159,22 @@ export class KnowledgeService {
     return this.store.listArticlesByPrefix(this.normalize(prefix));
   }
 
-  /** 自底向上删除指定前缀下已无子节点的原生空目录 */
-  async pruneEmptyDirectories(prefix: string): Promise<number> {
+  /** 列出任意来源的目录和文章（系统路径迁移用） */
+  async listNodesByPrefix(prefix: string): Promise<KnowledgeNode[]> {
     this.assertEnabled();
-    return this.store.deleteEmptyDirectoriesUnder(this.normalize(prefix));
+    return this.store.listNodesByPrefix(this.normalize(prefix));
+  }
+
+  /** 自底向上删除指定前缀下已无子节点的原生空目录 */
+  async pruneEmptyDirectories(
+    prefix: string,
+    includeSystem = false,
+  ): Promise<number> {
+    this.assertEnabled();
+    return this.store.deleteEmptyDirectoriesUnder(
+      this.normalize(prefix),
+      includeSystem,
+    );
   }
 
   async create(input: {
@@ -281,7 +320,7 @@ export class KnowledgeService {
     this.assertEnabled();
     const path = this.normalize(input.path);
     if (path === '/') throw new BadRequestException('不能创建根目录');
-    this.assertNativePath(path);
+    // 仅供任务中心等平台内部归档使用；通用知识写接口已在 controller/MCP 层拦截。
     try {
       return await this.store.createNode({
         kind: 'article',
@@ -318,6 +357,23 @@ export class KnowledgeService {
       );
     }
     const current = await this.getNodeById(id);
+    if (isSystemKnowledgeRoot(current.path) && current.kind === 'directory') {
+      assertSystemRootMetadataChange({
+        path: current.path,
+        title: input.title,
+        content: input.content,
+        name: input.name,
+        parentPath: input.parentPath,
+      });
+      if (input.title === undefined) {
+        throw new BadRequestException('至少提供 title');
+      }
+      try {
+        return await this.store.updateSystemDirectoryTitle(id, input.title);
+      } catch (error) {
+        throw this.storeError(error);
+      }
+    }
     if (current.source !== 'native') {
       throw new ForbiddenException('项目同步或系统知识为只读');
     }
@@ -344,6 +400,9 @@ export class KnowledgeService {
   async remove(id: string, recursive = false): Promise<void> {
     this.assertEnabled();
     const node = await this.getNodeById(id);
+    if (isSystemKnowledgeRoot(node.path)) {
+      throw new ForbiddenException('系统级目录不能删除');
+    }
     if (
       node.source !== 'native' &&
       node.source !== 'feishu' &&
@@ -359,9 +418,76 @@ export class KnowledgeService {
   }
 
   private assertNativePath(path: string): void {
-    if (path === '/project' || path.startsWith('/project/')) {
-      throw new ForbiddenException('/project 为项目文档保留路径，不能手工维护');
+    if (isSystemManagedKnowledgePath(path)) {
+      throw new ForbiddenException(
+        '系统知识目录由对应业务流程维护，不能手工写入或移动',
+      );
     }
+  }
+
+  /** 平台系统配置镜像写入（仅内部调用，不经过通用知识写接口） */
+  async upsertSystemArticle(input: {
+    path: string;
+    title: string;
+    content: string;
+  }): Promise<KnowledgeNode> {
+    this.assertEnabled();
+    return this.store.upsertSystemArticle(input);
+  }
+
+  async removeSystemPath(path: string): Promise<number> {
+    this.assertEnabled();
+    return this.store.removeSystemPath(path);
+  }
+
+  async recordPathAliases(
+    aliases: Array<{ oldPath: string; targetPath: string }>,
+  ): Promise<void> {
+    this.assertEnabled();
+    await this.store.recordPathAliases(aliases);
+  }
+
+  /**
+   * 迁移专用更新：允许平台把历史原生文档收敛到新的系统路径。
+   * 只能由启动迁移流程调用，通用知识接口仍由 guard 拦截。
+   */
+  async updateNodeForSystemMigration(
+    id: string,
+    input: {
+      title?: string;
+      content?: string;
+      name?: string;
+      parentPath?: string;
+    },
+  ): Promise<KnowledgeNode> {
+    this.assertEnabled();
+    return this.store.updateNode(id, input);
+  }
+
+  /** 迁移专用：移动整棵子树并记录旧路径别名 */
+  async moveSystemSubtree(
+    nodeId: string,
+    newPath: string,
+    oldPaths: string[],
+  ): Promise<KnowledgeNode> {
+    this.assertEnabled();
+    const node = await this.getNodeById(nodeId);
+    if (!node) throw new NotFoundException('待迁移知识节点不存在');
+    const normalizedTarget = normalizeKnowledgePath(newPath).path;
+    const aliases = oldPaths.map((oldPath) => {
+      const normalized = normalizeKnowledgePath(oldPath).path;
+      const prefix = node.path;
+      return {
+        oldPath: normalized,
+        targetPath:
+          normalized === prefix
+            ? normalizedTarget
+            : `${normalizedTarget}${normalized.slice(prefix.length)}`,
+      };
+    });
+    // 先记录重定向再搬内容：搬家中断时旧节点仍可读，重试也不会丢失别名
+    await this.store.recordPathAliases(aliases);
+    return this.store.moveNode(nodeId, normalizedTarget);
   }
 
   private storeError(error: unknown): Error {
@@ -383,6 +509,7 @@ export class KnowledgeService {
   /** 项目文档同步入口；知识库未配置时返回 false，由文档模块保持 业务库兼容存储 */
   async upsertProjectDocument(input: {
     projectId: number;
+    projectCreatedAt: Date | string;
     documentId: number;
     title: string;
     content: string;
@@ -410,21 +537,23 @@ export class KnowledgeService {
     return this.store.isProjectDocumentUnchanged(documentId, title, content);
   }
 
-  async removeProject(projectId: number): Promise<void> {
+  async removeProject(input: {
+    id: number;
+    createdAt: Date | string;
+  }): Promise<void> {
     if (!this.store.isEnabled) return;
-    await this.store.deleteProject(projectId);
+    await this.store.deleteProject(input);
   }
 
   async getProjectDocument(
-    projectId: number,
+    _projectId: number,
     documentId: number,
   ): Promise<KnowledgeNode | null> {
     if (!this.store.isEnabled) return null;
-    return this.store.getByPath(projectDocumentPath(projectId, documentId));
+    return this.store.getProjectDocumentBySourceId(documentId);
   }
 
-  projectDocumentMdUrl(projectId: number, documentId: number): string {
-    const path = projectDocumentPath(projectId, documentId);
+  projectDocumentMdUrl(path: string): string {
     return `/api/docs/detail${encodeKnowledgePath(path)}.md`;
   }
 
@@ -434,6 +563,7 @@ export class KnowledgeService {
     path?: string;
     page?: number;
     pageSize?: number;
+    excludePaths?: string[];
   }): Promise<KnowledgeSearchResponse> {
     const source = input.source ?? 'project';
     if (source !== 'project') {
@@ -481,6 +611,7 @@ export class KnowledgeService {
       offset,
       limit: pageSize,
       queryVector,
+      excludePaths: input.excludePaths,
     });
     return {
       query: q,
@@ -500,8 +631,11 @@ export class KnowledgeService {
     };
   }
 
-  async renderDirectoryMarkdown(path: string): Promise<string> {
-    const dir = await this.readDirectory(path);
+  async renderDirectoryMarkdown(
+    path: string,
+    options: { excludePaths?: string[] } = {},
+  ): Promise<string> {
+    const dir = await this.readDirectory(path, options);
     const encoded = encodeKnowledgePath(dir.path);
     const uiBase = encoded ? `/docs/detail/${encoded}` : '/docs/detail';
     const crumbs: string[] = [];
@@ -554,7 +688,7 @@ export class KnowledgeService {
     // 任务交付文档由平台维护自己的 Frontmatter（含版本号）：
     // 已自带 update 时不再重复前置一层，否则 AI 读到的会是两段 Frontmatter。
     if (
-      node.path.startsWith('/task/') &&
+      (node.path.startsWith('/task/') || node.path.startsWith('/98-tasks/')) &&
       /^---\r?\n(?=[\s\S]*?^update:\s*")[\s\S]*?\r?\n---(?:\r?\n|$)/m.test(
         content,
       )
@@ -608,7 +742,7 @@ export class KnowledgeService {
           ]
         : []),
       '',
-      '> 项目同步知识位于 /project/**，只读，不能通过上述接口修改或删除。',
+      '> `/01-backlogs/**`、`/98-tasks/**` 与 `/99-system/**` 的受管内容由业务流程维护，只读，不能通过上述接口修改或删除。',
       '',
     ].join('\n');
   }
@@ -655,7 +789,7 @@ export class KnowledgeService {
         ? [`- 递归删除：${recursive ? '是' : '否'}`]
         : []),
       '',
-      '> 删除不可恢复；项目同步知识不会被此接口删除。',
+      '> 删除不可恢复；系统知识与系统级目录不会被此接口删除。',
       '',
     ].join('\n');
   }

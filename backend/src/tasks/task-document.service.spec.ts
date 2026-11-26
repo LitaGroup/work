@@ -74,8 +74,12 @@ describe('TaskDocumentService 任务文档', () => {
     findNodeByPath: jest.Mock;
     createArticleAtPath: jest.Mock;
     update: jest.Mock;
+    updateNodeForSystemMigration: jest.Mock;
     remove: jest.Mock;
     listArticlesByPrefix: jest.Mock;
+    listNodesByPrefix: jest.Mock;
+    moveSystemSubtree: jest.Mock;
+    recordPathAliases: jest.Mock;
     pruneEmptyDirectories: jest.Mock;
   };
   let service: TaskDocumentService;
@@ -117,8 +121,22 @@ describe('TaskDocumentService 任务文档', () => {
               ),
             ),
         ),
+      updateNodeForSystemMigration: jest
+        .fn()
+        .mockImplementation(
+          (id: string, patch: { content?: string; title?: string }) =>
+            Promise.resolve(
+              node(
+                id.startsWith('node:') ? id.slice(5) : id,
+                patch.content ?? '',
+              ),
+            ),
+        ),
       remove: jest.fn().mockResolvedValue(undefined),
       listArticlesByPrefix: jest.fn().mockResolvedValue([]),
+      listNodesByPrefix: jest.fn().mockResolvedValue([]),
+      moveSystemSubtree: jest.fn().mockResolvedValue({}),
+      recordPathAliases: jest.fn().mockResolvedValue(undefined),
       pruneEmptyDirectories: jest.fn().mockResolvedValue(0),
     };
     service = new TaskDocumentService(
@@ -133,8 +151,8 @@ describe('TaskDocumentService 任务文档', () => {
     const result = await service.readHandoff(currentTask);
 
     expect(result.exists).toBe(false);
-    expect(result.path).toBe('/task/20261028/TK-0001/HANDOFF');
-    expect(result.url).toBe('/docs/detail/task/20261028/TK-0001/HANDOFF');
+    expect(result.path).toBe('/98-tasks/20261028/1/HANDOFF');
+    expect(result.url).toBe('/docs/detail/98-tasks/20261028/1/HANDOFF');
     expect(result.version).toBe(0);
     expect(result.content).toBe('');
     expect(knowledge.createArticleAtPath).not.toHaveBeenCalled();
@@ -154,12 +172,12 @@ describe('TaskDocumentService 任务文档', () => {
     expect(result.document.content).toContain('开始处理');
     expect(knowledge.createArticleAtPath).toHaveBeenCalledWith(
       expect.objectContaining({
-        path: '/task/20261028/TK-0001/HANDOFF',
+        path: '/98-tasks/20261028/1/HANDOFF',
         title: 'TK-0001 活动页开发 · 任务交付文档',
         content: expect.stringContaining('version: "1"') as string,
       }),
     );
-    expect(currentTask.handoffPath).toBe('/task/20261028/TK-0001/HANDOFF');
+    expect(currentTask.handoffPath).toBe('/98-tasks/20261028/1/HANDOFF');
     expect(currentTask.handoffVersion).toBe(1);
   });
 
@@ -175,7 +193,7 @@ describe('TaskDocumentService 任务文档', () => {
   });
 
   it('机器人提交完整正文时平台递增版本并覆盖 Frontmatter', async () => {
-    const path = '/task/20261028/TK-0001/HANDOFF';
+    const path = '/98-tasks/20261028/1/HANDOFF';
     currentTask = task({
       handoffPath: path,
       handoffVersion: 2,
@@ -209,7 +227,7 @@ describe('TaskDocumentService 任务文档', () => {
   });
 
   it('append 模式在保留现有正文的基础上追加进展', async () => {
-    const path = '/task/20261028/TK-0001/HANDOFF';
+    const path = '/98-tasks/20261028/1/HANDOFF';
     currentTask = task({ handoffPath: path, handoffVersion: 2 });
     knowledge.findNodeByPath.mockResolvedValue(
       node(path, '---\nversion: "2"\n---\n\n# 交付\n\n已完成登录页'),
@@ -228,7 +246,7 @@ describe('TaskDocumentService 任务文档', () => {
   });
 
   it('正文没有变化时不递增版本，也不触发后续通知', async () => {
-    const path = '/task/20261028/TK-0001/HANDOFF';
+    const path = '/98-tasks/20261028/1/HANDOFF';
     currentTask = task({ handoffPath: path, handoffVersion: 2 });
     knowledge.findNodeByPath.mockResolvedValue(
       node(path, '---\nversion: "2"\n---\n\n# 交付\n\n已完成登录页'),
@@ -246,7 +264,7 @@ describe('TaskDocumentService 任务文档', () => {
   });
 
   it('baseVersion 过期返回冲突，不覆盖别人的修改', async () => {
-    const path = '/task/20261028/TK-0001/HANDOFF';
+    const path = '/98-tasks/20261028/1/HANDOFF';
     currentTask = task({ handoffPath: path, handoffVersion: 3 });
     knowledge.findNodeByPath.mockResolvedValue(
       node(path, '---\nversion: "3"\n---\n\n人工补充内容'),
@@ -271,7 +289,7 @@ describe('TaskDocumentService 任务文档', () => {
   });
 
   it('交付文档仍是处理中占位时不能申请验收', async () => {
-    const path = '/task/20261028/TK-0001/HANDOFF';
+    const path = '/98-tasks/20261028/1/HANDOFF';
     currentTask = task({ handoffPath: path, handoffVersion: 1 });
     knowledge.findNodeByPath.mockResolvedValue(
       node(path, '---\nversion: "1"\n---\n\n> 正在处理中……'),
@@ -284,7 +302,7 @@ describe('TaskDocumentService 任务文档', () => {
   });
 
   it('申请验收锁定当前交付文档版本', async () => {
-    const path = '/task/20261028/TK-0001/HANDOFF';
+    const path = '/98-tasks/20261028/1/HANDOFF';
     currentTask = task({
       handoffPath: path,
       handoffVersion: 4,
@@ -301,7 +319,7 @@ describe('TaskDocumentService 任务文档', () => {
   });
 
   it('待验收期间交付文档锁定', async () => {
-    const path = '/task/20261028/TK-0001/HANDOFF';
+    const path = '/98-tasks/20261028/1/HANDOFF';
     currentTask = task({
       handoffPath: path,
       handoffVersion: 2,
@@ -328,14 +346,14 @@ describe('TaskDocumentService 任务文档', () => {
       content: '# 任务复盘',
     });
 
-    expect(result.path).toBe('/task/20261028/TK-0001/REVIEW');
-    expect(service.reviewPath(task())).toBe('/task/20261028/TK-0001/REVIEW');
+    expect(result.path).toBe('/98-tasks/20261028/1/REVIEW');
+    expect(service.reviewPath(task())).toBe('/98-tasks/20261028/1/REVIEW');
   });
 
   it('旧版本历史任务文档自动登记为当前 HANDOFF', async () => {
     knowledge.listArticlesByPrefix.mockResolvedValue([
       node(
-        '/task/20261027/TK-0001/HANDOFF',
+        '/98-tasks/20261027/1/HANDOFF',
         '旧版平台拼接的交付内容',
         new Date('2026-10-27T10:00:00+08:00'),
       ),
@@ -344,10 +362,10 @@ describe('TaskDocumentService 任务文档', () => {
     const result = await service.readHandoff(currentTask);
 
     expect(result.exists).toBe(true);
-    expect(result.path).toBe('/task/20261027/TK-0001/HANDOFF');
+    expect(result.path).toBe('/98-tasks/20261027/1/HANDOFF');
     expect(result.content).toBe('旧版平台拼接的交付内容');
     expect(result.version).toBe(1);
-    expect(currentTask.handoffPath).toBe('/task/20261027/TK-0001/HANDOFF');
+    expect(currentTask.handoffPath).toBe('/98-tasks/20261027/1/HANDOFF');
     expect(knowledge.update).toHaveBeenCalledWith(
       expect.any(String),
       expect.objectContaining({
@@ -370,22 +388,22 @@ describe('TaskDocumentService 任务文档', () => {
     const migrated = await service.migrateLegacyDocuments();
 
     expect(migrated).toBe(1);
-    expect(knowledge.update).toHaveBeenCalledWith(
+    expect(knowledge.updateNodeForSystemMigration).toHaveBeenCalledWith(
       latest.id,
       expect.objectContaining({
-        parentPath: '/task/20261028/TK-0001',
+        parentPath: '/98-tasks/20261028/1',
         name: 'REVIEW',
         title: 'TK-0001 活动页开发 · 任务复盘',
         content: expect.not.stringContaining('报告版本') as string,
       }),
     );
-    const updated = knowledge.update.mock.calls[0] as [
+    const updated = knowledge.updateNodeForSystemMigration.mock.calls[0] as [
       string,
       { content: string },
     ];
     expect(updated[1].content).toContain('# TK-0001 活动页开发 · 任务复盘');
     expect(updated[1].content).toContain(
-      '归档路径：`/task/20261028/TK-0001/REVIEW`',
+      '归档路径：`/98-tasks/20261028/1/REVIEW`',
     );
     expect(knowledge.remove).toHaveBeenCalledWith(oldV0.id);
     expect(knowledge.remove).not.toHaveBeenCalledWith(latest.id);
@@ -396,13 +414,13 @@ describe('TaskDocumentService 任务文档', () => {
 
   it('目标 REVIEW 已存在时保留新文档，只清理旧版本', async () => {
     const old = node('/task/handoff/20261028/TK-0001/0.md', '旧内容');
-    const existing = node('/task/20261028/TK-0001/REVIEW', '新内容');
+    const existing = node('/98-tasks/20261028/1/REVIEW', '新内容');
     knowledge.listArticlesByPrefix.mockResolvedValue([old]);
     knowledge.findNodeByPath.mockResolvedValue(existing);
 
     await service.migrateLegacyDocuments();
 
-    expect(knowledge.update).not.toHaveBeenCalled();
+    expect(knowledge.updateNodeForSystemMigration).not.toHaveBeenCalled();
     expect(knowledge.remove).toHaveBeenCalledWith(old.id);
   });
 
@@ -435,33 +453,31 @@ describe('TaskDocumentService 任务文档', () => {
     expect(knowledge.update).not.toHaveBeenCalled();
   });
 
-  it('任务文档目录沿用 HANDOFF 所在目录，REVIEW 与 HANDOFF 同目录', () => {
+  it('任务文档目录沿用已登记的新系统目录，REVIEW 与 HANDOFF 同目录', () => {
     currentTask = task({
-      handoffPath: '/task/20261020/TK-0001/HANDOFF',
+      handoffPath: '/98-tasks/20261020/1/HANDOFF',
       acceptedAt: new Date('2026-10-28T12:00:00+08:00'),
     });
 
-    expect(service.taskDirectory(currentTask)).toBe('/task/20261020/TK-0001');
-    expect(service.reviewPath(currentTask)).toBe(
-      '/task/20261020/TK-0001/REVIEW',
-    );
+    expect(service.taskDirectory(currentTask)).toBe('/98-tasks/20261020/1');
+    expect(service.reviewPath(currentTask)).toBe('/98-tasks/20261020/1/REVIEW');
     expect(service.taskDocumentPath(currentTask, 'TECH_DESIGN.md')).toBe(
-      '/task/20261020/TK-0001/TECH_DESIGN',
+      '/98-tasks/20261020/1/TECH_DESIGN',
     );
   });
 
   it('列任务目录文档时只取直属文章，HANDOFF/REVIEW 优先', async () => {
     knowledge.listArticlesByPrefix.mockResolvedValue([
-      node('/task/20261028/TK-0001/API'),
-      node('/task/20261028/TK-0001/REVIEW'),
-      node('/task/20261028/TK-0001/HANDOFF'),
-      node('/task/20261028/TK-0001/sub/TECH_DESIGN'),
+      node('/98-tasks/20261028/1/API'),
+      node('/98-tasks/20261028/1/REVIEW'),
+      node('/98-tasks/20261028/1/HANDOFF'),
+      node('/98-tasks/20261028/1/sub/TECH_DESIGN'),
     ]);
 
     const documents = await service.listTaskDocuments(currentTask);
 
     expect(knowledge.listArticlesByPrefix).toHaveBeenCalledWith(
-      '/task/20261028/TK-0001',
+      '/98-tasks/20261028/1',
     );
     expect(documents.map((document) => document.name)).toEqual([
       'HANDOFF.md',
@@ -469,21 +485,21 @@ describe('TaskDocumentService 任务文档', () => {
       'API.md',
     ]);
     expect(documents[2].markdownUrl).toBe(
-      '/docs/detail/task/20261028/TK-0001/API.md',
+      '/docs/detail/98-tasks/20261028/1/API.md',
     );
   });
 
   it('登记 HANDOFF 仍是占位时，自动回收同任务其他日期目录的真实交付文档', async () => {
     currentTask = task({
-      handoffPath: '/task/20261028/TK-0001/HANDOFF',
+      handoffPath: '/98-tasks/20261028/1/HANDOFF',
       handoffVersion: 1,
     });
     const placeholder = node(
-      '/task/20261028/TK-0001/HANDOFF',
+      '/98-tasks/20261028/1/HANDOFF',
       '---\nversion: "1"\n---\n> 正在处理中……',
     );
     const actual = node(
-      '/task/20261027/TK-0001/HANDOFF',
+      '/98-tasks/20261027/1/HANDOFF',
       '# 实际交付\n\n真实内容',
       new Date('2026-10-27T18:00:00+08:00'),
     );
@@ -500,15 +516,15 @@ describe('TaskDocumentService 任务文档', () => {
     const document = await service.readHandoff(currentTask);
 
     expect(document.exists).toBe(true);
-    expect(document.path).toBe('/task/20261027/TK-0001/HANDOFF');
+    expect(document.path).toBe('/98-tasks/20261027/1/HANDOFF');
     expect(document.content).toBe('# 实际交付\n\n真实内容');
-    expect(currentTask.handoffPath).toBe('/task/20261027/TK-0001/HANDOFF');
+    expect(currentTask.handoffPath).toBe('/98-tasks/20261027/1/HANDOFF');
   });
 
   it('任务文档清单解析 frontmatter description', async () => {
     knowledge.listArticlesByPrefix.mockResolvedValue([
       node(
-        '/task/20261028/TK-0001/API',
+        '/98-tasks/20261028/1/API',
         '---\ndescription: "接口说明文档"\n---\n# API',
       ),
     ]);
@@ -521,22 +537,19 @@ describe('TaskDocumentService 任务文档', () => {
   it('任务文档 Tab 返回直属 Markdown 文档并提取图片/文件产物', async () => {
     knowledge.listArticlesByPrefix.mockResolvedValue([
       node(
-        '/task/20261028/TK-0001/HANDOFF',
+        '/98-tasks/20261028/1/HANDOFF',
         '![页面截图](/images/uploads/20261028/a.png)\n\n[导出文件](/files/20261028/report.xlsx)\n\n[H5 包](http://localhost:5273/files/20261028/h5.zip)',
       ),
       node(
-        '/task/20261028/TK-0001/API',
+        '/98-tasks/20261028/1/API',
         '重复图片：![页面截图](/images/uploads/20261028/a.png)',
       ),
-      node(
-        '/task/20261028/TK-0001/sub/TECH_DESIGN',
-        '![深层](/images/deep.png)',
-      ),
+      node('/98-tasks/20261028/1/sub/TECH_DESIGN', '![深层](/images/deep.png)'),
     ]);
 
     const view = await service.taskDocumentsView(currentTask);
 
-    expect(view.directory).toBe('/task/20261028/TK-0001');
+    expect(view.directory).toBe('/98-tasks/20261028/1');
     expect(view.documents.map((document) => document.name)).toEqual([
       'HANDOFF.md',
       'API.md',
@@ -606,12 +619,12 @@ describe('TaskDocumentService 任务文档', () => {
     knowledge.listArticlesByPrefix.mockImplementation((prefix: string) =>
       Promise.resolve(
         [
-          node('/task/20261028/TK-0001/API'),
-          node('/task/20261028/TK-0002/HANDOFF', '![图](/images/a.png)'),
-          node('/task/20261028/TK-0002/API'),
-          node('/task/20261028/TK-0002/sub/NESTED'),
-          node('/task/20261028/TK-0003/TECH_DESIGN', '[报告](/files/r.xlsx)'),
-          node('/task/20261028/TK-0004/REVIEW'),
+          node('/98-tasks/20261028/1/API'),
+          node('/98-tasks/20261028/2/HANDOFF', '![图](/images/a.png)'),
+          node('/98-tasks/20261028/2/API'),
+          node('/98-tasks/20261028/2/sub/NESTED'),
+          node('/98-tasks/20261028/3/TECH_DESIGN', '[报告](/files/r.xlsx)'),
+          node('/98-tasks/20261028/4/REVIEW'),
         ].filter((item) => item.path.startsWith(`${prefix}/`)),
       ),
     );
@@ -619,7 +632,7 @@ describe('TaskDocumentService 任务文档', () => {
     const view = await service.taskDocumentsView(child);
 
     expect(view.taskId).toBe(2);
-    expect(view.directory).toBe('/task/20261028/TK-0002');
+    expect(view.directory).toBe('/98-tasks/20261028/2');
     expect(
       view.documents.map((document) => `${document.taskCode} ${document.name}`),
     ).toEqual([
@@ -659,7 +672,7 @@ describe('TaskDocumentService 任务文档', () => {
   it('读取任务文档与复盘时去掉 Frontmatter；未生成复盘返回 null', async () => {
     knowledge.findNodeByPath.mockResolvedValueOnce(
       node(
-        '/task/20261028/TK-0001/TECH_DESIGN',
+        '/98-tasks/20261028/1/TECH_DESIGN',
         '---\ndocument: "TECH_DESIGN"\nupdate: 2026-10-28 10:00:00\n---\n# 技术方案',
       ),
     );
@@ -674,7 +687,7 @@ describe('TaskDocumentService 任务文档', () => {
     expect(await service.readReview(currentTask)).toBeNull();
 
     knowledge.findNodeByPath.mockResolvedValueOnce(
-      node('/task/20261028/TK-0001/REVIEW', '# 复盘'),
+      node('/98-tasks/20261028/1/REVIEW', '# 复盘'),
     );
     const review = await service.readReview(currentTask);
     expect(review?.name).toBe('REVIEW.md');
@@ -689,10 +702,10 @@ describe('TaskDocumentService 任务文档', () => {
     });
 
     expect(document.name).toBe('TECH_DESIGN.md');
-    expect(document.path).toBe('/task/20261028/TK-0001/TECH_DESIGN');
+    expect(document.path).toBe('/98-tasks/20261028/1/TECH_DESIGN');
     expect(knowledge.createArticleAtPath).toHaveBeenCalledWith(
       expect.objectContaining({
-        path: '/task/20261028/TK-0001/TECH_DESIGN',
+        path: '/98-tasks/20261028/1/TECH_DESIGN',
         title: 'TK-0001 活动页开发 · TECH_DESIGN.md',
         content: expect.stringContaining('document: "TECH_DESIGN"') as string,
       }),
@@ -727,26 +740,26 @@ describe('TaskDocumentService 任务文档', () => {
     const markdown = service.taskDocumentsMarkdown(currentTask, [
       {
         name: 'HANDOFF.md',
-        path: '/task/20261028/TK-0001/HANDOFF',
-        url: '/docs/detail/task/20261028/TK-0001/HANDOFF',
-        markdownUrl: '/docs/detail/task/20261028/TK-0001/HANDOFF.md',
+        path: '/98-tasks/20261028/1/HANDOFF',
+        url: '/docs/detail/98-tasks/20261028/1/HANDOFF',
+        markdownUrl: '/docs/detail/98-tasks/20261028/1/HANDOFF.md',
         title: '交付文档',
         updatedAt: '2026-10-28T10:00:00+08:00',
       },
       {
         name: 'API.md',
-        path: '/task/20261028/TK-0001/API',
-        url: '/docs/detail/task/20261028/TK-0001/API',
-        markdownUrl: '/docs/detail/task/20261028/TK-0001/API.md',
+        path: '/98-tasks/20261028/1/API',
+        url: '/docs/detail/98-tasks/20261028/1/API',
+        markdownUrl: '/docs/detail/98-tasks/20261028/1/API.md',
         title: '接口文档',
         updatedAt: null,
       },
     ]);
 
-    expect(markdown).toContain('文档目录：`/task/20261028/TK-0001`');
+    expect(markdown).toContain('文档目录：`/98-tasks/20261028/1`');
     expect(markdown).toContain('需求中明确指定文档地址时');
     expect(markdown).toContain('API.md');
-    expect(markdown).toContain('/api/docs/detail/task/20261028/TK-0001/API.md');
+    expect(markdown).toContain('/api/docs/detail/98-tasks/20261028/1/API.md');
     expect(markdown).toContain('/tasks/1/documents.md');
   });
 
@@ -760,5 +773,40 @@ describe('TaskDocumentService 任务文档', () => {
         }),
       ).rejects.toBeInstanceOf(BadRequestException);
     }
+  });
+
+  it('存量 /task 目录迁移到 /98-tasks/{创建日期}/{任务ID} 并更新 handoffPath', async () => {
+    currentTask = task({
+      id: 42,
+      code: 'TK-0042',
+      handoffPath: '/task/20261001/TK-0042/HANDOFF',
+    });
+    tasksRepo.findOne.mockResolvedValue(currentTask);
+    tasksRepo.find.mockResolvedValue([currentTask]);
+    const root = {
+      ...node('/task/20261001/TK-0042', ''),
+      kind: 'directory',
+    } as KnowledgeNode;
+    const handoff = node('/task/20261001/TK-0042/HANDOFF');
+    const legacyRoot = {
+      ...node('/task', ''),
+      kind: 'directory',
+    } as KnowledgeNode;
+    knowledge.listNodesByPrefix.mockResolvedValue([legacyRoot, root, handoff]);
+
+    const migrated = await service.migrateSystemTaskDirectories();
+
+    expect(migrated).toBe(2);
+    expect(knowledge.moveSystemSubtree).toHaveBeenCalledWith(
+      root.id,
+      '/98-tasks/20261028/42',
+      ['/task/20261001/TK-0042', '/task/20261001/TK-0042/HANDOFF'],
+    );
+    expect(tasksRepo.update).toHaveBeenCalledWith(42, {
+      handoffPath: '/98-tasks/20261028/42/HANDOFF',
+    });
+    expect(knowledge.recordPathAliases).toHaveBeenCalledWith([
+      { oldPath: '/task', targetPath: '/98-tasks' },
+    ]);
   });
 });

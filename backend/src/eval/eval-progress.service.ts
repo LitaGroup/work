@@ -1,5 +1,6 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { EventEmitter } from 'events';
+import { SystemKnowledgeService } from '../knowledge/system-knowledge.service';
 
 /**
  * 评估批次实时进度（SSE 用）：
@@ -11,6 +12,11 @@ export class EvalProgressService {
   private readonly emitter = new EventEmitter();
   private readonly leanModeLimit = 50;
 
+  constructor(
+    @Optional()
+    private readonly systemKnowledge?: SystemKnowledgeService,
+  ) {}
+
   onRun(runId: number, listener: () => void): () => void {
     this.emitter.on(`run:${runId}`, listener);
     return () => this.emitter.off(`run:${runId}`, listener);
@@ -19,6 +25,7 @@ export class EvalProgressService {
   /** 由引擎在评估项/批次状态变化后调用 */
   emitRun(runId: number): void {
     this.emitter.emit(`run:${runId}`);
+    this.systemKnowledge?.queueEvalRunSync(runId);
   }
 
   lean(): boolean {

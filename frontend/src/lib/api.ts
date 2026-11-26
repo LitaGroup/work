@@ -199,10 +199,7 @@ export interface Milestone {
   updatedAt: string
 }
 
-/** 平台内文档同步映射到知识库的固定路径 */
-export function documentKnowledgePath(projectId: number, documentId: number): string {
-  return `/project/${projectId}/document/${documentId}`
-}
+/** 平台内文档在知识库中的路径由后端随文档返回，前端不再推导日期目录。 */
 
 export const KNOWLEDGE_NODE_KINDS = ['directory', 'article'] as const
 export type KnowledgeNodeKind = (typeof KNOWLEDGE_NODE_KINDS)[number]

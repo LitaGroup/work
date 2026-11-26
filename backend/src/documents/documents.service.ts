@@ -18,9 +18,11 @@ import {
 } from '../apipost/apipost-markdown';
 import { FeishuService } from '../feishu/feishu.service';
 import { KnowledgeService } from '../knowledge/knowledge.service';
+import { requirementRootPath } from '../knowledge/knowledge.path';
 import { BacklogDocument } from '../iterations/backlog-document.entity';
 import { ProjectSummaryService } from '../projects/project-summary.service';
 import { ProjectDescriptionService } from '../projects/project-description.service';
+import { Project } from '../projects/project.entity';
 import { Document } from './document.entity';
 
 /**
@@ -65,6 +67,8 @@ export class DocumentsService implements OnApplicationBootstrap {
     private readonly documents: Repository<Document>,
     @InjectRepository(BacklogDocument)
     private readonly backlogDocuments: Repository<BacklogDocument>,
+    @InjectRepository(Project)
+    private readonly projects: Repository<Project>,
     private readonly feishu: FeishuService,
     private readonly apipost: ApipostService,
     private readonly knowledge: KnowledgeService,
@@ -74,8 +78,15 @@ export class DocumentsService implements OnApplicationBootstrap {
 
   onApplicationBootstrap(): void {
     if (!this.knowledge.isEnabled) return;
-    // 等知识库模块完成初始化后再回填，避免构造函数/启动钩子顺序耦合
-    setTimeout(() => void this.backfillKnowledge(), 3_000).unref();
+    // 等知识库模块完成初始化后再迁移/回填，避免构造钩子顺序耦合
+    const timer = setTimeout(() => {
+      void this.migrateProjectDirectories()
+        .catch((error: Error) => {
+          this.logger.warn(`需求文档系统目录迁移失败：${error.message}`);
+        })
+        .then(() => this.backfillKnowledge());
+    }, 3_000);
+    timer.unref();
   }
 
   /**
@@ -179,10 +190,16 @@ export class DocumentsService implements OnApplicationBootstrap {
     if (doc.feishuUrl && !doc.url) meta.push(`- 原始链接：${doc.feishuUrl}`);
     if (doc.apipostUrl) meta.push(`- 原始链接：${doc.apipostUrl}`);
     if (this.knowledge.isEnabled) {
-      meta.push(
-        `- 知识路径：/project/${doc.projectId}/document/${doc.id}`,
-        `- 知识视图：${this.knowledge.projectDocumentMdUrl(doc.projectId, doc.id)}`,
+      const node = await this.knowledge.getProjectDocument(
+        doc.projectId,
+        doc.id,
       );
+      if (node) {
+        meta.push(
+          `- 知识路径：${node.path}`,
+          `- 知识视图：${this.knowledge.projectDocumentMdUrl(node.path)}`,
+        );
+      }
     }
     meta.push(`- 更新时间：${doc.updatedAt.toISOString()}`);
     return [
@@ -225,9 +242,20 @@ export class DocumentsService implements OnApplicationBootstrap {
       doc.source === DocumentSource.APIPOST
         ? this.markdownBody(doc)
         : (doc.content ?? '');
+    const project = await this.projects.findOne({
+      where: { id: doc.projectId },
+      select: { id: true, createdAt: true },
+    });
+    if (!project) {
+      this.logger.warn(
+        `文档 ${doc.id} 找不到所属需求 ${doc.projectId}，暂不同步知识库`,
+      );
+      return doc;
+    }
     try {
       const synced = await this.knowledge.upsertProjectDocument({
         projectId: doc.projectId,
+        projectCreatedAt: project.createdAt,
         documentId: doc.id,
         title: doc.title,
         content: markdown,
@@ -560,10 +588,93 @@ export class DocumentsService implements OnApplicationBootstrap {
     await this.documents.remove(doc);
   }
 
+  /**
+   * 存量需求文档迁移：`/project/{projectId}/**` →
+   * `/01-backlogs/{需求创建日期}/{projectId}/**`。
+   * 节点 ID 不变，因此 documents.knowledgeId 无需更新；旧链接通过别名继续可读。
+   */
+  async migrateProjectDirectories(): Promise<number> {
+    if (!this.knowledge.isEnabled) return 0;
+    let nodes: Awaited<ReturnType<KnowledgeService['listNodesByPrefix']>>;
+    let projects: Project[];
+    try {
+      nodes = await this.knowledge.listNodesByPrefix('/project');
+      projects = await this.projects.find({
+        select: { id: true, createdAt: true },
+      });
+    } catch (error) {
+      this.logger.warn(
+        `读取待迁移需求文档失败：${error instanceof Error ? error.message : String(error)}`,
+      );
+      return 0;
+    }
+    if (nodes.length === 0) return 0;
+    const byId = new Map(projects.map((project) => [project.id, project]));
+    const roots = nodes.filter(
+      (node) => node.kind === 'directory' && /^\/project\/\d+$/.test(node.path),
+    );
+    let migrated = 0;
+    for (const root of roots) {
+      const projectId = Number(root.path.split('/')[2]);
+      const project = byId.get(projectId);
+      if (!project) {
+        this.logger.warn(
+          `需求文档目录 ${root.path} 找不到对应需求 #${projectId}，归档到 /01-backlogs/unmapped`,
+        );
+      }
+      const target = project
+        ? requirementRootPath(project)
+        : `/01-backlogs/unmapped/${projectId}`;
+      const existing = await this.knowledge.findNodeByPath(target);
+      if (existing && existing.id !== root.id) {
+        this.logger.warn(
+          `需求文档 ${root.path} 未迁移：目标 ${target} 已被占用`,
+        );
+        continue;
+      }
+      const subtree = nodes.filter(
+        (node) =>
+          node.path === root.path || node.path.startsWith(`${root.path}/`),
+      );
+      try {
+        await this.knowledge.moveSystemSubtree(
+          root.id,
+          target,
+          subtree.map((node) => node.path),
+        );
+        migrated += subtree.length;
+      } catch (error) {
+        this.logger.warn(
+          `需求文档迁移失败 ${root.path} → ${target}：${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+    if (nodes.some((node) => node.path === '/project')) {
+      await this.knowledge.recordPathAliases([
+        { oldPath: '/project', targetPath: '/01-backlogs' },
+      ]);
+    }
+    await this.knowledge
+      .pruneEmptyDirectories('/project', true)
+      .catch((error: Error) =>
+        this.logger.warn(`清理旧需求文档目录失败：${error.message}`),
+      );
+    if (migrated > 0) {
+      this.logger.log(`已迁移 ${migrated} 个需求文档节点到 /01-backlogs`);
+    }
+    return migrated;
+  }
+
   /** 删除项目时的应用层级联清理（测试库无物理外键） */
   async removeByProject(projectId: number): Promise<void> {
     if (this.knowledge.isEnabled) {
-      await this.knowledge.removeProject(projectId);
+      const project = await this.projects.findOne({
+        where: { id: projectId },
+        select: { id: true, createdAt: true },
+      });
+      if (project) await this.knowledge.removeProject(project);
     }
     const ids = await this.documents.find({
       where: { projectId },

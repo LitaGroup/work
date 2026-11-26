@@ -70,6 +70,7 @@
 - `backend/src/knowledge/`：知识树、全文/向量混合检索与 Embedding 队列。
 - `backend/src/defects/`、`releases/`、`feedbacks/`：缺陷、项目提测与用户反馈（业务分区「反馈」，独立实体 `feedbacks`）；`ideas/`：灵感（业务分区「灵感」，采纳后关联需求池）。
 - `backend/src/feishu/`、`feishu-bot/`：飞书只读导入、机器人长连接与任务群。
+- `backend/src/knowledge/system-knowledge.service.ts`：`/99-system/**` 机器人设定、任务定义、机器人评测的只读知识镜像。
 - `backend/src/model-config/`：管理区「模型配置」（固定场景的 OpenAI 兼容连接：baseUrl/apiKey/model/思考等级）与通用单次大模型调用（`LlmService`，工单/任务标题命名等后台任务）。
 - `backend/src/github/`、`github-gateway/`：仓库/分支/提交集成与凭证网关。
 - `backend/src/agent/`、`remote-run/`、`app-versions/`：Appium Agent、远程运行与 APP 包。
@@ -187,7 +188,7 @@
 - 文档类型：需求 / 功能 / 测试 / 技术 / 接口 / 配置 / 设计；来源为飞书、`apipost` 或 `-`（平台编写）。
 - 链接型文档：「设计」类型可只存外部链接（`documents.url`，不存正文与知识库，正文编辑被拒绝）。需求池「设计链接」字段在同步时提取完整 http(s) 链接并镜像维护：同步创建的文档记 `feishuUrl` 作为同步标识，源字段不再包含的链接会被删除；平台手动创建的链接文档（`feishuUrl` 为空）不受同步影响。文档列表标题对链接型直接外链打开。
 - 飞书/APIPOST 导入文档正文只读，只能从来源重新同步；`remark` 可本地编辑。AI 文档按 `(projectId, fileName)` upsert，命中外部导入文档必须拒绝。
-- 普通文档 Markdown 正文可只存知识库，业务库通过 `documents.knowledgeId` 关联 `/project/{projectId}/document/{documentId}` 镜像；列表查询不得带出大正文。
+- 普通文档 Markdown 正文可只存知识库，业务库通过 `documents.knowledgeId` 关联 `/01-backlogs/{需求创建日期 yyyyMMdd}/{需求ID}/document/{documentId}` 镜像；旧 `/project/**` 仅保留迁移别名供读取，不再写入；找不到需求实体的孤儿目录归档到 `/01-backlogs/unmapped/{projectId}`。
 - 需求摘要（`projects.summary`，≤200 字）：需求创建/飞书同步后，或「需求」类文档新增/更新后，若摘要为空且无进行中的生成，后台按「需求名称 + 描述 + 需求类文档正文」调用 `requirement-summary` 模型场景生成（`projects/project-summary.service.ts`，进程内去重、失败只告警、条件更新不覆盖人工填写）；人工可经 `PATCH /api/projects/:id` 编辑，清空后恢复自动生成；场景未配置时跳过。摘要随需求 `.md` 视图返回。
 - 需求描述（`projects.description`）：需求创建/飞书同步后，或「需求」类文档新增/更新后，若描述为空且无进行中的生成，后台按「需求名称 + 需求类文档正文」调用 `requirement-description` 模型场景生成结构化 Markdown 描述（`projects/project-description.service.ts`，进程内去重、失败只告警、条件更新不覆盖人工填写）。**同步只补空值、不清空不覆盖**：飞书「需求」列只有标题时保留平台已有描述，只有源侧提供了额外正文才覆盖。
 - 项目人员（原 `projects.resources`）已下线：需求只保留需求方 `projects.owner`，飞书同步不再写入人员字段。资源实体关系 `projectResources` 是独立概念（需求方提供的素材/信息登记），与人员无关，禁止混用。
@@ -210,9 +211,10 @@
 ### 知识库
 
 - `knowledge_nodes` 维护目录/文章树，`path` 唯一；`knowledge_chunks` 按 Markdown 标题切片并保存全文向量和 Embedding。
-- 知识库支持从飞书或 APIPOST 导入文章到当前原生目录（`POST /api/docs/nodes/import`）：路径按来源标识哈希自动生成且保持稳定，同一目录同来源重复导入覆盖原文章（判重键为 `parentPath + source + sourceKey`）；APIPOST swagger 转为 Markdown 后入库。导入文章 `source` 为 `feishu` / `apipost`，可在导入时填写自定义标题（留空使用来源标题），自定义标题在「更新同步」（`POST /api/docs/nodes/:id/sync`）时保留；正文不允许本地修改、移动，可从知识库删除。`/project`、`/task` 保留路径不开放导入。
+- 知识库支持从飞书或 APIPOST 导入文章到当前原生目录（`POST /api/docs/nodes/import`）：路径按来源标识哈希自动生成且保持稳定，同一目录同来源重复导入覆盖原文章（判重键为 `parentPath + source + sourceKey`）；APIPOST swagger 转为 Markdown 后入库。导入文章 `source` 为 `feishu` / `apipost`，可在导入时填写自定义标题（留空使用来源标题），自定义标题在「更新同步」（`POST /api/docs/nodes/:id/sync`）时保留；正文不允许本地修改、移动，可从知识库删除。`/project`、`/task` 及 `/01-backlogs`、`/98-tasks`、`/99-system` 的受管子树不开放通用导入或手工写入。
 - 检索为全文 + Embedding 的 RRF 混合检索，支持 `path/page/pageSize`，`pageSize` 最大 100。向量不可用时降级全文；低相似纯向量候选不进入 RRF。
-- `/project/**` 是项目文档系统镜像，通用知识写接口只读；`/task/**` 同样只读，任务文档必须走任务流程，避免绕过版本控制。
+- 系统级知识目录固定为 `/01-backlogs/`（需求迭代）、`/98-tasks/`（任务记录）、`/99-system/`（系统设计）：路径、名称和父目录不可修改，不可删除，只允许修改展示标题；服务启动时确保存在且不覆盖用户改过的标题。旧 `/project/**`、`/task/**` 保留只读别名用于迁移后旧链接访问。
+- `/01-backlogs/**` 是需求文档系统镜像，`/98-tasks/**` 是任务交付/复盘文档目录，均只读，分别走文档和任务流程。`/99-system/workers/{id}/README`、`/99-system/task-definitions/{id}/README`、`/99-system/evaluations/{suites|runs}/.../README` 为机器人设定、任务定义和机器人评测的自动只读镜像，不包含令牌、Secret、MCP 凭据、执行日志或原始工具调用。`/99-system/**` 仅管理员可读取、维护和搜索命中；普通成员与普通机器人浏览、搜索时隐藏该系统目录，避免验证集 Prompt、评分要点和返工提示泄露。
 - Agent 知识写操作按 path 定位；目录与文章的 URL 规则不可混淆。
 - 飞书云文档实时搜索已下线，不要恢复为搜索依赖；飞书文档仍可通过只读转换接口导入。
 
@@ -266,7 +268,7 @@
 
 任务文档：
 
-- 任务目录为 `/task/{yyyyMMdd}/{task.code}/`，知识路径不带 `.md`，阅读名使用 `X.md`。需求明确指定文档地址时以需求为准。
+- 任务目录为 `/98-tasks/{任务创建日期 yyyyMMdd}/{数字任务ID}/`，知识路径不带 `.md`，阅读名使用 `X.md`。存量 `/task/{yyyyMMdd}/{task.code}/` 启动时迁移并保留旧链接别名；找不到任务实体的孤儿目录归档到 `/98-tasks/unmapped/{taskCode}`，不猜数字任务 ID。需求明确指定文档地址时以需求为准。
 - `HANDOFF` 不在创建任务时生成，由执行方开始处理后显式创建，首次 `baseVersion=0`，执行方和需求方可持续维护。
 - 更新交付文档必须提交完整 `content + baseVersion`，冲突返回 409；平台维护 Frontmatter 中的文档、任务、版本和更新人。
 - 申请验收只校验有效正文并锁定 `handoffSubmittedVersion`；待验收期间文档锁定，撤销交付或返工后才可编辑。

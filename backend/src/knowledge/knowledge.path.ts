@@ -81,17 +81,149 @@ export function isKnowledgePathWithin(path: string, parent: string): boolean {
   return base === '/' || p === base || p.startsWith(`${base}/`);
 }
 
-/** 项目文档在知识库中的固定保留路径 */
+/** 系统级知识目录：路径固定，只有标题可由用户修改 */
+export interface SystemKnowledgeDirectoryDefinition {
+  /** 稳定的代码标识，不参与路径 */
+  key: 'backlogs' | 'tasks' | 'system';
+  path: string;
+  name: string;
+  title: string;
+}
+
+export const SYSTEM_KNOWLEDGE_DIRECTORIES: SystemKnowledgeDirectoryDefinition[] =
+  [
+    {
+      key: 'backlogs',
+      path: '/01-backlogs',
+      name: '01-backlogs',
+      title: '需求迭代',
+    },
+    {
+      key: 'tasks',
+      path: '/98-tasks',
+      name: '98-tasks',
+      title: '任务记录',
+    },
+    {
+      key: 'system',
+      path: '/99-system',
+      name: '99-system',
+      title: '系统设计',
+    },
+  ];
+
+/** 旧版系统路径：只读兼容与迁移来源，不再作为新文档目录 */
+export const LEGACY_KNOWLEDGE_ROOTS = ['/task', '/project'] as const;
+
+/** 系统镜像子树：由平台自动同步，通用知识接口不可写 */
+export const SYSTEM_MIRROR_ROOTS = [
+  '/99-system/workers',
+  '/99-system/task-definitions',
+  '/99-system/evaluations',
+] as const;
+
+export function findSystemKnowledgeDirectory(
+  path: string,
+): SystemKnowledgeDirectoryDefinition | null {
+  const normalized = normalizeKnowledgePath(path).path;
+  return (
+    SYSTEM_KNOWLEDGE_DIRECTORIES.find((entry) => entry.path === normalized) ??
+    null
+  );
+}
+
+export function isSystemKnowledgeRoot(path: string): boolean {
+  return Boolean(findSystemKnowledgeDirectory(path));
+}
+
+export function isSystemManagedKnowledgePath(path: string): boolean {
+  const normalized = normalizeKnowledgePath(path).path;
+  if (
+    LEGACY_KNOWLEDGE_ROOTS.some(
+      (root) => normalized === root || normalized.startsWith(`${root}/`),
+    )
+  ) {
+    return true;
+  }
+  if (
+    normalized === '/01-backlogs' ||
+    normalized.startsWith('/01-backlogs/') ||
+    normalized === '/98-tasks' ||
+    normalized.startsWith('/98-tasks/')
+  ) {
+    return true;
+  }
+  return SYSTEM_MIRROR_ROOTS.some(
+    (root) => normalized === root || normalized.startsWith(`${root}/`),
+  );
+}
+
+/** 北京时间 yyyyMMdd，用于系统目录按创建日期归档 */
+export function beijingDateStamp(value: Date | string): string {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    throw new Error(`非法日期：${String(value)}`);
+  }
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+  const read = (type: Intl.DateTimeFormatPartTypes): string =>
+    parts.find((part) => part.type === type)?.value ?? '';
+  return `${read('year')}${read('month')}${read('day')}`;
+}
+
+/** 任务记录目录：/98-tasks/{yyyyMMdd}/{数字任务ID} */
+export function taskRecordRootPath(task: {
+  id: number;
+  createdAt: Date | string;
+}): string {
+  return `/98-tasks/${beijingDateStamp(task.createdAt)}/${task.id}`;
+}
+
+/** 需求目录：/01-backlogs/{yyyyMMdd}/{需求ID} */
+export function requirementRootPath(project: {
+  id: number;
+  createdAt: Date | string;
+}): string {
+  return `/01-backlogs/${beijingDateStamp(project.createdAt)}/${project.id}`;
+}
+
+/** 需求文档在知识库中的路径；文档本体始终归属需求 */
 export function projectDocumentPath(
-  projectId: number,
+  project: { id: number; createdAt: Date | string },
   documentId: number,
 ): string {
-  return `/project/${projectId}/document/${documentId}`;
+  return `${requirementRootPath(project)}/document/${documentId}`;
 }
 
 /** 项目在知识库中的保留路径（系统维护，不允许普通知识编辑） */
-export function projectRootPath(projectId: number): string {
-  return `/project/${projectId}`;
+export function projectRootPath(project: {
+  id: number;
+  createdAt: Date | string;
+}): string {
+  return requirementRootPath(project);
+}
+
+export function systemWorkerRootPath(workerId: number): string {
+  return `/99-system/workers/${workerId}`;
+}
+
+export function systemTaskDefinitionRootPath(templateId: number): string {
+  return `/99-system/task-definitions/${templateId}`;
+}
+
+export function systemEvalSuiteRootPath(suiteId: number): string {
+  return `/99-system/evaluations/suites/${suiteId}`;
+}
+
+export function systemEvalRunRootPath(run: {
+  id: number;
+  createdAt: Date | string;
+}): string {
+  return `/99-system/evaluations/runs/${beijingDateStamp(run.createdAt)}/${run.id}`;
 }
 
 /** URL 路径编码：逐段编码，保留 / */

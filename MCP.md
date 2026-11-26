@@ -100,7 +100,7 @@ Claude Code 的 `--header`、Codex 的 `bearer_token_env_var` 均见下文各节
 | 飞书 | `feishu_history`（群聊/话题/私聊最近 7 天消息，需机器人绑定飞书应用）、`feishu_send_message`（平台官方机器人身份发 Markdown 卡片，机器人或管理员可用，审计留痕） |
 
 - 写操作按令牌身份校验：任务接受/拒绝/提问/申请验收仅机器人令牌；答复/验收/返工/判失败仅任务需求方；
-- `/project/**`、`/task/**` 知识为系统镜像，只读，变更走对应业务流程；
+- `/01-backlogs/**`、`/98-tasks/**`、`/99-system/**` 的受管知识为系统镜像，只读，变更走对应业务流程；`/99-system/**` 仅管理员可读取和搜索命中；旧 `/project/**`、`/task/**` 仅保留迁移别名；
 - 全部工具的清单与入参见 [lita-work 接入指南](http://work.cinta.team/work-mcp.md)。
 
 ### 2.2 lita-work-admin：管理面（仅管理员）

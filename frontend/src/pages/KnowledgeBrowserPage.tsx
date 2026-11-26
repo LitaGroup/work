@@ -59,9 +59,59 @@ interface KnowledgeLocation {
   directory: boolean
 }
 
+/** 系统级目录：路径固定，只允许修改名称 */
+const SYSTEM_ROOTS: Record<string, string> = {
+  '/01-backlogs': '需求迭代',
+  '/98-tasks': '任务记录',
+  '/99-system': '系统设计',
+}
+
+/** 系统镜像受管子树：由对应业务模块维护，通用知识接口只读 */
+const SYSTEM_MIRROR_ROOTS = [
+  '/99-system/workers',
+  '/99-system/task-definitions',
+  '/99-system/evaluations',
+]
+
+function isSystemRootPath(path: string): boolean {
+  return Object.prototype.hasOwnProperty.call(SYSTEM_ROOTS, path)
+}
+
 /** 任务交付文档/复盘文档由任务中心维护，知识库只读展示 */
 function isTaskDocumentPath(path: string): boolean {
-  return path === '/task' || path.startsWith('/task/')
+  return (
+    path === '/task' ||
+    path.startsWith('/task/') ||
+    path === '/98-tasks' ||
+    path.startsWith('/98-tasks/')
+  )
+}
+
+function isSystemManagedPath(path: string): boolean {
+  if (
+    path === '/task' ||
+    path.startsWith('/task/') ||
+    path === '/project' ||
+    path.startsWith('/project/') ||
+    path === '/01-backlogs' ||
+    path.startsWith('/01-backlogs/') ||
+    path === '/98-tasks' ||
+    path.startsWith('/98-tasks/')
+  ) {
+    return true
+  }
+  return SYSTEM_MIRROR_ROOTS.some(
+    (root) => path === root || path.startsWith(`${root}/`),
+  )
+}
+
+function managedLabel(path: string): string {
+  if (isTaskDocumentPath(path)) return '任务中心维护'
+  if (path.startsWith('/01-backlogs') || path.startsWith('/project')) {
+    return '需求文档模块维护'
+  }
+  if (path.startsWith('/99-system')) return '系统自动同步'
+  return '系统维护'
 }
 
 function isExternalKnowledgeNode(node: {
@@ -203,11 +253,11 @@ function KnowledgeDirectoryView({
 }) {
   const total = directory.directories.length + directory.articles.length
   const navigate = useNavigate()
-  const managedByTaskCenter = isTaskDocumentPath(directory.path)
-  const canImport =
-    !managedByTaskCenter &&
-    directory.path !== '/project' &&
-    !directory.path.startsWith('/project/')
+  const systemRoot = isSystemRootPath(directory.path)
+  const managedPath = isSystemManagedPath(directory.path)
+  /** /99-system 根目录允许维护人工系统设计；其余受管目录由业务流程维护 */
+  const canCreate = !managedPath || directory.path === '/99-system'
+  const canImport = canCreate && !systemRoot
   return (
     <div className="min-w-0">
       <PageBreadcrumb items={crumbs} />
@@ -221,9 +271,9 @@ function KnowledgeDirectoryView({
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {managedByTaskCenter ? (
+          {!canCreate ? (
             <span className="text-xs text-foreground-muted">
-              任务文档由任务中心维护
+              {managedLabel(directory.path)}
             </span>
           ) : (
             <>
@@ -298,7 +348,7 @@ function KnowledgeDirectoryView({
               <TableCell className="text-center">
                 {isTaskDocumentPath(node.path) ? (
                   <span className="text-xs text-foreground-muted">
-                    任务中心维护
+                    {managedLabel(node.path)}
                   </span>
                 ) : isExternalKnowledgeNode(node) ? (
                   <div className="flex items-center justify-end gap-1">
@@ -316,8 +366,8 @@ function KnowledgeDirectoryView({
           {total === 0 && (
             <TableRow>
               <TableCell colSpan={4}>
-                当前目录为空。可新建文章或子目录；项目文档同步后会出现在 /project
-                下。
+                当前目录为空。可新建文章或子目录；需求文档与任务文档分别自动归档到
+                /01-backlogs 与 /98-tasks。
               </TableCell>
             </TableRow>
           )}
@@ -342,8 +392,12 @@ function KnowledgeDirectoryRow({
     error?: string
   } | null>(null)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const managedByTaskCenter = isTaskDocumentPath(node.path)
-  const canRename = node.source === 'native' && !managedByTaskCenter
+  const systemRoot = isSystemRootPath(node.path)
+  const managedByTaskCenter =
+    !systemRoot &&
+    (isTaskDocumentPath(node.path) || isSystemManagedPath(node.path))
+  const canRename =
+    (node.source === 'native' || systemRoot) && !managedByTaskCenter
 
   const clearTimer = () => {
     if (timerRef.current) {
@@ -466,13 +520,17 @@ function KnowledgeDirectoryRow({
       <TableCell>{new Date(node.updatedAt).toLocaleString()}</TableCell>
       <TableCell className="text-center">
         {managedByTaskCenter ? (
-          <span className="text-xs text-foreground-muted">任务中心维护</span>
+          <span className="text-xs text-foreground-muted">
+            {managedLabel(node.path)}
+          </span>
         ) : canRename ? (
           <div className="flex items-center justify-end gap-1">
             <Button variant="ghost" size="sm" onClick={startEditing}>
               改名
             </Button>
-            <DeleteKnowledgeButton node={node} onDeleted={onChanged} />
+            {!systemRoot && (
+              <DeleteKnowledgeButton node={node} onDeleted={onChanged} />
+            )}
           </div>
         ) : (
           <span className="text-xs text-foreground-muted">系统同步</span>
@@ -493,8 +551,9 @@ function KnowledgeArticleView({
 }) {
   const navigate = useNavigate()
   const managedByTaskCenter = isTaskDocumentPath(article.path)
+  const managedBySystem = isSystemManagedPath(article.path)
   const external = isExternalKnowledgeNode(article)
-  const editable = article.source === 'native' && !managedByTaskCenter
+  const editable = article.source === 'native' && !managedBySystem
   const taskFrontmatter = managedByTaskCenter
     ? splitFrontmatter(article.content ?? '')
     : null
@@ -566,7 +625,9 @@ function KnowledgeArticleView({
             <Badge variant={editable ? 'soft' : 'secondary'}>
               {managedByTaskCenter
                 ? '任务文档'
-                : knowledgeSourceLabel(article.source)}
+                : managedBySystem
+                  ? '系统知识'
+                  : knowledgeSourceLabel(article.source)}
             </Badge>
             {external && article.documentType && (
               <span>类型：{article.documentType}</span>
@@ -672,7 +733,9 @@ function KnowledgeArticleView({
             ? '任务交付/复盘文档由任务中心维护：请在任务工作台编辑交付文档，验收后生成的复盘文档只读。'
             : external
               ? '外部导入文档正文由来源同步，请在飞书 / APIPOST 中修改后使用「更新同步」；此处只读并参与知识检索。'
-              : '项目文档正文由文档模块同步，请在原文档中修改；此处只读并参与知识检索。'}
+              : managedBySystem
+                ? '系统知识由需求文档、机器人、任务定义或评测配置自动同步，请在对应页面修改；此处只读。'
+                : '项目文档正文由文档模块同步，请在原文档中修改；此处只读并参与知识检索。'}
         </p>
       )}
     </div>

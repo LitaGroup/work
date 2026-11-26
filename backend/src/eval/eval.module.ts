@@ -7,6 +7,7 @@ import { Task } from '../tasks/task.entity';
 import { TaskEvent } from '../tasks/task-event.entity';
 import { TaskMessage } from '../tasks/task-message.entity';
 import { WorkersModule } from '../workers/workers.module';
+import { KnowledgeModule } from '../knowledge/knowledge.module';
 import { Worker } from '../workers/worker.entity';
 import { EvalSuite, EvalCase, EvalCasePoint } from './eval-suite.entity';
 import { EvalWorkerSnapshot } from './eval-worker-snapshot.entity';
@@ -48,6 +49,7 @@ import { EvalProgressService } from './eval-progress.service';
     ]),
     forwardRef(() => TasksModule),
     WorkersModule,
+    KnowledgeModule,
   ],
   controllers: [EvalController],
   providers: [

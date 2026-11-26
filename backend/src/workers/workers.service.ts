@@ -4,6 +4,7 @@ import {
   Logger,
   NotFoundException,
   OnApplicationBootstrap,
+  Optional,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -40,6 +41,7 @@ import { ensureWorkerSequenceFloor } from './system-workers.service';
 import { WorkerSkillCatalogService } from './worker-skill-catalog.service';
 import { WorkerStandardCatalogService } from './worker-standard-catalog.service';
 import { McpServersService } from '../mcp-servers/mcp-servers.service';
+import { SystemKnowledgeService } from '../knowledge/system-knowledge.service';
 
 export interface CreateWorkerInput {
   name: string;
@@ -249,6 +251,8 @@ export class WorkersService implements OnApplicationBootstrap {
     private readonly standardCatalog: WorkerStandardCatalogService,
     private readonly mcpServers: McpServersService,
     config: ConfigService,
+    @Optional()
+    private readonly systemKnowledge?: SystemKnowledgeService,
   ) {
     this.workerBaseDir = config.get<string>('WORKER_BASE_DIR')?.trim() || null;
     this.workerDirSegment =
@@ -570,6 +574,7 @@ export class WorkersService implements OnApplicationBootstrap {
         `自定义机器人 ID 必须从 ${SYSTEM_WORKER_ID_LIMIT} 开始，请稍后重试`,
       );
     }
+    void this.systemKnowledge?.syncWorker(saved.id);
     return this.findOneView(saved.id);
   }
 
@@ -700,6 +705,7 @@ export class WorkersService implements OnApplicationBootstrap {
       await this.resolveOwner(worker, input.ownerUserId ?? null);
     }
     await this.workers.save(worker);
+    void this.systemKnowledge?.syncWorker(id);
     this.notifyExecutionConfigChanged(id, beforeExecution, worker);
     return this.findOneView(id);
   }
@@ -763,6 +769,7 @@ export class WorkersService implements OnApplicationBootstrap {
     // 调试会话绑定随机器人删除清理（opencode 会话本身保留在执行器上）
     await this.debugSessions.delete({ workerId: id });
     await this.workers.remove(worker);
+    void this.systemKnowledge?.syncWorker(id);
   }
 
   /** 配置校验：AI 机器人统一走执行器（opencode）；真人机器人由绑定用户执行，不需要执行器配置 */

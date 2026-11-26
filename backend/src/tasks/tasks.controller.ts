@@ -437,7 +437,7 @@ export class TasksController {
 
   /**
    * 任务文档目录清单（含 HANDOFF，验收后含 REVIEW）。
-   * 任务相关文档默认归档到 /task/{yyyyMMdd}/{任务编号}/。
+   * 任务相关文档默认归档到 /98-tasks/{yyyyMMdd}/{数字任务ID}/。
    */
   @Get(':id/documents.md')
   @Header('Content-Type', 'text/markdown; charset=utf-8')

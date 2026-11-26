@@ -8,10 +8,11 @@ import { Document } from './document.entity';
 import { DocumentsController } from './documents.controller';
 import { DocumentsService } from './documents.service';
 import { ProjectSummaryModule } from '../projects/project-summary.module';
+import { Project } from '../projects/project.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Document, BacklogDocument]),
+    TypeOrmModule.forFeature([Document, BacklogDocument, Project]),
     FeishuModule,
     ApipostModule,
     KnowledgeModule,

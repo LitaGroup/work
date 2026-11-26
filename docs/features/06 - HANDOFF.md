@@ -134,4 +134,4 @@ flowchart TD
 7. 任务负责人提交反馈后重新识别并派发机器人；验收计数与接管快照保留。
 8. 子任务机器人提问优先由直接父任务机器人自动答复：平台使用父机器人执行器、模型和工位创建一次性独立咨询会话，不干扰父任务执行状态；无可用父机器人或自动答复失败时，通知任务需求方人工回答。
 9. 任务详情展示验收不通过次数、负责人接管信息，以及父任务机器人自动答复中/失败状态。
-10. 任务文档目录统一为 `/task/{yyyyMMdd}/{任务编号}/`：`HANDOFF.md` 走 `handoff/update.md`；`API.md`、`TECH_DESIGN.md` 等普通文档走 `GET/POST /api/tasks/:id/documents.md`（`name` 支持带/不带 `.md`，同名覆盖）；`REVIEW.md` 由平台验收后生成。`/task/**` 在通用知识接口中只读，禁止绕过任务流程改写。
+10. 任务文档目录统一为 `/98-tasks/{任务创建日期 yyyyMMdd}/{数字任务ID}/`：`HANDOFF.md` 走 `handoff/update.md`；`API.md`、`TECH_DESIGN.md` 等普通文档走 `GET/POST /api/tasks/:id/documents.md`（`name` 支持带/不带 `.md`，同名覆盖）；`REVIEW.md` 由平台验收后生成。`/98-tasks/**` 在通用知识接口中只读，禁止绕过任务流程改写；旧 `/task/**` 仅保留迁移别名。

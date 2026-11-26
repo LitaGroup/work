@@ -2,12 +2,14 @@ import {
   BadRequestException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import { EvalSuitePurpose, EvalSuiteStatus } from '../common/enums';
 import { EvalRun } from './eval-run.entity';
 import { EvalCase, EvalCasePoint, EvalSuite } from './eval-suite.entity';
+import { SystemKnowledgeService } from '../knowledge/system-knowledge.service';
 
 /** 要点更新入参 */
 export interface PointInput {
@@ -103,7 +105,13 @@ export class EvalSuiteService {
     private readonly points: Repository<EvalCasePoint>,
     @InjectRepository(EvalRun)
     private readonly runs: Repository<EvalRun>,
+    @Optional()
+    private readonly systemKnowledge?: SystemKnowledgeService,
   ) {}
+
+  private syncMirror(suiteId: number): void {
+    void this.systemKnowledge?.syncEvalSuite(suiteId);
+  }
 
   async list(): Promise<
     Array<
@@ -166,6 +174,7 @@ export class EvalSuiteService {
         status: EvalSuiteStatus.ACTIVE,
       }),
     );
+    this.syncMirror(suite.id);
     return suite;
   }
 
@@ -205,6 +214,7 @@ export class EvalSuiteService {
     if (input.status) patch.status = input.status;
     patch.version = suite.version + 1;
     await this.suites.update({ id: suiteId }, patch);
+    this.syncMirror(suiteId);
     return this.suites.findOneOrFail({ where: { id: suiteId } });
   }
 
@@ -220,6 +230,7 @@ export class EvalSuiteService {
       return suite;
     }
     await this.suites.update({ id: suiteId }, { tags: normalized });
+    this.syncMirror(suiteId);
     return this.suites.findOneOrFail({ where: { id: suiteId } });
   }
 
@@ -244,6 +255,7 @@ export class EvalSuiteService {
     }
     await this.cases.delete({ suiteId });
     await this.suites.delete({ id: suiteId });
+    this.syncMirror(suiteId);
   }
 
   async detail(suiteId: number): Promise<{
@@ -291,6 +303,7 @@ export class EvalSuiteService {
     );
     await this.replacePoints(saved.id, points);
     await this.bumpVersion(suiteId);
+    this.syncMirror(suiteId);
     return saved;
   }
 
@@ -308,6 +321,7 @@ export class EvalSuiteService {
     await this.cases.update({ id: caseId }, caseFields);
     await this.replacePoints(caseId, points);
     await this.bumpVersion(suiteId);
+    this.syncMirror(suiteId);
     return this.cases.findOneOrFail({ where: { id: caseId } });
   }
 
@@ -315,6 +329,7 @@ export class EvalSuiteService {
     await this.points.delete({ caseId });
     await this.cases.delete({ id: caseId, suiteId });
     await this.bumpVersion(suiteId);
+    this.syncMirror(suiteId);
   }
 
   /** 导入 JSON（按 caseKey 新增或覆盖）；返回 {added, updated} */

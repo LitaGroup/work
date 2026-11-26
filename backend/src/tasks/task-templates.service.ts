@@ -4,6 +4,7 @@ import {
   Logger,
   NotFoundException,
   OnModuleInit,
+  Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
@@ -11,6 +12,7 @@ import { WorkerRole } from '../common/enums';
 import { mdFrontmatter } from '../common/frontmatter';
 import { markdownCell, markdownLabel } from '../common/markdown-table';
 import { Worker } from '../workers/worker.entity';
+import { SystemKnowledgeService } from '../knowledge/system-knowledge.service';
 import {
   SYSTEM_FEEDBACK_HANDLER_WORKER_ID,
   SYSTEM_PROJECT_MANAGER_WORKER_ID,
@@ -71,6 +73,8 @@ export class TaskTemplatesService implements OnModuleInit {
     private readonly workers: Repository<Worker>,
     @InjectRepository(TaskTemplateFollow)
     private readonly follows: Repository<TaskTemplateFollow>,
+    @Optional()
+    private readonly systemKnowledge?: SystemKnowledgeService,
   ) {}
 
   /** 系统任务定义使用 id < 1000；网页新建的自定义定义从 1000 开始 */
@@ -366,6 +370,7 @@ export class TaskTemplatesService implements OnModuleInit {
         createdByName: actor?.name ?? null,
       }),
     );
+    void this.systemKnowledge?.syncTaskDefinition(template.id);
     return { ...template, followedByMe: false };
   }
 
@@ -392,7 +397,9 @@ export class TaskTemplatesService implements OnModuleInit {
     if (input.agentIds !== undefined) {
       template.agentIds = await this.normalizeAgents(input.agentIds);
     }
-    return this.templates.save(template);
+    const saved = await this.templates.save(template);
+    void this.systemKnowledge?.syncTaskDefinition(saved.id);
+    return saved;
   }
 
   async remove(id: number): Promise<void> {
@@ -404,6 +411,7 @@ export class TaskTemplatesService implements OnModuleInit {
     const template = await this.findOne(id);
     await this.templates.remove(template);
     await this.follows.delete({ templateId: id });
+    void this.systemKnowledge?.syncTaskDefinition(id);
   }
 
   private async assertNameAvailable(

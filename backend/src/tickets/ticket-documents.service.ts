@@ -480,7 +480,7 @@ export class TicketDocumentsService {
       `curl -sS -X POST '${this.apiUrl}/tasks/${task.id}/ticket-documents.md' \\`,
       '  -H "X-Worker-Token: $TOKEN" \\',
       '  -H "Content-Type: application/json" \\',
-      `  -d '{"title":"接口文档","url":"/api/docs/detail/task/{yyyyMMdd}/${task.code}/API.md"}'`,
+      `  -d '{"title":"接口文档","url":"/api/docs/detail/98-tasks/{yyyyMMdd}/${task.id}/API.md"}'`,
       '',
       '# 交付正文（独立副本，不随源任务文档变化）',
       `curl -sS -X POST '${this.apiUrl}/tasks/${task.id}/ticket-documents.md' \\`,

@@ -17,7 +17,16 @@ import type { Request, Response } from 'express';
 import type { AuthedRequest } from '../auth/auth.guard';
 import { KnowledgeService } from './knowledge.service';
 import type { KnowledgeSearchSource } from './knowledge.types';
-import { assertTaskDocumentWritable } from './task-document.guard';
+import {
+  assertSystemKnowledgeWritable,
+  assertSystemRootRemovable,
+} from './system-knowledge.guard';
+import {
+  assertCanManageSystemKnowledge,
+  assertCanReadSystemKnowledge,
+  knowledgeSearchExcludes,
+} from './knowledge.access';
+import { isSystemKnowledgeRoot } from './knowledge.path';
 
 class CreateKnowledgeNodeDto {
   kind: 'directory' | 'article';
@@ -90,6 +99,21 @@ function optionalNumber(value: string | undefined): number | undefined {
 export class KnowledgeController {
   constructor(private readonly knowledge: KnowledgeService) {}
 
+  /** 系统受管内容禁止通用写入；系统根目录仅允许后续 service 按 title-only 更新 */
+  private assertUpdateAllowed(
+    req: Request,
+    currentPath: string,
+    parentPath?: string,
+  ): void {
+    const identity = req as AuthedRequest;
+    assertCanManageSystemKnowledge(identity, currentPath);
+    assertCanManageSystemKnowledge(identity, parentPath);
+    assertSystemKnowledgeWritable(
+      isSystemKnowledgeRoot(currentPath) ? undefined : currentPath,
+      parentPath,
+    );
+  }
+
   private async handleDetail(req: Request, res: Response): Promise<unknown> {
     const suffix = detailSuffix(req);
     const markdown = suffix.endsWith('.md');
@@ -106,18 +130,21 @@ export class KnowledgeController {
     const path = rawPath.replace(/^\/+/, '').replace(/\/+$/, '')
       ? `/${rawPath.replace(/^\/+/, '').replace(/\/+$/, '')}`
       : '/';
+    const identity = req as AuthedRequest;
+    assertCanReadSystemKnowledge(identity, path);
+    const options = { excludePaths: knowledgeSearchExcludes(identity) };
 
     if (markdown) {
       res.type('text/markdown; charset=utf-8');
       return directory
-        ? this.knowledge.renderDirectoryMarkdown(path)
+        ? this.knowledge.renderDirectoryMarkdown(path, options)
         : this.knowledge.renderArticleMarkdown(
             await this.knowledge.readArticle(path),
           );
     }
 
     if (directory) {
-      return this.knowledge.readDirectory(path);
+      return this.knowledge.readDirectory(path, options);
     }
     return this.knowledge.readArticle(path);
   }
@@ -145,14 +172,16 @@ export class KnowledgeController {
     @Query('pageSize') pageSize?: string,
     @Query('limit') limit?: string,
   ): Promise<string> {
-    const user = (req as AuthedRequest).user;
-    if (!user) throw new BadRequestException('缺少登录用户');
+    const identity = req as AuthedRequest;
+    if (!identity.user) throw new BadRequestException('缺少登录用户');
+    if (path) assertCanReadSystemKnowledge(identity, path);
     const result = await this.knowledge.search({
       query: q,
       source: (source ?? 'project') as KnowledgeSearchSource,
       path,
       page: optionalNumber(page),
       pageSize: optionalNumber(pageSize) ?? optionalNumber(limit),
+      excludePaths: knowledgeSearchExcludes(identity),
     });
     return this.knowledge.renderSearchMarkdown(result);
   }
@@ -167,20 +196,24 @@ export class KnowledgeController {
     @Query('pageSize') pageSize?: string,
     @Query('limit') limit?: string,
   ) {
-    const user = (req as AuthedRequest).user;
-    if (!user) throw new BadRequestException('缺少登录用户');
+    const identity = req as AuthedRequest;
+    if (!identity.user) throw new BadRequestException('缺少登录用户');
+    if (path) assertCanReadSystemKnowledge(identity, path);
     return this.knowledge.search({
       query: q,
       source: (source ?? 'project') as KnowledgeSearchSource,
       path,
       page: optionalNumber(page),
       pageSize: optionalNumber(pageSize) ?? optionalNumber(limit),
+      excludePaths: knowledgeSearchExcludes(identity),
     });
   }
 
   @Get('nodes/:id')
-  getNode(@Param('id') id: string) {
-    return this.knowledge.getNodeById(id);
+  async getNode(@Param('id') id: string, @Req() req: Request) {
+    const node = await this.knowledge.getNodeById(id);
+    assertCanReadSystemKnowledge(req as AuthedRequest, node.path);
+    return node;
   }
 
   /** AI 创建知识文章/目录（Markdown 返回，便于直接进入后续操作） */
@@ -189,11 +222,13 @@ export class KnowledgeController {
   @Header('Content-Type', 'text/markdown; charset=utf-8')
   async createMarkdown(
     @Body() dto: CreateKnowledgeMarkdownDto,
+    @Req() req: Request,
   ): Promise<string> {
     if (dto.kind !== 'directory' && dto.kind !== 'article') {
       throw new BadRequestException('kind 只能是 directory 或 article');
     }
-    assertTaskDocumentWritable(dto.parentPath);
+    assertCanManageSystemKnowledge(req as AuthedRequest, dto.parentPath);
+    assertSystemKnowledgeWritable(dto.parentPath);
     const node = await this.knowledge.create({
       kind: dto.kind,
       parentPath: dto.parentPath ?? '/',
@@ -210,10 +245,11 @@ export class KnowledgeController {
   @Header('Content-Type', 'text/markdown; charset=utf-8')
   async updateMarkdown(
     @Body() dto: UpdateKnowledgeMarkdownDto,
+    @Req() req: Request,
   ): Promise<string> {
     if (!dto.path?.trim()) throw new BadRequestException('path 不能为空');
     const current = await this.knowledge.getNodeByPath(dto.path);
-    assertTaskDocumentWritable(current.path, dto.parentPath);
+    this.assertUpdateAllowed(req, current.path, dto.parentPath);
     const node = await this.knowledge.update(current.id, {
       title: dto.title,
       content: dto.content,
@@ -229,21 +265,25 @@ export class KnowledgeController {
   @Header('Content-Type', 'text/markdown; charset=utf-8')
   async deleteMarkdown(
     @Body() dto: DeleteKnowledgeMarkdownDto,
+    @Req() req: Request,
   ): Promise<string> {
     if (!dto.path?.trim()) throw new BadRequestException('path 不能为空');
     const recursive = dto.recursive === true;
     const node = await this.knowledge.getNodeByPath(dto.path);
-    assertTaskDocumentWritable(node.path);
+    assertCanManageSystemKnowledge(req as AuthedRequest, node.path);
+    assertSystemKnowledgeWritable(node.path);
+    assertSystemRootRemovable(node.path);
     await this.knowledge.remove(node.id, recursive);
     return this.knowledge.renderNodeDeletedMarkdown(node, recursive);
   }
 
   @Post('nodes')
-  create(@Body() dto: CreateKnowledgeNodeDto) {
+  create(@Body() dto: CreateKnowledgeNodeDto, @Req() req: Request) {
     if (dto.kind !== 'directory' && dto.kind !== 'article') {
       throw new BadRequestException('kind 只能是 directory 或 article');
     }
-    assertTaskDocumentWritable(dto.parentPath);
+    assertCanManageSystemKnowledge(req as AuthedRequest, dto.parentPath);
+    assertSystemKnowledgeWritable(dto.parentPath);
     return this.knowledge.create({
       kind: dto.kind,
       parentPath: dto.parentPath ?? '/',
@@ -254,9 +294,13 @@ export class KnowledgeController {
   }
 
   @Patch('nodes/:id')
-  async update(@Param('id') id: string, @Body() dto: UpdateKnowledgeNodeDto) {
+  async update(
+    @Param('id') id: string,
+    @Body() dto: UpdateKnowledgeNodeDto,
+    @Req() req: Request,
+  ) {
     const current = await this.knowledge.getNodeById(id);
-    assertTaskDocumentWritable(current.path, dto.parentPath);
+    this.assertUpdateAllowed(req, current.path, dto.parentPath);
     return this.knowledge.update(id, dto);
   }
 
@@ -264,10 +308,13 @@ export class KnowledgeController {
   @HttpCode(204)
   async remove(
     @Param('id') id: string,
+    @Req() req: Request,
     @Query('recursive') recursive?: string,
   ): Promise<void> {
     const current = await this.knowledge.getNodeById(id);
-    assertTaskDocumentWritable(current.path);
+    assertCanManageSystemKnowledge(req as AuthedRequest, current.path);
+    assertSystemKnowledgeWritable(current.path);
+    assertSystemRootRemovable(current.path);
     await this.knowledge.remove(id, recursive === 'true');
   }
 }

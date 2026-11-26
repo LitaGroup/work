@@ -11,7 +11,10 @@ import { Repository } from 'typeorm';
 import { TaskStatus, TaskSubStatus } from '../common/enums';
 import { beijingTime, mdFrontmatter } from '../common/frontmatter';
 import { stripKnowledgeFrontmatter } from '../knowledge/knowledge.chunk';
-import { encodeKnowledgePath } from '../knowledge/knowledge.path';
+import {
+  encodeKnowledgePath,
+  taskRecordRootPath,
+} from '../knowledge/knowledge.path';
 import { KnowledgeService } from '../knowledge/knowledge.service';
 import type { KnowledgeNode } from '../knowledge/knowledge.types';
 import { Task } from './task.entity';
@@ -52,7 +55,7 @@ export interface TaskHandoffUpdateInput {
 export interface TaskDocumentEntry {
   /** 阅读名，如 API.md / HANDOFF.md */
   name: string;
-  /** 知识路径（不带 .md 后缀），如 /task/20261102/TK-0001/API */
+  /** 知识路径（不带 .md 后缀），如 /98-tasks/20261102/12/API */
   path: string;
   /** 网页阅读地址（不带 .md） */
   url: string;
@@ -131,7 +134,11 @@ const LEGACY_REVIEW_PATH = /^\/task\/handoff\/(\d{8})\/([^/]+)\/(\d+)\.md$/;
  * 早期任务文档把 `.md` 写进了知识路径（如 `/task/.../HANDOFF.md`）。
  * 知识接口把结尾 `.md` 当作 Markdown 视图后缀，这类节点无法通过浏览器或 API 访问，需去掉。
  */
-const SUFFIXED_TASK_DOCUMENT_PATH = /^\/task\/(\d{8})\/([^/]+)\/([^/]+)\.md$/;
+const SUFFIXED_TASK_DOCUMENT_PATH =
+  /^\/(?:task|98-tasks)\/(\d{8})\/([^/]+)\/([^/]+)\.md$/;
+
+/** 旧任务文档目录：/task/{yyyyMMdd}/{taskCode} */
+const LEGACY_TASK_DIRECTORY = /^\/task\/(\d{8})\/([^/]+)(?:\/.*)?$/;
 
 /** 统一文档名：去掉可选的 .md 后缀；HANDOFF/REVIEW 大小写归一。 */
 function normalizeTaskDocumentName(raw: string): string {
@@ -248,10 +255,6 @@ function extractTaskArtifacts(
   return [...found.values()];
 }
 
-function dateStamp(value: Date): string {
-  return beijingTime(value).slice(0, 10).replace(/-/g, '');
-}
-
 function hasYamlFrontmatter(markdown: string): boolean {
   return /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.test(markdown);
 }
@@ -276,7 +279,7 @@ function frontmatterDescription(markdown: string): string | null {
 }
 
 /**
- * 任务文档（统一放在 /task/{yyyyMMdd}/{任务编号}/）：
+ * 任务文档（统一放在 /98-tasks/{yyyyMMdd}/{数字任务ID}/）：
  * - HANDOFF：执行方开始处理后显式创建并持续维护，申请验收时锁定版本
  * - REVIEW：验收通过后生成/覆盖的复盘文档，与 HANDOFF 同目录
  * - API / TECH_DESIGN 等：执行过程中由任务接口读写的普通文档
@@ -306,6 +309,10 @@ export class TaskDocumentService implements OnApplicationBootstrap {
         .then(() => this.migrateSuffixedDocumentPaths())
         .catch((error: Error) => {
           this.logger.warn(`历史任务文档路径修正失败：${error.message}`);
+        })
+        .then(() => this.migrateSystemTaskDirectories())
+        .catch((error: Error) => {
+          this.logger.warn(`任务文档系统目录迁移失败：${error.message}`);
         });
     }, 3000);
     timer.unref();
@@ -575,16 +582,22 @@ export class TaskDocumentService implements OnApplicationBootstrap {
   }
 
   /**
-   * 任务文档目录：`/task/{yyyyMMdd}/{任务编号}`。
-   * 已登记 HANDOFF 的历史任务沿用其所在目录，保证 API/REVIEW 与 HANDOFF 同目录。
+   * 任务文档目录：`/98-tasks/{yyyyMMdd}/{数字任务ID}`。
+   * 已登记到系统任务目录的文档沿用其所在目录；需求明确指定的其它路径也保留。
    */
   taskDirectory(task: Task): string {
+    const canonical = taskRecordRootPath(task);
     const saved = task.handoffPath?.trim();
     if (saved) {
       const slash = saved.lastIndexOf('/');
-      if (slash > 0) return saved.slice(0, slash);
+      if (slash > 0) {
+        const directory = saved.slice(0, slash);
+        if (!directory.startsWith('/task/')) {
+          return directory;
+        }
+      }
     }
-    return `/task/${dateStamp(task.createdAt ?? new Date())}/${task.code}`;
+    return canonical;
   }
 
   /** 任务目录下某篇文档的知识路径（不带 .md） */
@@ -784,7 +797,7 @@ export class TaskDocumentService implements OnApplicationBootstrap {
     lines.push(
       '## 写入文档',
       '',
-      '任务目录下的普通文档（不含 HANDOFF / REVIEW）使用任务接口写入，通用知识接口对 `/task/**` 只读：',
+      '任务目录下的普通文档（不含 HANDOFF / REVIEW）使用任务接口写入，通用知识接口对 `/98-tasks/**` 只读：',
       '',
       '```bash',
       WORKER_ENV_SOURCE_COMMAND,
@@ -906,14 +919,13 @@ export class TaskDocumentService implements OnApplicationBootstrap {
 
   /**
    * 去掉历史任务文档路径里的 `.md` 后缀：
-   * 知识接口把结尾 `.md` 当成 Markdown 视图，节点 `/task/.../HANDOFF.md` 会解析成
-   * `/task/.../HANDOFF` 而 404。失败只告警，可下次重试。
+   * 知识接口把结尾 `.md` 当成 Markdown 视图，旧节点会被解析到不带后缀路径而 404。
    */
   async migrateSuffixedDocumentPaths(): Promise<number> {
     if (!this.knowledge.isEnabled) return 0;
     let nodes: KnowledgeNode[];
     try {
-      nodes = await this.knowledge.listArticlesByPrefix('/task');
+      nodes = await this.listAllTaskDocuments();
     } catch (error) {
       this.logger.warn(`读取历史任务文档失败：${(error as Error).message}`);
       return 0;
@@ -946,6 +958,137 @@ export class TaskDocumentService implements OnApplicationBootstrap {
       this.logger.log(`已修正 ${migrated} 个历史任务文档路径（去掉 .md 后缀）`);
     }
     return migrated;
+  }
+
+  /**
+   * 存量任务文档迁移：`/task/{date}/{taskCode}/**` → `/98-tasks/{任务创建日期}/{taskId}/**`。
+   * 旧链接记录别名；同一任务多个历史日期目录时，主目录进入标准位置，其余归档到
+   * `legacy-{date}` 子目录，避免内容覆盖。
+   */
+  async migrateSystemTaskDirectories(): Promise<number> {
+    if (!this.knowledge.isEnabled) return 0;
+    let nodes: KnowledgeNode[];
+    let tasks: Task[];
+    try {
+      nodes = await this.knowledge.listNodesByPrefix('/task');
+      tasks = await this.tasks.find();
+    } catch (error) {
+      this.logger.warn(`读取待迁移任务文档失败：${(error as Error).message}`);
+      return 0;
+    }
+    if (nodes.length === 0) return 0;
+
+    const taskByCode = new Map(tasks.map((task) => [task.code, task]));
+    const directoryNodes = nodes.filter(
+      (node) =>
+        node.kind === 'directory' && LEGACY_TASK_DIRECTORY.test(node.path),
+    );
+    const groups = new Map<string, KnowledgeNode[]>();
+    for (const node of directoryNodes) {
+      const match = LEGACY_TASK_DIRECTORY.exec(node.path);
+      if (!match) continue;
+      const [, date, code] = match;
+      if (node.path !== `/task/${date}/${code}`) continue;
+      const list = groups.get(code) ?? [];
+      list.push(node);
+      groups.set(code, list);
+    }
+
+    let migrated = 0;
+    for (const [code, directories] of groups) {
+      const task = taskByCode.get(code);
+      if (!task) {
+        this.logger.warn(
+          `任务目录 ${directories[0]?.path} 找不到对应任务（${code}），归档到 /98-tasks/unmapped`,
+        );
+      }
+      const canonical = task
+        ? taskRecordRootPath(task)
+        : `/98-tasks/unmapped/${code}`;
+      const saved = task?.handoffPath?.trim() ?? '';
+      const ordered = [...directories].sort((a, b) =>
+        b.path.localeCompare(a.path, 'en'),
+      );
+      const primary =
+        ordered.find((node) => saved.startsWith(`${node.path}/`)) ?? ordered[0];
+      if (!primary) continue;
+
+      for (const directory of ordered) {
+        const match = LEGACY_TASK_DIRECTORY.exec(directory.path);
+        const date = match?.[1] ?? 'unknown';
+        let target =
+          directory.id === primary.id
+            ? canonical
+            : `${canonical}/legacy-${date}`;
+        const existing = await this.knowledge.findNodeByPath(target);
+        if (existing && existing.id !== directory.id) {
+          target =
+            directory.id === primary.id
+              ? `${canonical}/legacy-${date}`
+              : `${canonical}/legacy-${date}-${directory.id.slice(0, 6)}`;
+        }
+        const occupied = await this.knowledge.findNodeByPath(target);
+        if (occupied && occupied.id !== directory.id) {
+          this.logger.warn(
+            `任务文档 ${directory.path} 未迁移：目标 ${target} 已被占用`,
+          );
+          continue;
+        }
+        const subtree = nodes.filter(
+          (node) =>
+            node.path === directory.path ||
+            node.path.startsWith(`${directory.path}/`),
+        );
+        try {
+          await this.knowledge.moveSystemSubtree(
+            directory.id,
+            target,
+            subtree.map((node) => node.path),
+          );
+          migrated += subtree.length;
+          const oldPrefix = directory.path;
+          if (task?.handoffPath?.startsWith(`${oldPrefix}/`)) {
+            task.handoffPath = `${target}${task.handoffPath.slice(oldPrefix.length)}`;
+            await this.tasks.update(task.id, {
+              handoffPath: task.handoffPath,
+            });
+          }
+        } catch (error) {
+          this.logger.warn(
+            `任务文档迁移失败 ${directory.path} → ${target}：${(error as Error).message}`,
+          );
+        }
+      }
+    }
+    if (nodes.some((node) => node.path === '/task')) {
+      await this.knowledge
+        .recordPathAliases([{ oldPath: '/task', targetPath: '/98-tasks' }])
+        .catch((error: Error) =>
+          this.logger.warn(`记录旧任务目录别名失败：${error.message}`),
+        );
+    }
+    await this.knowledge
+      .pruneEmptyDirectories('/task', true)
+      .catch((error: Error) =>
+        this.logger.warn(`清理旧任务目录失败：${error.message}`),
+      );
+    if (migrated > 0) {
+      this.logger.log(`已迁移 ${migrated} 个任务文档节点到 /98-tasks`);
+    }
+    return migrated;
+  }
+
+  /** 旧版与新版任务目录文章合并去重（迁移和旧交付兜底共用） */
+  private async listAllTaskDocuments(): Promise<KnowledgeNode[]> {
+    const [legacy, current] = await Promise.all([
+      this.knowledge.listArticlesByPrefix('/task'),
+      this.knowledge.listArticlesByPrefix('/98-tasks'),
+    ]);
+    return [
+      ...new Map(
+        [...legacy, ...current].map((node) => [node.id, node]),
+      ).values(),
+    ];
   }
 
   private async directTaskDocumentNodes(task: Task): Promise<{
@@ -1040,9 +1183,11 @@ export class TaskDocumentService implements OnApplicationBootstrap {
    */
   private async findLegacyHandoff(task: Task): Promise<KnowledgeNode | null> {
     try {
-      const nodes = await this.knowledge.listArticlesByPrefix('/task');
+      const nodes = await this.listAllTaskDocuments();
       const escaped = task.code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const pattern = new RegExp(`^/task/\\d{8}/${escaped}/HANDOFF(?:\\.md)?$`);
+      const pattern = new RegExp(
+        `^/(?:task/\\d{8}/${escaped}|98-tasks/\\d{8}/${task.id}(?:/legacy-\\d{8})?)/HANDOFF(?:\\.md)?$`,
+      );
       return (
         nodes
           .filter((node) => pattern.test(node.path))
@@ -1102,6 +1247,12 @@ export class TaskDocumentService implements OnApplicationBootstrap {
     if (existing && existing.kind !== 'article') {
       throw new BadRequestException(`目标任务文档路径 ${targetPath} 不是文章`);
     }
+    await this.knowledge.recordPathAliases(
+      legacyNodes.map((node) => ({
+        oldPath: node.path,
+        targetPath,
+      })),
+    );
 
     if (!existing) {
       const content = this.normalizeLegacyReview(
@@ -1110,7 +1261,7 @@ export class TaskDocumentService implements OnApplicationBootstrap {
         targetPath,
         title,
       );
-      await this.knowledge.update(candidate.node.id, {
+      await this.knowledge.updateNodeForSystemMigration(candidate.node.id, {
         parentPath: targetPath.slice(0, targetPath.lastIndexOf('/')),
         name: 'REVIEW',
         title,

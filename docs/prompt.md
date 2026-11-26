@@ -19,7 +19,7 @@
 4. 提供知识的搜索能力，通过PGVector和全文检索来实现 RAG
 5. 对外提供知识的搜索SKILL，提供给Agent使用
 6. 项目中的文档，同步存储到 知识 中，并同步更新（或者正文部分直接存储到知识中，原 文档中不再单独存一份），存储的路径为：
-   1. http://{host}/api/docs/detail/project/{project id}/document/{document id}.md
+   1. http://{host}/api/docs/detail/01-backlogs/{需求创建日期 yyyyMMdd}/{需求ID}/document/{document id}.md
 
 7. 对应 PostgreSQL的账号密码和地址，在 .env 环境变量中
    1. PROJECT_PG_HOST 

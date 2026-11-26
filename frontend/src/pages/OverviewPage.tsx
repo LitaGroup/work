@@ -61,7 +61,7 @@ const featureCards: InfoCard[] = [
     description:
       'Markdown 文章 + 路径目录，站内全文与 PGVector 混合检索。',
     points: [
-      '目录必须带结尾 /，文章不带；项目文档自动同步到 /project/{projectId}/document/{documentId}',
+      '目录必须带结尾 /，文章不带；需求文档自动归档到 /01-backlogs/{yyyyMMdd}/{需求ID}/document/{documentId}',
       '搜索支持 path 限定目录与 page/pageSize 分页，每页最大 100 条',
       '搜索结果提供 RAG 片段与原文链接，可继续读取完整 Markdown',
       'MCP 工具 search_knowledge / read_knowledge 直接检索与读取，接入见 /work-mcp.md',

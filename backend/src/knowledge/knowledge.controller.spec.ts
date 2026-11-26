@@ -63,7 +63,9 @@ describe('KnowledgeController routes', () => {
       .get('/api/docs/detail/guides/')
       .expect(200);
     expect((res.body as { path: string }).path).toBe('/guides');
-    expect(service.readDirectory).toHaveBeenCalledWith('/guides');
+    expect(service.readDirectory).toHaveBeenCalledWith('/guides', {
+      excludePaths: ['/99-system'],
+    });
   });
 
   it('文章 JSON 不带结尾 /', async () => {
@@ -88,7 +90,9 @@ describe('KnowledgeController routes', () => {
       .get('/api/docs/detail/guides/.md')
       .expect(200);
     expect(res.headers['content-type']).toContain('text/markdown');
-    expect(service.renderDirectoryMarkdown).toHaveBeenCalledWith('/guides');
+    expect(service.renderDirectoryMarkdown).toHaveBeenCalledWith('/guides', {
+      excludePaths: ['/99-system'],
+    });
   });
 
   it('根目录支持 JSON 与 /.md', async () => {
@@ -98,8 +102,12 @@ describe('KnowledgeController routes', () => {
     await request(app.getHttpServer() as Server)
       .get('/api/docs/detail/.md')
       .expect(200);
-    expect(service.readDirectory).toHaveBeenCalledWith('/');
-    expect(service.renderDirectoryMarkdown).toHaveBeenCalledWith('/');
+    expect(service.readDirectory).toHaveBeenCalledWith('/', {
+      excludePaths: ['/99-system'],
+    });
+    expect(service.renderDirectoryMarkdown).toHaveBeenCalledWith('/', {
+      excludePaths: ['/99-system'],
+    });
   });
 
   it('拒绝编码斜杠，防止一个路径段被当成多级目录', async () => {
@@ -190,6 +198,60 @@ describe('KnowledgeController routes', () => {
         expect.objectContaining({ path: '/manual/deploy' }),
         '/guides/deploy',
       );
+    });
+
+    it('系统根目录可以通过控制器修改名称', async () => {
+      const root = {
+        ...node,
+        id: 'sys-tasks',
+        kind: 'directory' as const,
+        path: '/98-tasks',
+        parentPath: '/',
+        name: '98-tasks',
+        title: '任务记录',
+        source: 'system' as const,
+        content: null,
+      };
+      service.getNodeByPath.mockResolvedValue(root);
+      service.update.mockResolvedValue({ ...root, title: '任务归档' });
+      service.renderNodeUpdatedMarkdown.mockReturnValue('# 已更新');
+
+      await request(app.getHttpServer() as Server)
+        .post('/api/docs/nodes/update.md')
+        .send({ path: '/98-tasks', title: '任务归档' })
+        .expect(200);
+
+      expect(service.update).toHaveBeenCalledWith('sys-tasks', {
+        title: '任务归档',
+        content: undefined,
+        name: undefined,
+        parentPath: undefined,
+      });
+    });
+
+    it('系统根目录 JSON PATCH 同样只提交名称', async () => {
+      const root = {
+        ...node,
+        id: 'sys-backlogs',
+        kind: 'directory' as const,
+        path: '/01-backlogs',
+        parentPath: '/',
+        name: '01-backlogs',
+        title: '需求迭代',
+        source: 'system' as const,
+        content: null,
+      };
+      service.getNodeById.mockResolvedValue(root);
+      service.update.mockResolvedValue({ ...root, title: '需求归档' });
+
+      await request(app.getHttpServer() as Server)
+        .patch('/api/docs/nodes/sys-backlogs')
+        .send({ title: '需求归档' })
+        .expect(200);
+
+      expect(service.update).toHaveBeenCalledWith('sys-backlogs', {
+        title: '需求归档',
+      });
     });
 
     it('按路径删除，非空目录需显式 recursive', async () => {

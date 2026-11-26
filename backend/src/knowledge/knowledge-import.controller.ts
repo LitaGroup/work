@@ -1,5 +1,8 @@
-import { Body, Controller, HttpCode, Param, Post } from '@nestjs/common';
-import { assertTaskDocumentWritable } from './task-document.guard';
+import { Body, Controller, HttpCode, Param, Post, Req } from '@nestjs/common';
+import type { Request } from 'express';
+import type { AuthedRequest } from '../auth/auth.guard';
+import { assertCanManageSystemKnowledge } from './knowledge.access';
+import { assertSystemKnowledgeWritable } from './system-knowledge.guard';
 import { KnowledgeImportService } from './knowledge-import.service';
 import { KnowledgeService } from './knowledge.service';
 
@@ -20,17 +23,19 @@ export class KnowledgeImportController {
   /** 从飞书 / APIPOST 导入知识文章，按链接自动识别来源 */
   @Post('nodes/import')
   @HttpCode(200)
-  importDocument(@Body() dto: ImportKnowledgeDocumentDto) {
-    assertTaskDocumentWritable(dto.parentPath);
+  importDocument(@Body() dto: ImportKnowledgeDocumentDto, @Req() req: Request) {
+    assertCanManageSystemKnowledge(req as AuthedRequest, dto.parentPath);
+    assertSystemKnowledgeWritable(dto.parentPath);
     return this.imports.import(dto);
   }
 
   /** 从保存的原始链接更新同步外部知识文章 */
   @Post('nodes/:id/sync')
   @HttpCode(200)
-  async syncDocument(@Param('id') id: string) {
+  async syncDocument(@Param('id') id: string, @Req() req: Request) {
     const current = await this.knowledge.getNodeById(id);
-    assertTaskDocumentWritable(current.path);
+    assertCanManageSystemKnowledge(req as AuthedRequest, current.path);
+    assertSystemKnowledgeWritable(current.path);
     return this.imports.sync(id);
   }
 }

@@ -35,6 +35,8 @@ describe('KnowledgeService.search', () => {
     search: jest.Mock;
     getByPath: jest.Mock;
     getById: jest.Mock;
+    resolvePathAlias: jest.Mock;
+    updateSystemDirectoryTitle: jest.Mock;
     listChildren: jest.Mock;
     createNode: jest.Mock;
     findExternalNode: jest.Mock;
@@ -53,6 +55,8 @@ describe('KnowledgeService.search', () => {
         title: 'guides',
       }),
       getById: jest.fn(),
+      resolvePathAlias: jest.fn().mockResolvedValue(null),
+      updateSystemDirectoryTitle: jest.fn(),
       findExternalNode: jest.fn().mockResolvedValue(null),
       createExternalNode: jest.fn().mockResolvedValue({ id: 'external-1' }),
       updateExternalNode: jest.fn(),
@@ -116,6 +120,17 @@ describe('KnowledgeService.search', () => {
     expect(store.search).not.toHaveBeenCalled();
   });
 
+  it('搜索可将系统设计目录从词法与向量候选中排除', async () => {
+    await service.search({
+      query: '部署',
+      excludePaths: ['/99-system'],
+    });
+
+    expect(store.search).toHaveBeenCalledWith(
+      expect.objectContaining({ excludePaths: ['/99-system'] }),
+    );
+  });
+
   it('知识库不可用时返回 503', async () => {
     store.isEnabled = false;
     await expect(service.search({ query: '部署' })).rejects.toThrow(
@@ -141,6 +156,87 @@ describe('KnowledgeService.search', () => {
 
     expect(store.listChildren).toHaveBeenCalledWith('/guides');
     expect(directory.title).toBe('研发指引');
+  });
+
+  it('平台内部归档可在新任务目录创建文章，公开创建仍由 guard 拦截', async () => {
+    await expect(
+      service.createArticleAtPath({
+        path: '/98-tasks/20261126/42/API',
+        title: '接口文档',
+        content: '# API',
+      }),
+    ).resolves.toBeDefined();
+    expect(store.createNode).toHaveBeenCalledWith({
+      kind: 'article',
+      path: '/98-tasks/20261126/42/API',
+      title: '接口文档',
+      content: '# API',
+    });
+  });
+
+  it('旧系统路径通过迁移别名读取当前节点', async () => {
+    const current = {
+      id: 'n-current',
+      kind: 'article',
+      path: '/98-tasks/20261028/1/HANDOFF',
+      title: '交付文档',
+    };
+    store.getByPath.mockResolvedValueOnce(null).mockResolvedValueOnce(current);
+    store.resolvePathAlias.mockResolvedValue('/98-tasks/20261028/1/HANDOFF');
+
+    const article = await service.readArticle('/task/20261028/TK-0001/HANDOFF');
+
+    expect(store.resolvePathAlias).toHaveBeenCalledWith(
+      '/task/20261028/TK-0001/HANDOFF',
+    );
+    expect(article).toBe(current);
+  });
+
+  it('系统级目录只能改名称，不能改名、移动或删除', async () => {
+    const root = {
+      id: 'sys-task',
+      kind: 'directory',
+      path: '/98-tasks',
+      source: 'system',
+      title: '任务记录',
+    };
+    store.getById.mockResolvedValue(root);
+    store.updateSystemDirectoryTitle.mockResolvedValue({
+      ...root,
+      title: '任务归档',
+    });
+
+    await expect(
+      service.update(root.id, { title: '任务归档' }),
+    ).resolves.toEqual(expect.objectContaining({ title: '任务归档' }));
+    await expect(service.update(root.id, { name: 'tasks' })).rejects.toThrow(
+      '只能修改名称',
+    );
+    await expect(service.remove(root.id)).rejects.toThrow('不能删除');
+  });
+
+  it('目录浏览可隐藏指定的系统目录', async () => {
+    store.getByPath.mockResolvedValueOnce({
+      kind: 'directory',
+      path: '/',
+      title: '知识库',
+    });
+    store.listChildren.mockResolvedValueOnce({
+      path: '/',
+      title: '知识库',
+      parentPath: null,
+      directories: [
+        { path: '/99-system', name: '99-system', kind: 'directory' },
+        { path: '/guides', name: 'guides', kind: 'directory' },
+      ],
+      articles: [{ path: '/note', name: 'note', kind: 'article' }],
+    });
+
+    const directory = await service.readDirectory('/', {
+      excludePaths: ['/99-system'],
+    });
+
+    expect(directory.directories.map((node) => node.path)).toEqual(['/guides']);
   });
 
   it('导入外部文档时生成稳定且不冲突的路径', async () => {
@@ -233,18 +329,18 @@ describe('KnowledgeService.search', () => {
 
   it('按完整路径创建文章时自动交给存储层创建父目录', async () => {
     const node = await service.createArticleAtPath({
-      path: '/task/handoff/20261028/TK-0001/0.md',
+      path: '/guides/legacy-summary',
       title: '任务总结',
       content: '# 总结',
     });
 
     expect(store.createNode).toHaveBeenCalledWith({
       kind: 'article',
-      path: '/task/handoff/20261028/TK-0001/0.md',
+      path: '/guides/legacy-summary',
       title: '任务总结',
       content: '# 总结',
     });
-    expect(node.path).toContain('/task/handoff/');
+    expect(node.id).toBe('n2');
   });
 
   it('文章自带 Frontmatter 时不再重复前置平台元信息', () => {

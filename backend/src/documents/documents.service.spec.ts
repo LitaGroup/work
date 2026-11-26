@@ -16,6 +16,13 @@ function buildService() {
     manager: { query: jest.fn().mockResolvedValue(undefined) },
   };
   const backlogDocuments = { delete: jest.fn().mockResolvedValue(undefined) };
+  const projects = {
+    findOne: jest.fn().mockResolvedValue({
+      id: 7,
+      createdAt: new Date('2026-10-27T16:30:00Z'),
+    }),
+    find: jest.fn().mockResolvedValue([]),
+  };
   const feishu = { readByUrl: jest.fn() };
   const apipost = { readByUrl: jest.fn() };
   const knowledge = {
@@ -24,19 +31,25 @@ function buildService() {
     removeProjectDocument: jest.fn(),
     upsertProjectDocument: jest.fn().mockResolvedValue(true),
     getProjectDocument: jest.fn(),
+    listNodesByPrefix: jest.fn().mockResolvedValue([]),
+    findNodeByPath: jest.fn().mockResolvedValue(null),
+    moveSystemSubtree: jest.fn().mockResolvedValue({}),
+    recordPathAliases: jest.fn().mockResolvedValue(undefined),
+    pruneEmptyDirectories: jest.fn().mockResolvedValue(0),
   };
   const projectSummary = { maybeGenerateSummary: jest.fn() };
   const projectDescription = { maybeGenerateDescription: jest.fn() };
   const service = new DocumentsService(
     documents as never,
     backlogDocuments as never,
+    projects as never,
     feishu as never,
     apipost,
     knowledge as never,
     projectSummary as never,
     projectDescription as never,
   );
-  return { service, documents, knowledge, feishu, apipost };
+  return { service, documents, projects, knowledge, feishu, apipost };
 }
 
 describe('DocumentsService 链接型文档', () => {
@@ -127,6 +140,42 @@ describe('DocumentsService 链接型文档', () => {
   });
 });
 
+describe('DocumentsService 需求文档系统目录', () => {
+  it('存量 /project/{id} 迁移到 /01-backlogs/{创建日期}/{需求ID} 并记录旧链接', async () => {
+    const { service, projects, knowledge } = buildService();
+    projects.find.mockResolvedValue([
+      { id: 7, createdAt: new Date('2026-10-27T16:30:00Z') },
+    ]);
+    knowledge.isEnabled = true;
+    knowledge.listNodesByPrefix.mockResolvedValue([
+      { id: 'project-root', kind: 'directory', path: '/project' },
+      { id: 'project-7', kind: 'directory', path: '/project/7' },
+      {
+        id: 'project-doc-dir',
+        kind: 'directory',
+        path: '/project/7/document',
+      },
+      {
+        id: 'project-doc',
+        kind: 'article',
+        path: '/project/7/document/9',
+      },
+    ]);
+
+    const migrated = await service.migrateProjectDirectories();
+
+    expect(migrated).toBe(3);
+    expect(knowledge.moveSystemSubtree).toHaveBeenCalledWith(
+      'project-7',
+      '/01-backlogs/20261028/7',
+      ['/project/7', '/project/7/document', '/project/7/document/9'],
+    );
+    expect(knowledge.recordPathAliases).toHaveBeenCalledWith([
+      { oldPath: '/project', targetPath: '/01-backlogs' },
+    ]);
+  });
+});
+
 describe('DocumentsService 飞书文档同步', () => {
   const existingDoc = {
     id: 11,
@@ -194,6 +243,7 @@ describe('DocumentsService 飞书文档同步', () => {
 
     expect(knowledge.upsertProjectDocument).toHaveBeenCalledWith({
       projectId: 7,
+      projectCreatedAt: new Date('2026-10-27T16:30:00Z'),
       documentId: 11,
       title: '需求文档',
       content: '# 新正文',

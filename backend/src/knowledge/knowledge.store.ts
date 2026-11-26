@@ -10,9 +10,11 @@ import { Pool, type PoolClient } from 'pg';
 import { chunkKnowledgeMarkdown } from './knowledge.chunk';
 import {
   encodeKnowledgePath,
+  isSystemKnowledgeRoot,
   normalizeKnowledgePath,
   projectDocumentPath,
   projectRootPath,
+  SYSTEM_KNOWLEDGE_DIRECTORIES,
 } from './knowledge.path';
 import type {
   KnowledgeDirectory,
@@ -387,6 +389,18 @@ export class KnowledgeStore implements OnApplicationBootstrap, OnModuleDestroy {
         CREATE INDEX IF NOT EXISTS knowledge_chunks_embedding_idx
         ON knowledge_chunks USING hnsw (embedding vector_cosine_ops)
       `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS knowledge_path_aliases (
+          old_path text PRIMARY KEY,
+          target_path text NOT NULL,
+          created_at timestamptz NOT NULL DEFAULT now()
+        )
+      `);
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS knowledge_path_aliases_target_idx
+        ON knowledge_path_aliases (target_path)
+      `);
+      await this.ensureSystemDirectories(client);
       await client.query('COMMIT');
     } catch (error) {
       await client.query('ROLLBACK').catch(() => undefined);
@@ -399,6 +413,38 @@ export class KnowledgeStore implements OnApplicationBootstrap, OnModuleDestroy {
       throw error;
     } finally {
       client.release();
+    }
+  }
+
+  /** 启动时确保系统级目录存在；已有同名目录保留标题，不覆盖用户改名 */
+  private async ensureSystemDirectories(client: PoolClient): Promise<void> {
+    for (const definition of SYSTEM_KNOWLEDGE_DIRECTORIES) {
+      const normalized = normalizeKnowledgePath(definition.path);
+      await client.query(
+        `INSERT INTO knowledge_nodes
+           (kind, path, parent_path, name, title, source, content_hash, index_status)
+         VALUES ('directory', $1, '/', $2, $3, 'system', '', 'ready')
+         ON CONFLICT (path) DO NOTHING`,
+        [normalized.path, normalized.name, definition.title],
+      );
+      const existing = await client.query<{
+        kind: string;
+        source: string;
+      }>('SELECT kind, source FROM knowledge_nodes WHERE path = $1', [
+        normalized.path,
+      ]);
+      if (existing.rows[0]?.kind !== 'directory') {
+        throw new Error(
+          `系统知识路径 ${normalized.path} 已被文章占用，请先迁移该文章`,
+        );
+      }
+      if (existing.rows[0]?.source === 'native') {
+        await client.query(
+          `UPDATE knowledge_nodes SET source = 'system', updated_at = now()
+           WHERE path = $1 AND kind = 'directory'`,
+          [normalized.path],
+        );
+      }
     }
   }
 
@@ -436,6 +482,175 @@ export class KnowledgeStore implements OnApplicationBootstrap, OnModuleDestroy {
     return result.rows[0] ? mapNode(result.rows[0]) : null;
   }
 
+  /** 列出任意来源的节点（系统路径迁移用，含目录） */
+  async listNodesByPrefix(prefix: string): Promise<KnowledgeNode[]> {
+    const normalized = normalizeKnowledgePath(prefix).path;
+    const result = await this.db().query<NodeRow>(
+      `SELECT * FROM knowledge_nodes
+       WHERE path = $1 OR path LIKE $1 || '/%'
+       ORDER BY path`,
+      [normalized],
+    );
+    return result.rows.map(mapNode);
+  }
+
+  /** 记录旧知识路径到新路径的兼容映射（迁移后旧链接继续可读） */
+  async recordPathAliases(
+    aliases: Array<{ oldPath: string; targetPath: string }>,
+  ): Promise<void> {
+    if (aliases.length === 0) return;
+    await this.withTransaction(async (client) => {
+      for (const alias of aliases) {
+        const oldPath = normalizeKnowledgePath(alias.oldPath).path;
+        const targetPath = normalizeKnowledgePath(alias.targetPath).path;
+        if (oldPath === targetPath) continue;
+        await client.query(
+          `INSERT INTO knowledge_path_aliases (old_path, target_path)
+           VALUES ($1, $2)
+           ON CONFLICT (old_path) DO UPDATE
+           SET target_path = EXCLUDED.target_path`,
+          [oldPath, targetPath],
+        );
+      }
+    });
+  }
+
+  async resolvePathAlias(path: string): Promise<string | null> {
+    const normalized = normalizeKnowledgePath(path).path;
+    const result = await this.db().query<{ target_path: string }>(
+      `SELECT target_path FROM knowledge_path_aliases WHERE old_path = $1`,
+      [normalized],
+    );
+    return result.rows[0]?.target_path ?? null;
+  }
+
+  async removeAliasesForPath(path: string): Promise<void> {
+    const normalized = normalizeKnowledgePath(path).path;
+    await this.db().query(
+      `DELETE FROM knowledge_path_aliases
+       WHERE target_path = $1 OR target_path LIKE $1 || '/%'`,
+      [normalized],
+    );
+  }
+
+  /** 系统根目录只允许修改展示标题 */
+  async updateSystemDirectoryTitle(
+    id: string,
+    title: string,
+  ): Promise<KnowledgeNode> {
+    return this.withTransaction(async (client) => {
+      const found = await client.query<NodeRow>(
+        'SELECT * FROM knowledge_nodes WHERE id = $1 FOR UPDATE',
+        [id],
+      );
+      const node = found.rows[0];
+      if (!node) throw new Error('知识节点不存在');
+      if (node.kind !== 'directory' || !isSystemKnowledgeRoot(node.path)) {
+        throw new Error('只有系统级目录可以修改名称');
+      }
+      const next = title.trim() || node.title;
+      const updated = await client.query<NodeRow>(
+        `UPDATE knowledge_nodes
+         SET title = $2, updated_at = now()
+         WHERE id = $1
+         RETURNING *`,
+        [id, next],
+      );
+      return mapNode(updated.rows[0]);
+    });
+  }
+
+  /** 平台系统配置镜像写入：固定路径、system 来源，不允许覆盖其它来源内容 */
+  async upsertSystemArticle(input: {
+    path: string;
+    title: string;
+    content: string;
+  }): Promise<KnowledgeNode> {
+    const normalized = normalizeKnowledgePath(input.path);
+    if (normalized.path === '/') {
+      throw new Error('系统镜像必须是具体文章路径');
+    }
+    const title = input.title.trim() || normalized.name;
+    return this.withTransaction(async (client) => {
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+        'knowledge-path',
+      ]);
+      await this.ensureDirectory(client, normalized.parentPath, 'system');
+      const existing = await client.query<NodeRow>(
+        'SELECT * FROM knowledge_nodes WHERE path = $1 FOR UPDATE',
+        [normalized.path],
+      );
+      let row: NodeRow;
+      if (existing.rows[0]) {
+        if (
+          existing.rows[0].kind !== 'article' ||
+          existing.rows[0].source !== 'system'
+        ) {
+          throw new Error(
+            `系统镜像路径 ${normalized.path} 已被其他知识占用，请先迁移`,
+          );
+        }
+        const nextHash = hashContent(title, input.content);
+        if (
+          existing.rows[0].title === title &&
+          existing.rows[0].content_hash === nextHash
+        ) {
+          // 周期对账未变化时不能重建切片，否则会持续触发向量计算
+          return mapNode(existing.rows[0]);
+        }
+        const updated = await client.query<NodeRow>(
+          `UPDATE knowledge_nodes
+           SET title = $2, content = $3, content_hash = $4,
+               index_status = 'pending', index_error = NULL,
+               index_attempts = 0, updated_at = now()
+           WHERE id = $1
+           RETURNING *`,
+          [existing.rows[0].id, title, input.content, nextHash],
+        );
+        row = updated.rows[0];
+      } else {
+        const inserted = await client.query<NodeRow>(
+          `INSERT INTO knowledge_nodes
+             (kind, path, parent_path, name, title, content, source,
+              content_hash, index_status)
+           VALUES ('article', $1, $2, $3, $4, $5, 'system', $6, 'pending')
+           RETURNING *`,
+          [
+            normalized.path,
+            normalized.parentPath,
+            normalized.name,
+            title,
+            input.content,
+            hashContent(title, input.content),
+          ],
+        );
+        row = inserted.rows[0];
+      }
+      await this.replaceChunks(client, row);
+      return mapNode(row);
+    });
+  }
+
+  /** 系统镜像目录递归删除 */
+  async removeSystemPath(path: string): Promise<number> {
+    const normalized = normalizeKnowledgePath(path).path;
+    if (normalized === '/' || isSystemKnowledgeRoot(normalized)) {
+      throw new Error('系统根目录不能删除');
+    }
+    const result = await this.db().query(
+      `DELETE FROM knowledge_nodes
+       WHERE (path = $1 OR path LIKE $1 || '/%')
+         AND source = 'system'`,
+      [normalized],
+    );
+    await this.db().query(
+      `DELETE FROM knowledge_path_aliases
+       WHERE target_path = $1 OR target_path LIKE $1 || '/%'`,
+      [normalized],
+    );
+    return result.rowCount ?? 0;
+  }
+
   /** 列出原生知识树中指定目录下的全部文章（不读取目录节点） */
   async listArticlesByPrefix(prefix: string): Promise<KnowledgeNode[]> {
     const normalized = normalizeKnowledgePath(prefix).path;
@@ -454,14 +669,17 @@ export class KnowledgeStore implements OnApplicationBootstrap, OnModuleDestroy {
    * 自底向上删除指定前缀下已无子节点的原生目录。
    * 单条 DELETE 只能看到语句开始时的快照，外层循环处理多层空目录。
    */
-  async deleteEmptyDirectoriesUnder(prefix: string): Promise<number> {
+  async deleteEmptyDirectoriesUnder(
+    prefix: string,
+    includeSystem = false,
+  ): Promise<number> {
     const normalized = normalizeKnowledgePath(prefix).path;
     let deleted = 0;
     for (let pass = 0; pass < 20; pass += 1) {
       const result = await this.db().query(
         `DELETE FROM knowledge_nodes node
          WHERE node.kind = 'directory'
-           AND node.source = 'native'
+           ${includeSystem ? '' : "AND node.source = 'native'"}
            AND (node.path = $1 OR node.path LIKE $1 || '/%')
            AND NOT EXISTS (
              SELECT 1 FROM knowledge_nodes child
@@ -708,13 +926,18 @@ export class KnowledgeStore implements OnApplicationBootstrap, OnModuleDestroy {
   /** 项目文档专用 upsert：以 sourceDocumentId 关联，固定路径由调用方传入 */
   async upsertProjectDocument(input: {
     projectId: number;
+    projectCreatedAt: Date | string;
     documentId: number;
     title: string;
     content: string;
   }): Promise<KnowledgeNode> {
-    const path = projectDocumentPath(input.projectId, input.documentId);
+    const project = {
+      id: input.projectId,
+      createdAt: input.projectCreatedAt,
+    };
+    const path = projectDocumentPath(project, input.documentId);
     const normalized = normalizeKnowledgePath(path);
-    const projectRoot = projectRootPath(input.projectId);
+    const projectRoot = projectRootPath(project);
     return this.withTransaction(async (client) => {
       await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
         'knowledge-path',
@@ -727,6 +950,18 @@ export class KnowledgeStore implements OnApplicationBootstrap, OnModuleDestroy {
       );
       let row: NodeRow;
       if (existing.rows[0]) {
+        if (
+          existing.rows[0].path !== normalized.path &&
+          existing.rows[0].path.startsWith('/project/')
+        ) {
+          await client.query(
+            `INSERT INTO knowledge_path_aliases (old_path, target_path)
+             VALUES ($1, $2)
+             ON CONFLICT (old_path) DO UPDATE
+             SET target_path = EXCLUDED.target_path`,
+            [existing.rows[0].path, normalized.path],
+          );
+        }
         const updated = await client.query<NodeRow>(
           `UPDATE knowledge_nodes
            SET path = $2, parent_path = $3, name = $4, title = $5,
@@ -768,6 +1003,19 @@ export class KnowledgeStore implements OnApplicationBootstrap, OnModuleDestroy {
       await this.replaceChunks(client, row);
       return mapNode(row);
     });
+  }
+
+  /** 文档正文按 sourceDocumentId 定位，不依赖可能迁移过的知识路径 */
+  async getProjectDocumentBySourceId(
+    documentId: number,
+  ): Promise<KnowledgeNode | null> {
+    const result = await this.db().query<NodeRow>(
+      `SELECT * FROM knowledge_nodes
+       WHERE source_document_id = $1 AND source = 'project-document'
+       LIMIT 1`,
+      [documentId],
+    );
+    return result.rows[0] ? mapNode(result.rows[0]) : null;
   }
 
   /**
@@ -935,6 +1183,76 @@ export class KnowledgeStore implements OnApplicationBootstrap, OnModuleDestroy {
     });
   }
 
+  /**
+   * 系统路径迁移专用的整树移动：保留节点 ID、来源和正文，
+   * 同步更新子节点与切片的路径，并重建受影响向量。
+   */
+  async moveNode(id: string, newPathInput: string): Promise<KnowledgeNode> {
+    const newPath = normalizeKnowledgePath(newPathInput).path;
+    return this.withTransaction(async (client) => {
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+        'knowledge-path',
+      ]);
+      const found = await client.query<NodeRow>(
+        'SELECT * FROM knowledge_nodes WHERE id = $1 FOR UPDATE',
+        [id],
+      );
+      const node = found.rows[0];
+      if (!node) throw new Error('知识节点不存在');
+      if (node.path === newPath) return mapNode(node);
+      const normalized = normalizeKnowledgePath(newPath);
+      if (normalized.path === '/') throw new Error('不能移动到根目录');
+      const collision = await client.query(
+        `SELECT 1 FROM knowledge_nodes
+         WHERE (path = $1 OR path LIKE $1 || '/%')
+           AND NOT (path = $2 OR path LIKE $2 || '/%')
+         LIMIT 1`,
+        [newPath, node.path],
+      );
+      if (collision.rowCount) throw new Error(`目标路径 ${newPath} 已存在`);
+      await this.ensureDirectory(
+        client,
+        normalized.parentPath,
+        node.source === 'project-document' ? 'system' : node.source,
+      );
+      await client.query(
+        `UPDATE knowledge_nodes
+         SET path = $1 || substr(path, length($2) + 1),
+             parent_path = CASE
+               WHEN parent_path = $2 THEN $3
+               ELSE $1 || substr(parent_path, length($2) + 1)
+             END,
+             updated_at = now()
+         WHERE path LIKE $2 || '/%'`,
+        [newPath, node.path, normalized.parentPath],
+      );
+      await client.query(
+        `UPDATE knowledge_chunks c
+         SET path = n.path, embedding = NULL
+         FROM knowledge_nodes n
+         WHERE c.node_id = n.id
+           AND (n.path = $1 OR n.path LIKE $1 || '/%')`,
+        [newPath],
+      );
+      await client.query(
+        `UPDATE knowledge_nodes
+         SET index_status = 'pending', index_error = NULL,
+             index_attempts = 0, updated_at = now()
+         WHERE kind = 'article'
+           AND (path = $1 OR path LIKE $1 || '/%')`,
+        [newPath],
+      );
+      const updated = await client.query<NodeRow>(
+        `UPDATE knowledge_nodes
+         SET path = $2, parent_path = $3, name = $4, updated_at = now()
+         WHERE id = $1
+         RETURNING *`,
+        [id, newPath, normalized.parentPath, normalized.name],
+      );
+      return mapNode(updated.rows[0]);
+    });
+  }
+
   async deleteNode(id: string, recursive: boolean): Promise<void> {
     await this.withTransaction(async (client) => {
       const found = await client.query<NodeRow>(
@@ -970,18 +1288,34 @@ export class KnowledgeStore implements OnApplicationBootstrap, OnModuleDestroy {
 
   async deleteDocumentNode(documentId: number): Promise<void> {
     if (!this.enabled) return;
+    const node = await this.getProjectDocumentBySourceId(documentId);
     await this.db().query(
       `DELETE FROM knowledge_nodes
        WHERE source_document_id = $1 AND source = 'project-document'`,
       [documentId],
     );
+    if (node) {
+      await this.db().query(
+        `DELETE FROM knowledge_path_aliases
+         WHERE target_path = $1 OR target_path LIKE $1 || '/%'`,
+        [node.path],
+      );
+    }
   }
 
-  async deleteProject(projectId: number): Promise<void> {
+  async deleteProject(input: {
+    id: number;
+    createdAt: Date | string;
+  }): Promise<void> {
     if (!this.enabled) return;
-    const root = projectRootPath(projectId);
+    const root = projectRootPath(input);
     await this.db().query(
       `DELETE FROM knowledge_nodes WHERE path = $1 OR path LIKE $1 || '/%'`,
+      [root],
+    );
+    await this.db().query(
+      `DELETE FROM knowledge_path_aliases
+       WHERE target_path = $1 OR target_path LIKE $1 || '/%'`,
       [root],
     );
   }
@@ -1064,13 +1398,27 @@ export class KnowledgeStore implements OnApplicationBootstrap, OnModuleDestroy {
     offset: number;
     limit: number;
     queryVector: number[] | null;
+    excludePaths?: string[];
   }): Promise<KnowledgeRetrieval> {
     const q = input.query.trim();
     const path = normalizeKnowledgePath(input.path).path;
     const offset = Math.max(input.offset, 0);
     const limit = Math.min(Math.max(input.limit, 1), 100);
+    const excludePaths = [
+      ...new Set(
+        (input.excludePaths ?? []).map(
+          (entry) => normalizeKnowledgePath(entry).path,
+        ),
+      ),
+    ];
     // RRF 需要在较大候选集上统一排序；窗口上限避免深分页拖垮数据库
     const candidateLimit = Math.min(Math.max(offset + limit + 1, 60), 1000);
+    const excludedSql = excludePaths.length
+      ? `AND NOT EXISTS (
+           SELECT 1 FROM unnest($4::text[]) AS excluded(prefix)
+           WHERE c.path = excluded.prefix OR c.path LIKE excluded.prefix || '/%'
+         )`
+      : '';
 
     const lexical = await this.db().query<
       ChunkRow & { rank: number; similarity: number }
@@ -1088,9 +1436,12 @@ export class KnowledgeStore implements OnApplicationBootstrap, OnModuleDestroy {
            OR c.path ILIKE '%' || $1 || '%'
            OR c.content ILIKE '%' || $1 || '%'
          )
+         ${excludedSql}
        ORDER BY rank DESC, similarity DESC, n.updated_at DESC
        LIMIT $3`,
-      [q, path, candidateLimit],
+      excludePaths.length
+        ? [q, path, candidateLimit, excludePaths]
+        : [q, path, candidateLimit],
     );
 
     let vectorRows: Array<ChunkRow & { similarity: number }> = [];
@@ -1106,11 +1457,30 @@ export class KnowledgeStore implements OnApplicationBootstrap, OnModuleDestroy {
          WHERE c.embedding IS NOT NULL
            AND ($2 = '/' OR c.path = $2 OR c.path LIKE $2 || '/%')
            ${thresholdEnabled ? 'AND 1 - (c.embedding <=> $1::vector) >= $4' : ''}
+           ${
+             excludePaths.length
+               ? `AND NOT EXISTS (
+                    SELECT 1 FROM unnest($${thresholdEnabled ? 5 : 4}::text[]) AS excluded(prefix)
+                    WHERE c.path = excluded.prefix OR c.path LIKE excluded.prefix || '/%'
+                  )`
+               : ''
+           }
          ORDER BY c.embedding <=> $1::vector
          LIMIT $3`,
         thresholdEnabled
-          ? [value, path, candidateLimit, this.minVectorSimilarity]
-          : [value, path, candidateLimit],
+          ? [
+              value,
+              path,
+              candidateLimit,
+              this.minVectorSimilarity,
+              ...(excludePaths.length ? [excludePaths] : []),
+            ]
+          : [
+              value,
+              path,
+              candidateLimit,
+              ...(excludePaths.length ? [excludePaths] : []),
+            ],
       );
       // SQL 已过滤；内存再兜底一次，保证配置在任意驱动/测试桩下都生效
       vectorRows = thresholdEnabled
@@ -1200,8 +1570,8 @@ export class KnowledgeStore implements OnApplicationBootstrap, OnModuleDestroy {
     };
   }
 
-  /** 项目文档 Markdown 视图链接（供现有文档模块使用） */
-  documentMarkdownPath(projectId: number, documentId: number): string {
-    return `/api/docs/detail${encodeKnowledgePath(projectDocumentPath(projectId, documentId))}.md`;
+  /** 知识节点 Markdown 视图链接 */
+  documentMarkdownPath(path: string): string {
+    return `/api/docs/detail${encodeKnowledgePath(path)}.md`;
   }
 }
