@@ -3,28 +3,44 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { Button } from '@appica/ui-react/button'
 import { Badge } from '@appica/ui-react/badge'
 import { Input } from '@appica/ui-react/input'
-import { Loader, Refresh, Robot } from '@appica/icons-react'
+import { Loader, Plus, Refresh, Robot } from '@appica/icons-react'
 import {
   api,
   workerChatStreamUrl,
+  type TaskChatSender,
   type WorkerChatSession,
   type WorkerDebugAttachment,
   type WorkerDebugOption,
   type WorkerDebugSnapshot,
 } from '../lib/api'
 import { visibleEventSource } from '../lib/event-source'
+import { useImeEnterGuard } from '../lib/ime-enter'
 import { matchesPinyinSearch } from '../lib/pinyin-search'
+import { useAuth } from '../context/AuthContext'
 import { RobotAvatar } from '../components/task-detail/WorkerAvatar'
-import { DebugChat } from '../components/agent-chat/DebugChat'
+import {
+  ConversationStream,
+  type ConversationConnection,
+  type ConversationStreamMessage,
+} from '../components/agent-chat/ConversationStream'
+import {
+  ChatActionIcon,
+  ChatAttachmentChips,
+  ChatComposerDock,
+  ChatComposerFrame,
+  ChatSendButton,
+} from '../components/agent-chat/ChatComposer'
 
 /**
  * 顶部「机器人」：左侧会话 / 全部机器人，右侧统一聊天区。
  * 每个用户与每个机器人固定一个 chat 会话（与我的 AI 隔离），
  * 可重置；消息经 SSE 实时推送，支持附件上传与机器人提问。
+ * 聊天交互复用任务详情「会话」的共享组件（虚拟化 + 底部跟随 + 单行活动）。
  */
 export function RobotChatPage() {
   const { workerId } = useParams<{ workerId?: string }>()
   const navigate = useNavigate()
+  const { user } = useAuth()
   const selectedId = workerId ? Number(workerId) : null
   const valid = selectedId !== null && Number.isInteger(selectedId) && selectedId > 0
 
@@ -35,10 +51,23 @@ export function RobotChatPage() {
   const [search, setSearch] = useState('')
 
   const [snapshot, setSnapshot] = useState<WorkerDebugSnapshot | null>(null)
+  const [connection, setConnection] =
+    useState<ConversationConnection>('connecting')
   const [sessionError, setSessionError] = useState<string | null>(null)
   const [resetting, setResetting] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
   const loadSeq = useRef(0)
+
+  // 输入区：附件沿用机器人对话能力（任务会话的交互中不包含附件）
+  const [draft, setDraft] = useState('')
+  const [sending, setSending] = useState(false)
+  const [sendError, setSendError] = useState<string | null>(null)
+  const [replying, setReplying] = useState(false)
+  const [attachments, setAttachments] = useState<WorkerDebugAttachment[]>([])
+  const [uploading, setUploading] = useState(false)
+  const [uploadError, setUploadError] = useState<string | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const imeEnter = useImeEnterGuard()
 
   const loadOverview = useCallback(async () => {
     try {
@@ -69,21 +98,23 @@ export function RobotChatPage() {
       // 切换/离开机器人时立即清空旧会话，避免展示串台；后续状态在异步回调中更新。
       // oxlint-disable-next-line react/set-state-in-effect
       setSnapshot(null)
+      // oxlint-disable-next-line react/set-state-in-effect
       setSessionError(null)
+      // oxlint-disable-next-line react/set-state-in-effect
+      setConnection('connecting')
       return
     }
     const seq = ++loadSeq.current
     // oxlint-disable-next-line react/set-state-in-effect
     setSnapshot(null)
+    // oxlint-disable-next-line react/set-state-in-effect
     setSessionError(null)
+    // oxlint-disable-next-line react/set-state-in-effect
+    setConnection('connecting')
     // SSE 订阅成功后会先推送一次完整快照，不再额外拉取同一份快照接口
     const source = visibleEventSource(workerChatStreamUrl(selectedId))
     source.onopen = () => {
-      if (seq === loadSeq.current) {
-        setSessionError((current) =>
-          current === '实时连接断开，正在重连…' ? null : current,
-        )
-      }
+      if (seq === loadSeq.current) setConnection('live')
     }
     source.onmessage = (event: MessageEvent<string>) => {
       if (seq !== loadSeq.current) return
@@ -94,14 +125,12 @@ export function RobotChatPage() {
         return
       }
       if (payload.type === 'snapshot' && payload.snapshot) {
-        setSessionError(null)
+        setConnection('live')
         setSnapshot(payload.snapshot)
       }
     }
     source.onerror = () => {
-      if (seq === loadSeq.current) {
-        setSessionError((current) => current ?? '实时连接断开，正在重连…')
-      }
+      if (seq === loadSeq.current) setConnection('reconnecting')
     }
     return () => {
       loadSeq.current += 1
@@ -127,6 +156,37 @@ export function RobotChatPage() {
     [search, workers],
   )
 
+  /** 会话消息归一化：机器人对话没有需求方概念，按消息角色合成发送方 */
+  const streamMessages = useMemo<ConversationStreamMessage[]>(() => {
+    if (!snapshot) return []
+    const workerSender: TaskChatSender = {
+      id: `worker:${snapshot.worker.id}`,
+      name: snapshot.worker.name,
+      kind: 'worker',
+      workerId: snapshot.worker.id,
+      avatarUrl: snapshot.worker.avatarUrl,
+    }
+    const userSender: TaskChatSender = {
+      id: `user:${user?.id ?? 'me'}`,
+      name: user?.name ?? '我',
+      kind: 'user',
+      avatarUrl: user?.avatarUrl ?? null,
+    }
+    return snapshot.messages.map((message) => ({
+      id: message.id,
+      role: message.role,
+      sender: message.role === 'user' ? userSender : workerSender,
+      content: message.content,
+      reasoning: message.reasoning,
+      createdAt: message.createdAt,
+      status: message.status,
+      kind: message.kind ?? 'message',
+      question: message.question,
+      tools: message.tools,
+      files: message.files,
+    }))
+  }, [snapshot, user])
+
   const selectWorker = useCallback(
     (id: number) => {
       navigate(`/robots/${id}`)
@@ -134,30 +194,76 @@ export function RobotChatPage() {
     [navigate],
   )
 
-  const send = useCallback(
-    async (content: string, files?: WorkerDebugAttachment[]) => {
-      if (!valid || selectedId === null || snapshot?.status === 'running') return
-      setSessionError(null)
-      try {
-        const next = await api.sendWorkerChatMessage(
-          selectedId,
-          content,
-          files,
-        )
-        setSnapshot(next)
-        // 首条消息后会话进入左侧列表；列表刷新不改变已选中的机器人
-        void loadOverview()
-      } catch (error) {
-        setSessionError((error as Error).message)
-        throw error
-      }
-    },
-    [loadOverview, selectedId, snapshot?.status, valid],
-  )
+  useEffect(() => {
+    // 切换机器人时清空未发送内容与附件，避免串台
+    // oxlint-disable-next-line react/set-state-in-effect
+    setDraft('')
+    // oxlint-disable-next-line react/set-state-in-effect
+    setSendError(null)
+    // oxlint-disable-next-line react/set-state-in-effect
+    setUploadError(null)
+    // oxlint-disable-next-line react/set-state-in-effect
+    setAttachments([])
+  }, [selectedId])
+
+  const handleFiles = useCallback(async (list: FileList | null) => {
+    if (!list?.length) return
+    setUploading(true)
+    setUploadError(null)
+    try {
+      const uploaded = await Promise.all(
+        Array.from(list)
+          .slice(0, 10)
+          .map((file) => api.uploadFile(file)),
+      )
+      setAttachments((current) =>
+        [
+          ...current,
+          ...uploaded.map((file) => ({
+            name: file.filename,
+            url: file.url,
+            size: file.size,
+            mime: file.mime,
+          })),
+        ].slice(0, 10),
+      )
+    } catch (error) {
+      setUploadError((error as Error).message)
+    } finally {
+      setUploading(false)
+    }
+  }, [])
+
+  const sendMessage = useCallback(async () => {
+    if (!valid || selectedId === null || snapshot?.status === 'running') return
+    const text = draft.trim()
+    const files = attachments
+    if (!text && files.length === 0) return
+    setSending(true)
+    setSendError(null)
+    try {
+      const next = await api.sendWorkerChatMessage(
+        selectedId,
+        text,
+        files.length > 0 ? files : undefined,
+      )
+      setSnapshot(next)
+      setDraft('')
+      setAttachments([])
+      setUploadError(null)
+      // 首条消息后会话进入左侧列表；列表刷新不改变已选中的机器人
+      void loadOverview()
+    } catch (error) {
+      setSendError((error as Error).message)
+    } finally {
+      setSending(false)
+    }
+  }, [attachments, draft, loadOverview, selectedId, snapshot?.status, valid])
 
   const replyQuestion = useCallback(
     async (questionId: string, answers: string[][] | null) => {
       if (!valid || selectedId === null) return
+      setReplying(true)
       setSessionError(null)
       try {
         setSnapshot(
@@ -166,6 +272,8 @@ export function RobotChatPage() {
       } catch (error) {
         setSessionError((error as Error).message)
         throw error
+      } finally {
+        setReplying(false)
       }
     },
     [selectedId, valid],
@@ -177,6 +285,8 @@ export function RobotChatPage() {
     setSessionError(null)
     try {
       setSnapshot(await api.resetWorkerChat(selectedId))
+      setDraft('')
+      setAttachments([])
       void loadOverview()
     } catch (error) {
       setSessionError((error as Error).message)
@@ -191,6 +301,12 @@ export function RobotChatPage() {
     snapshot.status !== 'running' &&
     snapshot.messages.length > 0 &&
     !resetting
+
+  const sendDisabled =
+    !snapshot ||
+    snapshot.status === 'running' ||
+    sending ||
+    (!draft.trim() && attachments.length === 0)
 
   // ⌥/Alt+R：直接重置当前会话；用 code 兼容 macOS Option+R 的死键行为。
   useEffect(() => {
@@ -364,34 +480,108 @@ export function RobotChatPage() {
               )}
 
               {snapshot ? (
-                <DebugChat
-                  snapshot={snapshot}
-                  running={snapshot.status === 'running'}
-                  onSend={send}
+                <ConversationStream
+                  title="会话"
+                  messages={streamMessages}
+                  connection={connection}
+                  canAnswerQuestions
+                  busy={replying || sending}
                   onReplyQuestion={replyQuestion}
-                  framed={false}
-                  enableAttachments
-                  onUploadFile={async (file) => {
-                    const uploaded = await api.uploadFile(file)
-                    return {
-                      name: uploaded.filename,
-                      url: uploaded.url,
-                      size: uploaded.size,
-                      mime: uploaded.mime,
-                    }
-                  }}
-                  emptyTitle={`和 ${snapshot.worker.name} 开始对话`}
-                  emptyHint="发送第一条消息建立会话；之后可随时回来继续，也可以在右上角重置"
-                  placeholder={
-                    snapshot.status === 'running'
-                      ? '机器人正在回复…'
-                      : '输入消息，Enter 发送，Shift+Enter 换行…'
+                  resetKey={selectedId}
+                  emptyText={
+                    <div className="flex flex-col items-center gap-2">
+                      <RobotAvatar
+                        name={snapshot.worker.name}
+                        avatarUrl={snapshot.worker.avatarUrl}
+                        size={48}
+                      />
+                      <p>和 {snapshot.worker.name} 开始对话</p>
+                      <p className="text-xs">
+                        发送第一条消息建立会话；之后可随时回来继续，也可以在右上角重置
+                      </p>
+                    </div>
                   }
-                />
-              ) : sessionError ? (
+                >
+                  <ChatComposerDock>
+                    <ChatComposerFrame
+                      top={
+                        <ChatAttachmentChips
+                          files={attachments}
+                          onRemove={(index) =>
+                            setAttachments((current) =>
+                              current.filter((_, item) => item !== index),
+                            )
+                          }
+                        />
+                      }
+                      left={
+                        <>
+                          <input
+                            ref={fileInputRef}
+                            type="file"
+                            multiple
+                            className="hidden"
+                            onChange={(event) => {
+                              void handleFiles(event.target.files)
+                              event.target.value = ''
+                            }}
+                          />
+                          <ChatActionIcon
+                            label={uploading ? '正在上传文件' : '上传文件'}
+                            icon={Plus}
+                            busy={uploading}
+                            disabled={snapshot.status === 'running'}
+                            onClick={() => fileInputRef.current?.click()}
+                          />
+                        </>
+                      }
+                      right={
+                        <ChatSendButton
+                          onClick={() => void sendMessage()}
+                          disabled={sendDisabled}
+                        />
+                      }
+                    >
+                      <textarea
+                        value={draft}
+                        rows={3}
+                        disabled={snapshot.status === 'running' || sending}
+                        onChange={(event) => setDraft(event.target.value)}
+                        onCompositionStart={imeEnter.onCompositionStart}
+                        onCompositionEnd={imeEnter.onCompositionEnd}
+                        onKeyDown={(event) => {
+                          if (event.key !== 'Enter' || event.shiftKey) return
+                          if (imeEnter.isImeEnter(event)) return
+                          event.preventDefault()
+                          void sendMessage()
+                        }}
+                        placeholder={
+                          snapshot.status === 'running'
+                            ? '机器人正在回复…'
+                            : '输入消息，Enter 发送，Shift+Enter 换行…'
+                        }
+                        className="block h-[72px] w-full resize-none bg-transparent px-3 py-2 text-sm outline-none placeholder:text-foreground-subtle disabled:cursor-not-allowed disabled:opacity-60"
+                      />
+                    </ChatComposerFrame>
+                    {uploadError && (
+                      <p className="mt-1.5 text-[11px] text-error-foreground">
+                        附件上传失败：{uploadError}
+                      </p>
+                    )}
+                    {sendError && (
+                      <p
+                        role="alert"
+                        className="mt-1.5 text-[11px] text-error-foreground"
+                      >
+                        {sendError}
+                      </p>
+                    )}
+                  </ChatComposerDock>
+                </ConversationStream>
+              ) : connection === 'reconnecting' ? (
                 <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
                   <p className="text-sm text-foreground-muted">
-                    会话加载失败：{sessionError}
+                    会话加载失败：实时连接断开，正在重连…
                   </p>
                   <Button
                     variant="outline"

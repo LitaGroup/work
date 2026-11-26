@@ -1,10 +1,21 @@
 import { useEffect, useRef, useState } from 'react'
 import { Brain, Loader, Wrench } from '@appica/icons-react'
-import type { TaskChatMessage, TaskChatTool } from '../../lib/api'
-import { toolSummary } from '../agent-chat/ChatParts'
+import { toolSummary } from './ChatParts'
+
+/** 活动行需要的消息结构子集：任务会话与机器人对话的消息均满足 */
+export interface ActivityMessageSource {
+  status: 'running' | 'complete' | 'error'
+  reasoning?: string
+  tools?: Array<{
+    id: string
+    name: string
+    status: 'running' | 'success' | 'error'
+    argsText?: string
+  }>
+}
 
 /** 会话运行中展示的一行实时活动 */
-export interface TaskActivityLine {
+export interface ActivityLine {
   /** 行标识：同一标识内文本持续变化时只更新内容，不重复播放滚动动画 */
   key: string
   text: string
@@ -30,7 +41,7 @@ function reasoningActivity(
   }
 }
 
-function toolActivity(tool: TaskChatTool): TaskActivityLine {
+function toolActivity(tool: NonNullable<ActivityMessageSource['tools']>[number]): ActivityLine {
   const summary = toolSummary(tool.argsText)
   return {
     key: `tool:${tool.id}`,
@@ -44,7 +55,7 @@ function toolActivity(tool: TaskChatTool): TaskActivityLine {
  * 优先展示正在运行的工具（名称 + 一行参数摘要），否则展示最新一行思考内容，
  * 都没有时保留「正在执行…」；回合结束返回 null。
  */
-function taskActivityLineOf(message: TaskChatMessage): TaskActivityLine | null {
+function activityLineOf(message: ActivityMessageSource): ActivityLine | null {
   if (message.status !== 'running') return null
   const tools = message.tools ?? []
   for (let index = tools.length - 1; index >= 0; index -= 1) {
@@ -60,12 +71,12 @@ function taskActivityLineOf(message: TaskChatMessage): TaskActivityLine | null {
 
 /**
  * 单行活动滚动条：新活动从下方进入、旧行向上移出，始终只占一行高度。
- * 仅用于任务会话，不渲染工具调用卡片与思考过程全文。
+ * 仅用于任务会话与机器人对话，不渲染工具调用卡片与思考过程全文。
  */
-export function TaskActivityTicker({ message }: { message: TaskChatMessage }) {
-  const line = taskActivityLineOf(message)
-  const [leaving, setLeaving] = useState<TaskActivityLine | null>(null)
-  const currentRef = useRef<TaskActivityLine | null>(line)
+export function ActivityTicker({ message }: { message: ActivityMessageSource }) {
+  const line = activityLineOf(message)
+  const [leaving, setLeaving] = useState<ActivityLine | null>(null)
+  const currentRef = useRef<ActivityLine | null>(line)
 
   useEffect(() => {
     const previous = currentRef.current
@@ -102,7 +113,7 @@ export function TaskActivityTicker({ message }: { message: TaskChatMessage }) {
   )
 }
 
-function ActivityLineContent({ line }: { line: TaskActivityLine }) {
+function ActivityLineContent({ line }: { line: ActivityLine }) {
   return (
     <span className="flex h-5 min-w-0 items-center gap-1.5 text-xs text-foreground-muted">
       {line.tone === 'tool' ? (

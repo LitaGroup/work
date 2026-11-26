@@ -1,41 +1,23 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useVirtualizer } from '@tanstack/react-virtual'
-import { Badge } from '@appica/ui-react/badge'
-import { MessageCircleQuestion } from '@appica/icons-react'
+import { useCallback, useEffect, useState } from 'react'
 import type {
   TaskChatMessage,
   TaskChatPerspective,
-  TaskChatQuestion,
   TaskPackage,
   WorkbenchRole,
 } from '../../lib/api'
-import { questionStatusLabel } from '../../lib/question'
 import { useImeEnterGuard } from '../../lib/ime-enter'
-import { useThrottledText } from '../../lib/use-throttled-text'
-import { ChatMarkdown } from '../ChatMarkdown'
-import { QuestionCard } from '../QuestionCard'
 import {
   ChatComposerDock,
   ChatComposerFrame,
   ChatSendButton,
 } from '../agent-chat/ChatComposer'
-import { SenderLine, WorkerAvatar } from './WorkerAvatar'
-import { TaskActivityTicker } from './TaskActivityTicker'
+import {
+  ConversationStream,
+  type ConversationConnection,
+} from '../agent-chat/ConversationStream'
 
-/** 任务详情「会话」Tab 的连接状态 */
-export type TaskConversationConnection =
-  | 'connecting'
-  | 'live'
-  | 'reconnecting'
-
-/** 距离底部小于该值时仍视为停留在底部，实时内容继续跟随 */
-const FOLLOW_BOTTOM_THRESHOLD = 24
-
-/** 运行中消息的 Markdown 渲染节流间隔（SSE 增量 60ms 一次，无需每次都解析） */
-const STREAM_RENDER_INTERVAL = 200
-
-/** 虚拟化行距（原列表 gap-4） */
-const MESSAGE_GAP = 16
+/** 任务详情「会话」Tab 的连接状态（与共享会话组件一致） */
+export type TaskConversationConnection = ConversationConnection
 
 export interface TaskConversationViewProps {
   taskId: number
@@ -62,7 +44,8 @@ export interface TaskConversationViewProps {
 
 /**
  * 任务详情「会话」：实时展示多方交互，并按当前用户身份发送消息与答复提问。
- * 不渲染工具调用和思考过程，运行中只展示一行实时活动；提问以交互卡片作答。
+ * 消息流渲染复用共享组件（虚拟化 + 底部跟随 + 单行活动），
+ * 本组件只保留任务身份/状态相关的输入区逻辑。
  */
 export function TaskConversationView({
   taskId,
@@ -75,10 +58,6 @@ export function TaskConversationView({
   onSend,
   onReplyQuestion,
 }: TaskConversationViewProps) {
-  const boxRef = useRef<HTMLDivElement>(null)
-  /** 列表底部哨兵：可见时跟随最新消息；向上翻阅后保留当前位置 */
-  const sentinelRef = useRef<HTMLDivElement>(null)
-  const followBottomRef = useRef(true)
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
   const [sendError, setSendError] = useState<string | null>(null)
@@ -115,19 +94,8 @@ export function TaskConversationView({
     !draft.trim() ||
     (activePerspective === 'responsible' && awaitingReview)
 
-  const visibleMessages = useMemo(
-    () =>
-      messages.filter((message) =>
-        message.kind === 'question'
-          ? true
-          : Boolean(message.content?.trim()) || message.status === 'running',
-      ),
-    [messages],
-  )
-
   useEffect(() => {
-    // 切换任务后重新定位到新任务的最新消息，并清空未发送内容与身份
-    followBottomRef.current = true
+    // 切换任务后清空未发送内容与身份
     // oxlint-disable-next-line react/set-state-in-effect
     setDraft('')
     // oxlint-disable-next-line react/set-state-in-effect
@@ -135,56 +103,6 @@ export function TaskConversationView({
     // oxlint-disable-next-line react/set-state-in-effect
     setPerspective('requester')
   }, [taskId])
-
-  /**
-   * 消息列表虚拟化：会话可能有数百条消息，全部常驻 DOM 时滚动与布局都很昂贵。
-   * 只渲染视口附近的行，行高按内容动态测量（流式增长由 ResizeObserver 自动重测）。
-   */
-  // oxlint-disable-next-line react/incompatible-library -- 项目未启用 React Compiler，虚拟化实例本就应保持稳定引用
-  const virtualizer = useVirtualizer({
-    count: visibleMessages.length,
-    getScrollElement: () => boxRef.current,
-    estimateSize: () => 160,
-    overscan: 8,
-    getItemKey: (index) => visibleMessages[index]?.id ?? index,
-  })
-  const totalSize = virtualizer.getTotalSize()
-  const lastIndex = visibleMessages.length - 1
-  const lastMessage = visibleMessages[lastIndex]
-
-  useEffect(() => {
-    // 底部哨兵进入视口（含 24px 缓冲）即视为停留在底部，实时内容继续跟随
-    const box = boxRef.current
-    const sentinel = sentinelRef.current
-    if (!box || !sentinel) return
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (entry.target === sentinel) {
-            followBottomRef.current = entry.isIntersecting
-          }
-        }
-      },
-      {
-        root: box,
-        rootMargin: `0px 0px ${FOLLOW_BOTTOM_THRESHOLD}px 0px`,
-      },
-    )
-    observer.observe(sentinel)
-    return () => observer.disconnect()
-  }, [])
-
-  /** 最后一条消息内容 / 状态变化或高度测量更新时，停留在底部则继续跟随 */
-  const followRevision = lastMessage
-    ? `${lastMessage.id}:${lastMessage.content?.length ?? 0}:${lastMessage.status}:${lastMessage.question?.state ?? ''}`
-    : ''
-  useEffect(() => {
-    if (!followBottomRef.current || lastIndex < 0) return
-    const frame = window.requestAnimationFrame(() => {
-      virtualizer.scrollToIndex(lastIndex, { align: 'end' })
-    })
-    return () => window.cancelAnimationFrame(frame)
-  }, [followRevision, lastIndex, totalSize, virtualizer])
 
   const selectPerspective = (next: TaskChatPerspective) => {
     if (next === activePerspective) return
@@ -229,85 +147,15 @@ export function TaskConversationView({
               : '以执行方身份提供反馈…'
 
   return (
-    <section className="flex h-full min-h-0 flex-col overflow-hidden rounded-none bg-background">
-      <header className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-4 py-3">
-        <div className="flex min-w-0 items-center gap-2">
-          <h2 className="text-sm font-semibold text-foreground-intense">
-            任务会话
-          </h2>
-          <Badge variant="soft" size="sm">
-            {visibleMessages.length} 条
-          </Badge>
-        </div>
-        <span className="flex shrink-0 items-center gap-1.5 text-xs text-foreground-muted">
-          <span
-            className={`size-1.5 rounded-full ${
-              connection === 'live'
-                ? 'bg-success-emphasis'
-                : connection === 'reconnecting'
-                  ? 'bg-warning-emphasis'
-                  : 'bg-foreground-subtle'
-            }`}
-          />
-          {connection === 'live'
-            ? '实时'
-            : connection === 'reconnecting'
-              ? '重连中…'
-              : '连接中…'}
-        </span>
-      </header>
-
-      <div
-        ref={boxRef}
-        className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-4"
-      >
-        {visibleMessages.length === 0 ? (
-          <div className="flex flex-1 items-center justify-center text-center text-sm text-foreground-muted">
-            暂无会话内容
-          </div>
-        ) : (
-          <div
-            className="relative w-full shrink-0"
-            style={{ height: totalSize }}
-          >
-            {virtualizer.getVirtualItems().map((virtualItem) => {
-              const message = visibleMessages[virtualItem.index]
-              if (!message) return null
-              const question = message.question
-              return (
-                <div
-                  key={message.id}
-                  data-index={virtualItem.index}
-                  ref={virtualizer.measureElement}
-                  className="absolute inset-x-0 top-0 w-full"
-                  style={{
-                    transform: `translateY(${virtualItem.start}px)`,
-                    paddingBottom: MESSAGE_GAP,
-                  }}
-                >
-                  {message.kind === 'question' && question ? (
-                    question.state === 'pending' && canAnswerQuestions ? (
-                      <PendingQuestionCard
-                        message={message}
-                        question={question}
-                        busy={busy}
-                        onReply={onReplyQuestion}
-                      />
-                    ) : (
-                      <QuestionTimeline message={message} question={question} />
-                    )
-                  ) : (
-                    <ConversationMessage message={message} />
-                  )}
-                </div>
-              )
-            })}
-          </div>
-        )}
-        {/* 底部哨兵：判断用户是否停留在列表底部（虚拟列表容器之外常驻） */}
-        <div ref={sentinelRef} aria-hidden className="h-px w-full shrink-0" />
-      </div>
-
+    <ConversationStream
+      title="任务会话"
+      messages={messages}
+      connection={connection}
+      canAnswerQuestions={canAnswerQuestions}
+      busy={busy}
+      onReplyQuestion={onReplyQuestion}
+      resetKey={taskId}
+    >
       {showComposer && (
         <ChatComposerDock>
           <ChatComposerFrame
@@ -374,176 +222,6 @@ export function TaskConversationView({
           )}
         </ChatComposerDock>
       )}
-    </section>
+    </ConversationStream>
   )
 }
-
-/**
- * memo：流式更新时只有当前机器人消息对象会变，历史消息保持同一引用，
- * 避免每次增量都重新解析全部历史 Markdown。
- * 运行中的消息再按 200ms 节流解析：SSE 60ms 一次的全量重解析是 O(n²) 的主要来源。
- */
-const ConversationMessage = memo(function ConversationMessage({
-  message,
-}: {
-  message: TaskChatMessage
-}) {
-  const isUser = message.role === 'user'
-  const running = message.status === 'running'
-  /** 运行中的消息节流渲染；结束后立即展示完整正文 */
-  const renderedContent = useThrottledText(
-    message.content ?? '',
-    running ? STREAM_RENDER_INTERVAL : 0,
-  )
-  const content = renderedContent.trim()
-  return (
-    <article
-      className={`flex items-start gap-3 px-1 ${isUser ? 'flex-row-reverse' : ''}`}
-    >
-      <WorkerAvatar sender={message.sender} size={30} className="mt-0.5" />
-      <div
-        className={`flex min-w-0 flex-col gap-1.5 ${
-          isUser ? 'max-w-[88%] items-end' : 'min-w-0 flex-1 items-start'
-        }`}
-      >
-        <div className="flex flex-wrap items-center gap-2">
-          <SenderLine
-            sender={message.sender}
-            time={message.createdAt}
-            align={isUser ? 'right' : 'left'}
-          />
-          {running && (
-            <span className="inline-flex items-center gap-1 text-[11px] text-info-foreground">
-              <span className="size-1.5 animate-pulse rounded-full bg-info-emphasis" />
-              实时输出中
-            </span>
-          )}
-        </div>
-        {isUser ? (
-          <div className="min-w-0 max-w-full rounded-none bg-primary px-4 py-2.5 text-sm leading-relaxed text-primary-foreground">
-            <ChatMarkdown text={renderedContent} onPrimary />
-          </div>
-        ) : (
-          <div className="min-w-0 max-w-full text-sm leading-relaxed text-foreground-emphasis">
-            {content && (
-              <>
-                <ChatMarkdown text={renderedContent} />
-                {running && (
-                  <span className="ml-1 inline-block h-3.5 w-1 animate-pulse rounded-full bg-foreground-muted align-middle" />
-                )}
-              </>
-            )}
-            {running && <TaskActivityTicker message={message} />}
-          </div>
-        )}
-      </div>
-    </article>
-  )
-})
-
-/** 待回答提问：直接嵌入可交互卡片（选项 / 自由输入 / 跳过） */
-function PendingQuestionCard({
-  message,
-  question,
-  busy,
-  onReply,
-}: {
-  message: TaskChatMessage
-  question: TaskChatQuestion
-  busy: boolean
-  onReply: (questionId: string, answers: string[][] | null) => Promise<void>
-}) {
-  return (
-    <article className="flex items-start gap-3 px-1">
-      <WorkerAvatar sender={message.sender} size={30} className="mt-0.5" />
-      <div className="min-w-0 flex-1">
-        <div className="mb-1.5 flex flex-wrap items-center gap-2">
-          <SenderLine sender={message.sender} time={message.createdAt} />
-          <span className="inline-flex items-center gap-1 text-[11px] text-info-foreground">
-            <MessageCircleQuestion className="size-3.5" />
-            提问 · {questionStatusLabel(question)}
-          </span>
-        </div>
-        <QuestionCard question={question} busy={busy} onReply={onReply} />
-      </div>
-    </article>
-  )
-}
-
-const QuestionTimeline = memo(function QuestionTimeline({
-  message,
-  question,
-}: {
-  message: TaskChatMessage
-  question: TaskChatQuestion
-}) {
-  return (
-    <article className="flex items-start gap-3 px-1">
-      <WorkerAvatar sender={message.sender} size={30} className="mt-0.5" />
-      <div className="min-w-0 flex-1">
-        <div className="mb-1.5 flex flex-wrap items-center gap-2">
-          <SenderLine sender={message.sender} time={message.createdAt} />
-          <span className="inline-flex items-center gap-1 text-[11px] text-info-foreground">
-            <MessageCircleQuestion className="size-3.5" />
-            提问 · {questionStatusLabel(question)}
-          </span>
-        </div>
-        <div className="rounded-[var(--radius-lg)] rounded-tl-sm border border-border bg-background-subtle px-4 py-3 text-sm leading-relaxed">
-          <div className="flex flex-col gap-2">
-            {question.questions.map((item, index) => (
-              <div key={`${item.header}-${index}`} className="flex flex-col gap-1">
-                <p className="font-medium text-foreground-intense">
-                  {index + 1}. {item.header}
-                </p>
-                <p className="whitespace-pre-wrap break-words text-foreground-emphasis">
-                  {item.question}
-                </p>
-                {item.options && item.options.length > 0 && (
-                  <ul className="flex flex-wrap gap-1.5 text-xs text-foreground-muted">
-                    {item.options.map((option) => (
-                      <li
-                        key={option.label}
-                        className="rounded-full bg-background-muted px-2 py-0.5"
-                        title={option.description}
-                      >
-                        {option.label}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            ))}
-          </div>
-
-          <div className="mt-3 border-t border-border pt-2">
-            {question.answers && question.answers.length > 0 ? (
-              <div className="flex flex-col gap-1">
-                <p className="text-xs font-medium text-success-foreground">
-                  回答结果
-                </p>
-                {question.answers.map((answer, index) => (
-                  <p
-                    key={index}
-                    className="whitespace-pre-wrap break-words text-sm text-foreground-emphasis"
-                  >
-                    {index + 1}. {answer.join(' / ')}
-                  </p>
-                ))}
-              </div>
-            ) : (
-              <p className="text-xs text-foreground-muted">
-                {question.state === 'rejected'
-                  ? '已跳过回答。'
-                  : question.state === 'cancelled'
-                    ? '提问已失效。'
-                    : question.state === 'answered'
-                      ? '已回答。'
-                      : '尚未回答，等待需求方或管理员在会话中答复。'}
-              </p>
-            )}
-          </div>
-        </div>
-      </div>
-    </article>
-  )
-})
