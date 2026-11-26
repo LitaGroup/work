@@ -38,7 +38,13 @@ export interface EvalContext {
   judge: boolean;
 }
 
-const EVAL_TOKEN_TTL_MS = 30 * 60 * 1000;
+/**
+ * 评估令牌有效期。
+ * 30 分钟等于单轮评估预算（suite timeoutSec 默认 1800），返工第二轮开始即过期，
+ * 沙箱内机器人所有 .md / MCP 调用会 401（2026-11-26 #227 实证）。
+ * 临时放宽到 4 小时，覆盖「首轮 + 返工 + 续跑」；后续改为按测试集预算动态签发。
+ */
+const EVAL_TOKEN_TTL_MS = 4 * 60 * 60 * 1000;
 
 @Injectable()
 export class EvalTokenService {
@@ -54,7 +60,7 @@ export class EvalTokenService {
       .digest('hex');
   }
 
-  /** 签发评估令牌（ttlMs 默认 30 分钟） */
+  /** 签发评估令牌（ttlMs 默认 4 小时） */
   sign(claims: EvalTokenClaims, ttlMs = EVAL_TOKEN_TTL_MS): string {
     return jwt.sign(claims, this.secret, {
       expiresIn: Math.max(60, Math.round(ttlMs / 1000)),
