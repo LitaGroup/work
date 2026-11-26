@@ -57,6 +57,13 @@ interface DisplayedAssistantText {
 
 /** 文本增量合并窗口：避免每个 token 都推一次 SSE */
 const TEXT_FLUSH_MS = 60;
+/**
+ * 会话视图（快照 + SSE 增量）只渲染正文、工具名/状态/参数摘要与思考末行，
+ * 不渲染工具结果与完整思考过程。投影时裁掉这些大字段，避免流式事件
+ * （60ms 一次）与快照刷新反复传输数百 KB 数据。
+ */
+const UI_REASONING_TAIL_LIMIT = 16 * 1024;
+const UI_TOOL_ARGS_LIMIT = 8 * 1024;
 
 /** 任务事件触发的快照刷新合并窗口 */
 const REFRESH_DEBOUNCE_MS = 300;
@@ -195,7 +202,7 @@ export class TaskChatService implements OnModuleDestroy {
         if (persistedKeys.has(message.id)) continue;
         if (!this.liveMessageVisible(task, message)) continue;
         entries.push({
-          message: this.toPublic(message),
+          message: this.toUi(this.toPublic(message)),
           at: new Date(message.createdAt).getTime(),
           seq: seq++,
         });
@@ -1219,7 +1226,7 @@ export class TaskChatService implements OnModuleDestroy {
       taskId: message.taskId,
       event: {
         type: 'message.upsert',
-        message: this.toPublic(message),
+        message: this.toUi(this.toPublic(message)),
         at: Date.now(),
       },
     });
@@ -1269,13 +1276,42 @@ export class TaskChatService implements OnModuleDestroy {
   }
 
   /**
+   * 会话视图投影：快照与 SSE 增量统一走这里，保证两处形状一致
+   * （前端按 id 对账时可稳定复用历史消息对象，不因字段差异反复重解析 Markdown）。
+   * - 工具结果 `result` 会话视图不渲染，直接裁掉（落库与内部消费保持完整）；
+   * - 工具参数超过 8KB 截断（参数摘要解析失败时前端回退展示工具名）；
+   * - 思考过程只保留尾部 16KB（运行中活动行只取最后一个非空行）。
+   */
+  private toUi(message: TaskChatMessage): TaskChatMessage {
+    const reasoning =
+      message.reasoning && message.reasoning.length > UI_REASONING_TAIL_LIMIT
+        ? message.reasoning.slice(-UI_REASONING_TAIL_LIMIT)
+        : message.reasoning;
+    return {
+      ...message,
+      ...(reasoning ? { reasoning } : {}),
+      ...(message.tools
+        ? {
+            tools: message.tools.map((tool) => ({
+              ...tool,
+              ...(tool.argsText && tool.argsText.length > UI_TOOL_ARGS_LIMIT
+                ? { argsText: tool.argsText.slice(0, UI_TOOL_ARGS_LIMIT) }
+                : {}),
+              result: undefined,
+            })),
+          }
+        : {}),
+    };
+  }
+
+  /**
    * 快照内的数据库消息：优先取进程内实时副本（内容与状态最新）。
    * 数据库里遗留的 running 说明会话早已结束或服务重启过，
    * 按完成展示并回写，避免任务详情一直显示「正在执行」。
    */
   private persistedMessage(row: TaskMessage): TaskChatMessage {
     const live = this.live.get(row.taskId)?.get(row.messageKey);
-    if (live) return this.toPublic(live);
+    if (live) return this.toUi(this.toPublic(live));
 
     let changed = false;
     if (row.status === 'running') {
@@ -1301,7 +1337,7 @@ export class TaskChatService implements OnModuleDestroy {
           ),
         );
     }
-    return this.persistedToPublic(row);
+    return this.toUi(this.persistedToPublic(row));
   }
 
   /** 数据库消息还原为前端消息结构（id 使用 messageKey，与实时消息一致） */

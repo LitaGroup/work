@@ -99,6 +99,17 @@ export function WorkerAvatar({
   )
 }
 
+/** 消息时间展示缓存：同一 ISO 时间在多条消息/多次渲染中重复格式化，避免反复调用 Intl */
+const TIME_TEXT_CACHE = new Map<string, string>()
+function timeText(value: string): string {
+  const cached = TIME_TEXT_CACHE.get(value)
+  if (cached !== undefined) return cached
+  const text = new Date(value).toLocaleString()
+  if (TIME_TEXT_CACHE.size >= 1000) TIME_TEXT_CACHE.clear()
+  TIME_TEXT_CACHE.set(value, text)
+  return text
+}
+
 /** 头像 + 名称 + 角色标签，供消息头部与阶段卡片复用 */
 export function SenderLine({
   sender,
@@ -121,7 +132,7 @@ export function SenderLine({
       )}
       {time && (
         <time className="text-[11px] text-foreground-subtle">
-          {new Date(time).toLocaleString()}
+          {timeText(time)}
         </time>
       )}
     </div>

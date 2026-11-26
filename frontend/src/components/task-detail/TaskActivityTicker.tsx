@@ -23,7 +23,9 @@ function reasoningActivity(
   const last = lines[lines.length - 1]
   if (!last) return null
   return {
-    key: `reasoning:${lines.length}`,
+    // 用末行前缀做标识：同一行内持续追加不重放动画，切换到新行才切换；
+    // 后端只下发思考尾部窗口，窗口滑动时末行不变，也不会误触发动画
+    key: `reasoning:${last.slice(0, 64)}`,
     text: last.length > 120 ? `${last.slice(0, 120)}…` : last,
   }
 }

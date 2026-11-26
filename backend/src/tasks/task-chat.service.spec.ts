@@ -139,6 +139,58 @@ describe('TaskChatService 提问卡片', () => {
     );
   });
 
+  it('会话视图流事件裁掉工具结果，思考过程只保留尾部', async () => {
+    const subject = (
+      service as unknown as {
+        subject: Subject<{ event: TaskChatStreamMessage }>;
+      }
+    ).subject;
+    const received: TaskChatStreamMessage[] = [];
+    const subscription = subject.subscribe((item) => received.push(item.event));
+
+    const longArgs = `{"path":"a.md","content":"${'x'.repeat(12000)}"}`;
+    await service.toolStarted(7, {
+      name: 'write',
+      toolCallId: 'call-ui',
+      argsText: longArgs,
+    });
+    service.toolFinished(7, true, {
+      toolCallId: 'call-ui',
+      result: 'y'.repeat(20000),
+    });
+    await service.appendReasoning(7, 'z'.repeat(20000));
+    service.endText(7);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const message = received
+      .filter(
+        (
+          event,
+        ): event is Extract<
+          TaskChatStreamMessage,
+          { type: 'message.upsert' }
+        > => event.type === 'message.upsert',
+      )
+      .at(-1)?.message;
+    expect(message).toBeDefined();
+    const tool = message?.tools?.[0];
+    expect(tool?.result).toBeUndefined();
+    expect(tool?.argsText).toHaveLength(8 * 1024);
+    expect(tool?.argsText).toBe(longArgs.slice(0, 8 * 1024));
+    expect(message?.reasoning).toHaveLength(16 * 1024);
+    // 落库保留完整工具结果与思考过程
+    expect(messagesRepo.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tools: [expect.objectContaining({ result: 'y'.repeat(20000) })],
+        reasoning: 'z'.repeat(20000),
+      }),
+      ['taskId', 'messageKey'],
+    );
+
+    subscription.unsubscribe();
+    service.onModuleDestroy();
+  });
+
   it('平台生成的任务复盘按固定 messageId 写入并持久化', async () => {
     const posted = await service.postAssistantMessage(
       7,

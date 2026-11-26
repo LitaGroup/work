@@ -2384,9 +2384,9 @@ export interface TaskChatTool {
   status: 'running' | 'success' | 'error'
   /** 历史错误/补充说明 */
   detail?: string
-  /** 工具参数（JSON 文本） */
+  /** 工具参数（JSON 文本；会话视图投影超过 8KB 截断） */
   argsText?: string
-  /** 工具结果或错误 */
+  /** 工具结果或错误（落库保留完整；会话视图快照/SSE 不返回） */
   result?: string
   startedAt?: string
   finishedAt?: string
@@ -2439,7 +2439,7 @@ export interface TaskChatMessage {
   perspective?: TaskChatPerspective
   /** Markdown 正文；工具调用/提问消息可能为空 */
   content: string
-  /** 机器人思考过程（session.reasoning.*） */
+  /** 机器人思考过程（session.reasoning.*；会话视图投影只保留尾部 16KB） */
   reasoning?: string
   createdAt: string
   status: 'running' | 'complete' | 'error'

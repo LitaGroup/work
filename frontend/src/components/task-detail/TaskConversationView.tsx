@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import { Badge } from '@appica/ui-react/badge'
 import { MessageCircleQuestion } from '@appica/icons-react'
 import type {
@@ -10,6 +11,7 @@ import type {
 } from '../../lib/api'
 import { questionStatusLabel } from '../../lib/question'
 import { useImeEnterGuard } from '../../lib/ime-enter'
+import { useThrottledText } from '../../lib/use-throttled-text'
 import { ChatMarkdown } from '../ChatMarkdown'
 import { QuestionCard } from '../QuestionCard'
 import {
@@ -28,6 +30,12 @@ export type TaskConversationConnection =
 
 /** 距离底部小于该值时仍视为停留在底部，实时内容继续跟随 */
 const FOLLOW_BOTTOM_THRESHOLD = 24
+
+/** 运行中消息的 Markdown 渲染节流间隔（SSE 增量 60ms 一次，无需每次都解析） */
+const STREAM_RENDER_INTERVAL = 200
+
+/** 虚拟化行距（原列表 gap-4） */
+const MESSAGE_GAP = 16
 
 export interface TaskConversationViewProps {
   taskId: number
@@ -68,7 +76,8 @@ export function TaskConversationView({
   onReplyQuestion,
 }: TaskConversationViewProps) {
   const boxRef = useRef<HTMLDivElement>(null)
-  /** 用户停留在底部时跟随最新消息；向上翻阅后保留当前位置 */
+  /** 列表底部哨兵：可见时跟随最新消息；向上翻阅后保留当前位置 */
+  const sentinelRef = useRef<HTMLDivElement>(null)
   const followBottomRef = useRef(true)
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
@@ -127,19 +136,55 @@ export function TaskConversationView({
     setPerspective('requester')
   }, [taskId])
 
-  useEffect(() => {
-    const box = boxRef.current
-    if (!box || !followBottomRef.current) return
-    box.scrollTop = box.scrollHeight
-  }, [visibleMessages])
+  /**
+   * 消息列表虚拟化：会话可能有数百条消息，全部常驻 DOM 时滚动与布局都很昂贵。
+   * 只渲染视口附近的行，行高按内容动态测量（流式增长由 ResizeObserver 自动重测）。
+   */
+  // oxlint-disable-next-line react/incompatible-library -- 项目未启用 React Compiler，虚拟化实例本就应保持稳定引用
+  const virtualizer = useVirtualizer({
+    count: visibleMessages.length,
+    getScrollElement: () => boxRef.current,
+    estimateSize: () => 160,
+    overscan: 8,
+    getItemKey: (index) => visibleMessages[index]?.id ?? index,
+  })
+  const totalSize = virtualizer.getTotalSize()
+  const lastIndex = visibleMessages.length - 1
+  const lastMessage = visibleMessages[lastIndex]
 
-  const handleScroll = () => {
+  useEffect(() => {
+    // 底部哨兵进入视口（含 24px 缓冲）即视为停留在底部，实时内容继续跟随
     const box = boxRef.current
-    if (!box) return
-    followBottomRef.current =
-      box.scrollHeight - box.scrollTop - box.clientHeight <=
-      FOLLOW_BOTTOM_THRESHOLD
-  }
+    const sentinel = sentinelRef.current
+    if (!box || !sentinel) return
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.target === sentinel) {
+            followBottomRef.current = entry.isIntersecting
+          }
+        }
+      },
+      {
+        root: box,
+        rootMargin: `0px 0px ${FOLLOW_BOTTOM_THRESHOLD}px 0px`,
+      },
+    )
+    observer.observe(sentinel)
+    return () => observer.disconnect()
+  }, [])
+
+  /** 最后一条消息内容 / 状态变化或高度测量更新时，停留在底部则继续跟随 */
+  const followRevision = lastMessage
+    ? `${lastMessage.id}:${lastMessage.content?.length ?? 0}:${lastMessage.status}:${lastMessage.question?.state ?? ''}`
+    : ''
+  useEffect(() => {
+    if (!followBottomRef.current || lastIndex < 0) return
+    const frame = window.requestAnimationFrame(() => {
+      virtualizer.scrollToIndex(lastIndex, { align: 'end' })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [followRevision, lastIndex, totalSize, virtualizer])
 
   const selectPerspective = (next: TaskChatPerspective) => {
     if (next === activePerspective) return
@@ -214,36 +259,53 @@ export function TaskConversationView({
 
       <div
         ref={boxRef}
-        onScroll={handleScroll}
-        className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 py-4"
+        className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-4"
       >
         {visibleMessages.length === 0 ? (
           <div className="flex flex-1 items-center justify-center text-center text-sm text-foreground-muted">
             暂无会话内容
           </div>
         ) : (
-          visibleMessages.map((message) => {
-            const question = message.question
-            if (message.kind === 'question' && question) {
-              return question.state === 'pending' && canAnswerQuestions ? (
-                <PendingQuestionCard
+          <div
+            className="relative w-full shrink-0"
+            style={{ height: totalSize }}
+          >
+            {virtualizer.getVirtualItems().map((virtualItem) => {
+              const message = visibleMessages[virtualItem.index]
+              if (!message) return null
+              const question = message.question
+              return (
+                <div
                   key={message.id}
-                  message={message}
-                  question={question}
-                  busy={busy}
-                  onReply={onReplyQuestion}
-                />
-              ) : (
-                <QuestionTimeline
-                  key={message.id}
-                  message={message}
-                  question={question}
-                />
+                  data-index={virtualItem.index}
+                  ref={virtualizer.measureElement}
+                  className="absolute inset-x-0 top-0 w-full"
+                  style={{
+                    transform: `translateY(${virtualItem.start}px)`,
+                    paddingBottom: MESSAGE_GAP,
+                  }}
+                >
+                  {message.kind === 'question' && question ? (
+                    question.state === 'pending' && canAnswerQuestions ? (
+                      <PendingQuestionCard
+                        message={message}
+                        question={question}
+                        busy={busy}
+                        onReply={onReplyQuestion}
+                      />
+                    ) : (
+                      <QuestionTimeline message={message} question={question} />
+                    )
+                  ) : (
+                    <ConversationMessage message={message} />
+                  )}
+                </div>
               )
-            }
-            return <ConversationMessage key={message.id} message={message} />
-          })
+            })}
+          </div>
         )}
+        {/* 底部哨兵：判断用户是否停留在列表底部（虚拟列表容器之外常驻） */}
+        <div ref={sentinelRef} aria-hidden className="h-px w-full shrink-0" />
       </div>
 
       {showComposer && (
@@ -319,6 +381,7 @@ export function TaskConversationView({
 /**
  * memo：流式更新时只有当前机器人消息对象会变，历史消息保持同一引用，
  * 避免每次增量都重新解析全部历史 Markdown。
+ * 运行中的消息再按 200ms 节流解析：SSE 60ms 一次的全量重解析是 O(n²) 的主要来源。
  */
 const ConversationMessage = memo(function ConversationMessage({
   message,
@@ -327,7 +390,12 @@ const ConversationMessage = memo(function ConversationMessage({
 }) {
   const isUser = message.role === 'user'
   const running = message.status === 'running'
-  const content = message.content?.trim() ?? ''
+  /** 运行中的消息节流渲染；结束后立即展示完整正文 */
+  const renderedContent = useThrottledText(
+    message.content ?? '',
+    running ? STREAM_RENDER_INTERVAL : 0,
+  )
+  const content = renderedContent.trim()
   return (
     <article
       className={`flex items-start gap-3 px-1 ${isUser ? 'flex-row-reverse' : ''}`}
@@ -353,13 +421,13 @@ const ConversationMessage = memo(function ConversationMessage({
         </div>
         {isUser ? (
           <div className="min-w-0 max-w-full rounded-none bg-primary px-4 py-2.5 text-sm leading-relaxed text-primary-foreground">
-            <ChatMarkdown text={message.content} onPrimary />
+            <ChatMarkdown text={renderedContent} onPrimary />
           </div>
         ) : (
           <div className="min-w-0 max-w-full text-sm leading-relaxed text-foreground-emphasis">
             {content && (
               <>
-                <ChatMarkdown text={message.content} />
+                <ChatMarkdown text={renderedContent} />
                 {running && (
                   <span className="ml-1 inline-block h-3.5 w-1 animate-pulse rounded-full bg-foreground-muted align-middle" />
                 )}

@@ -179,8 +179,14 @@ export function TaskDetailView({
       setTask(data.task)
       setRootProjectId(data.rootTask?.projectId ?? null)
       setPipeline(data.pipeline)
-      // 后端已按当前任务返回消息；这里再按 taskId 收敛一次，避免旧服务或异常数据串任务
-      setMessages(data.messages.filter((message) => message.taskId === taskId))
+      // 后端已按当前任务返回消息；这里再按 taskId 收敛一次，避免旧服务或异常数据串任务。
+      // 按 id 对账复用未变化的消息对象：refresh 重拉快照时不让历史消息整体重新解析 Markdown。
+      setMessages((current) =>
+        reconcileMessages(
+          current,
+          data.messages.filter((message) => message.taskId === taskId),
+        ),
+      )
       setHasAcceptanceApplication(data.hasAcceptanceApplication)
       setRequesterName(data.requesterName)
       setAgentOwnerName(data.agentOwnerName)
@@ -969,20 +975,146 @@ export function TaskDetailView({
   )
 }
 
+/**
+ * 从快照结果按 id 对账：渲染字段未变化的消息复用旧对象引用，
+ * 使 memo 生效，refresh 重拉快照时不再触发全量 Markdown 重新解析。
+ */
+function reconcileMessages(
+  current: TaskChatMessage[],
+  next: TaskChatMessage[],
+): TaskChatMessage[] {
+  if (current.length === 0) return next
+  const previous = new Map(current.map((message) => [message.id, message]))
+  let unchanged = true
+  const merged = next.map((message, index) => {
+    const existing = previous.get(message.id)
+    const reused =
+      existing && messagesEquivalent(existing, message) ? existing : message
+    if (reused !== current[index]) unchanged = false
+    return reused
+  })
+  // 数量、顺序与对象引用完全一致时保留原数组，避免无谓的 state 更新
+  if (unchanged && merged.length === current.length) return current
+  return merged
+}
+
+/** 会话视图渲染相关字段的等价判断（tool.result / 未变化的大文本不参与深比较） */
+function messagesEquivalent(a: TaskChatMessage, b: TaskChatMessage): boolean {
+  if (a === b) return true
+  if (
+    a.id !== b.id ||
+    a.taskId !== b.taskId ||
+    a.role !== b.role ||
+    a.kind !== b.kind ||
+    a.status !== b.status ||
+    a.createdAt !== b.createdAt ||
+    a.perspective !== b.perspective ||
+    (a.content ?? '').length !== (b.content ?? '').length ||
+    (a.reasoning?.length ?? 0) !== (b.reasoning?.length ?? 0) ||
+    !sameSender(a.sender, b.sender) ||
+    !sameQuestion(a.question, b.question) ||
+    !sameTools(a.tools, b.tools)
+  ) {
+    return false
+  }
+  if (a.content !== b.content) return false
+  if (a.reasoning !== b.reasoning) return false
+  if (a.meta !== b.meta) {
+    if (!a.meta || !b.meta) return false
+    return JSON.stringify(a.meta) === JSON.stringify(b.meta)
+  }
+  return true
+}
+
+function sameSender(
+  a: TaskChatMessage['sender'],
+  b: TaskChatMessage['sender'],
+): boolean {
+  return (
+    a.id === b.id &&
+    a.name === b.name &&
+    a.kind === b.kind &&
+    a.workerId === b.workerId &&
+    a.roleLabel === b.roleLabel &&
+    a.avatarUrl === b.avatarUrl
+  )
+}
+
+function sameTools(
+  a: TaskChatMessage['tools'],
+  b: TaskChatMessage['tools'],
+): boolean {
+  if (a === b) return true
+  if (!a || !b || a.length !== b.length) return false
+  for (let index = 0; index < a.length; index += 1) {
+    const left = a[index]
+    const right = b[index]
+    if (
+      left.id !== right.id ||
+      left.name !== right.name ||
+      left.status !== right.status ||
+      left.detail !== right.detail ||
+      left.argsText !== right.argsText ||
+      left.startedAt !== right.startedAt ||
+      left.finishedAt !== right.finishedAt
+    ) {
+      return false
+    }
+  }
+  return true
+}
+
+function sameQuestion(
+  a: TaskChatMessage['question'],
+  b: TaskChatMessage['question'],
+): boolean {
+  if (a === b) return true
+  if (!a || !b) return false
+  return (
+    a.id === b.id &&
+    a.sessionId === b.sessionId &&
+    a.state === b.state &&
+    a.askedAt === b.askedAt &&
+    a.toolCallId === b.toolCallId &&
+    JSON.stringify(a.questions) === JSON.stringify(b.questions) &&
+    JSON.stringify(a.answers ?? null) === JSON.stringify(b.answers ?? null)
+  )
+}
+
+/** ISO 时间 → 时间戳：同一条消息在多次快照中重复出现，按字符串缓存解析结果 */
+const timestampCache = new Map<string, number>()
+function createdAtTime(value: string): number {
+  const cached = timestampCache.get(value)
+  if (cached !== undefined) return cached
+  const parsed = new Date(value).getTime()
+  if (timestampCache.size >= 2000) timestampCache.clear()
+  timestampCache.set(value, parsed)
+  return parsed
+}
+
 function upsertMessage(
   current: TaskChatMessage[],
   message: TaskChatMessage,
 ): TaskChatMessage[] {
   const index = current.findIndex((item) => item.id === message.id)
-  if (index < 0) {
-    return [...current, message].sort(
-      (a, b) =>
-        new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
-    )
+  if (index >= 0) {
+    // 内容未变化时不替换对象，避免流式重复事件触发整行重渲染
+    if (messagesEquivalent(current[index], message)) return current
+    const next = current.slice()
+    next[index] = message
+    return next
   }
-  const next = current.slice()
-  next[index] = message
-  return next
+  // 常规情况按时间追加到末尾；只有乱序消息才排序，避免每条新消息全量排序
+  const last = current[current.length - 1]
+  if (
+    !last ||
+    createdAtTime(message.createdAt) >= createdAtTime(last.createdAt)
+  ) {
+    return [...current, message]
+  }
+  return [...current, message].sort(
+    (a, b) => createdAtTime(a.createdAt) - createdAtTime(b.createdAt),
+  )
 }
 
 function upsertStage(

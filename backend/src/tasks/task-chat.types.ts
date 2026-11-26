@@ -25,9 +25,9 @@ export interface TaskChatTool {
   status: 'running' | 'success' | 'error';
   /** 历史错误/补充说明 */
   detail?: string;
-  /** 工具参数（JSON 文本，assistant-ui tool-call 使用） */
+  /** 工具参数（JSON 文本，assistant-ui tool-call 使用；会话视图投影超过 8KB 截断） */
   argsText?: string;
-  /** 工具结果或错误（超长由后端截断） */
+  /** 工具结果或错误（落库保留完整；会话视图快照/SSE 投影不返回） */
   result?: string;
   startedAt?: string;
   finishedAt?: string;
@@ -79,7 +79,7 @@ export interface TaskChatMessage {
   perspective?: TaskChatPerspective;
   /** Markdown 正文；工具调用/提问消息可能为空 */
   content: string;
-  /** 思考过程（opencode session.reasoning.* 流式累积） */
+  /** 思考过程（opencode session.reasoning.* 流式累积；会话视图投影只保留尾部 16KB） */
   reasoning?: string;
   createdAt: string;
   status: 'running' | 'complete' | 'error';

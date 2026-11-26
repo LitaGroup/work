@@ -18,6 +18,7 @@
     "@codemirror/language-data": "^6.5.2",
     "@milkdown/crepe": "7.22.3",
     "@tailwindcss/vite": "^4.3.3",
+    "@tanstack/react-virtual": "^3.14.28",
     "framer-motion": "^14.6.0",
     "github-slugger": "^2.0.0",
     "mermaid": "^12.2.0",
