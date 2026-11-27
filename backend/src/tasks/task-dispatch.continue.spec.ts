@@ -273,6 +273,45 @@ describe('TaskDispatchService.continueConversation 状态守卫', () => {
     interrupt.mockRestore();
   });
 
+  it('真人机器人执行中续聊只记时间线通知，真实消息仍为反馈事件', async () => {
+    dispatchSpy.mockRestore();
+    tasksRepo.findOne.mockResolvedValue(
+      baseTask({
+        status: TaskStatus.RUNNING,
+        subStatus: TaskSubStatus.EXECUTING,
+      }),
+    );
+    workersRepo.findOne.mockResolvedValue({
+      id: 1001,
+      name: '胡峰',
+      enabled: true,
+      runtime: WorkerRuntime.HUMAN,
+    });
+
+    await service.continueConversation(1, '补充说明', '张三');
+
+    // 投递通知改为「操作」类型：只进事件时间线，不被会话流渲染成系统气泡
+    expect(eventsRepo.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskId: 1,
+        type: '操作',
+        content: '消息已发送到「胡峰」操作台',
+      }),
+    );
+    // 真实消息正文仍以「反馈」事件落库并进入会话
+    expect(eventsRepo.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskId: 1,
+        type: '反馈',
+        content: '补充说明',
+      }),
+    );
+    expect(taskRealtime.lineAppended).toHaveBeenCalledWith(
+      1,
+      '▶ 消息已同步到真人机器人操作台',
+    );
+  });
+
   it('待识别任务仍要求先补充需求并重新识别', async () => {
     tasksRepo.findOne.mockResolvedValue(
       baseTask({ subStatus: TaskSubStatus.PENDING_IDENTIFY }),

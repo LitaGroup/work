@@ -968,6 +968,17 @@ export class TaskChatService implements OnModuleDestroy {
       };
     }
 
+    // 真人机器人操作台投递通知（消息已发送到「xxx」操作台）只进事件时间线：
+    // 真实消息正文由另一条反馈事件承载，避免每次发消息都在会话里多出一个系统气泡。
+    // 存量事件仍是「反馈」类型，按 meta 过滤以立即清理历史会话。
+    if (
+      event.type === '反馈' &&
+      meta.humanWorker === true &&
+      meta.continued === true
+    ) {
+      return null;
+    }
+
     // 需求方/执行方反馈：进入对话流，而非时间线；父机器人身份同样保留。
     if (event.type === '反馈') {
       const perspective: TaskChatPerspective =

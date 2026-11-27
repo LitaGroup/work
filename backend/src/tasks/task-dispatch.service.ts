@@ -411,9 +411,11 @@ export class TaskDispatchService
         );
         return this.mustFind(task.id);
       }
+      // 真人机器人没有执行器会话：投递通知只作为事件时间线的审计记录（操作类型），
+      // 不写成反馈事件，避免被会话流渲染成系统气泡（真实消息正文由调用方另记反馈）。
       await this.addEvent(
         task.id,
-        continuing ? '反馈' : '操作',
+        '操作',
         continuing
           ? `消息已发送到「${worker.name}」操作台`
           : `任务由「${worker.name}」在操作台执行`,

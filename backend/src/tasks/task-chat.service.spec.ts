@@ -490,6 +490,34 @@ describe('TaskChatService snapshot 最终产出去重', () => {
     });
   });
 
+  it('真人机器人操作台投递通知不进入会话（仅保留事件时间线）', async () => {
+    eventsRepo.find.mockResolvedValue([
+      {
+        id: 1,
+        taskId: 34,
+        type: '反馈',
+        content: '消息已发送到「胡峰」操作台',
+        meta: { humanWorker: true, continued: true },
+        operator: '张三',
+        createdAt: new Date('2026-10-27T10:01:00Z'),
+      },
+      {
+        id: 2,
+        taskId: 34,
+        type: '反馈',
+        content: '补充一下首页埋点',
+        meta: { chat: true, intervention: true, perspective: 'requester' },
+        operator: '张三',
+        createdAt: new Date('2026-10-27T10:01:01Z'),
+      },
+    ]);
+
+    const messages = (await service.snapshot(34)).messages;
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0].content).toBe('补充一下首页埋点');
+  });
+
   it('快照中的提问卡片归一化历史脏选项', async () => {
     messagesRepo.find.mockResolvedValue([
       {
