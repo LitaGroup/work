@@ -4,6 +4,7 @@ import { handleStatelessMcpRequest } from './mcp-http';
 import { AdminEvalTools } from './admin-tools/admin-eval.tools';
 import { AdminRunTools } from './admin-tools/admin-run.tools';
 import { AdminTaskDefinesTools } from './admin-tools/admin-task-defines.tools';
+import { AdminWorkerReviewTools } from './admin-tools/admin-worker-review.tools';
 import { WorkAgentTools } from './work-tools/work-agent.tools';
 import { WorkTraceTools } from './work-tools/work-trace.tools';
 import { identityLabelOf } from './work-tools/work-tools.types';
@@ -27,6 +28,7 @@ export class McpAdminService {
   constructor(
     agentTools: WorkAgentTools,
     taskDefinesTools: AdminTaskDefinesTools,
+    workerReviewTools: AdminWorkerReviewTools,
     runTools: AdminRunTools,
     evalTools: AdminEvalTools,
     traceTools: WorkTraceTools,
@@ -34,6 +36,7 @@ export class McpAdminService {
     this.registrars = [
       agentTools,
       taskDefinesTools,
+      workerReviewTools,
       runTools,
       evalTools,
       traceTools,

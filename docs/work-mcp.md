@@ -1,14 +1,14 @@
 ---
-description: "> AI 助手提示：本文件定义了 lita-work 与 lita-work-admin MCP 服务的接入方式与工具清单；外部 Agent 按本文档完成令牌配置后即可调用需求、迭代项、文档、知识、运行、缺陷、反馈、灵感、任务、工单等平台工具（基础业务），管理员可另行接入 lita-work-admin 管理机器人、任务定义、测试集与评估。"
-version: "1.1.0"
+description: "> AI 助手提示：本文件定义了 lita-work 与 lita-work-admin MCP 服务的接入方式与工具清单；外部 Agent 按本文档完成令牌配置后即可调用需求、迭代项、文档、知识、个人复盘、运行、缺陷、反馈、灵感、任务、工单等平台工具（基础业务），管理员可另行接入 lita-work-admin 管理机器人、任务定义、机器人复盘与测试集评估。"
+version: "1.1.2"
 type: docs
 ---
 
 # MCP 接入指南：lita-work 平台工具
 
-平台把原 **lita-work / knowledge-search / file-upload** 三个 Agent 技能（`.md` HTTP 端点）改造成 MCP 服务 **`lita-work`**：外部 Agent（opencode / Claude Code / Cursor 等）完成一次配置后，即可直接调用带 schema 的平台工具——需求、迭代项、文档、知识库、脚本运行、缺陷、反馈、灵感、代码分支、文件上传、任务协同与工单等基础业务能力。
+平台把原 **lita-work / knowledge-search / file-upload** 三个 Agent 技能（`.md` HTTP 端点）改造成 MCP 服务 **`lita-work`**：外部 Agent（opencode / Claude Code / Cursor 等）完成一次配置后，即可直接调用带 schema 的平台工具——需求、迭代项、文档、知识库、机器人个人复盘、脚本运行、缺陷、反馈、灵感、代码分支、文件上传、任务协同与工单等基础业务能力。
 
-管理面能力（机器人、任务定义、测试集与评估、执行记录、平台设置）独立为 **`lita-work-admin`**（`POST /api/mcp/work-admin`），仅管理员令牌可用，见「六、lita-work-admin（管理面）」。
+管理面能力（机器人、任务定义、机器人复盘查询、测试集与评估、执行记录、平台设置）独立为 **`lita-work-admin`**（`POST /api/mcp/work-admin`），仅管理员令牌可用，见「六、lita-work-admin（管理面）」。
 
 - 服务地址：`POST /api/mcp/work`（MCP Streamable HTTP，响应为 SSE 流）
 - 鉴权：机器人令牌（`Authorization: Bearer` / `X-Worker-Token` / `X-Agent-Token` / `?token=`），或管理员下发的公共 Agent 令牌；与 `.md` 端点同一令牌体系。真人用户没有独立令牌，其令牌就是绑定真人机器人的 `workers.agentToken`
@@ -91,10 +91,15 @@ claude mcp add --transport http lita-work http://your-host:3100/api/mcp/work \
 |---|---|---|
 | `search_projects` | `query` | 按名称模糊搜索需求，返回前 5 个 |
 | `get_project` | `projectId` | 需求基本信息（描述 / 对应的迭代 / 文档资料清单与需求级 AI 操作入口） |
+| `create_project` | `name`、`type?`、`expectedReleaseAt?`、`description?` | 在需求池新建需求；摘要/描述为空时后台自动生成 |
 | `update_project` | `projectId`、`scriptsPath?`、`description?`、`owner?`、`involvedParties?`、`remark?` | 仅更新平台本地字段（脚本目录/描述/需求方/涉及方/备注） |
 | `read_document` | `documentId` | 文档元信息 + Markdown 正文 |
 | `upsert_document` | `projectId`、`fileName`、`content`、`title?`、`type?`、`description?` | 按 `(projectId, fileName)` upsert |
+| `create_document` | `projectId`、`title`、`type`、`content?`、`url?` | 显式新建文档（不按 fileName 判重）；传 `url` 创建链接型设计文档 |
+| `sync_feishu_document` | `projectId`、`type`、`url`、`description?` | 从飞书文档 / 多维表格链接单向导入（同来源覆盖更新） |
 | `sync_apipost_document` | `projectId`、`url`、`type?` | 导入 APIPOST 接口文档 |
+| `update_document_remark` | `documentId`、`remark` | 更新文档备注（空串清除） |
+| `delete_document` | `documentId` | 删除文档（清理知识库镜像与迭代项关联） |
 
 ### 迭代项
 
@@ -102,6 +107,8 @@ claude mcp add --transport http lita-work http://your-host:3100/api/mcp/work \
 |---|---|---|
 | `get_backlog` | `backlogId` | 迭代项详情（元信息 / 成员 / 文档 / 最近事件） |
 | `get_iteration` | `iterationId` | 迭代详情（标识 / 类型 / 状态 / 描述 / 起止 / 迭代项清单） |
+| `list_iterations` | `type?`、`status?` | 迭代清单（用于选择转入/移动迭代项的目标迭代 ID） |
+| `create_backlogs` | `iterationId`、`items`（`[{projectId, ownerWorkerId?, members?}]`） | 需求批量转入迭代（仅管理员）；负责人可暂不指定，指定后创建交付任务 |
 | `update_backlog_members` | `backlogId`、`members[]`（`role` + `userId` 或 `name`） | 管理员或该迭代项负责人机器人整体替换成员；`name` 支持顿号连接多人，空数组清空 |
 | `update_backlog` | `backlogId`、`expectedOnlineAt?`、`ownerWorkerId?` | 修改预期上线时间（null 清空）；`ownerWorkerId` 仅管理员，改派时重建交付任务 |
 | `change_backlog_status` | `backlogId`、`status`、`remark?` | 状态流转（等待/执行/测试/发布/完成/取消），备注写入事件流；成员或管理员 |
@@ -136,6 +143,17 @@ claude mcp add --transport http lita-work http://your-host:3100/api/mcp/work \
 | `read_feishu_doc` | `url` | 飞书文档转 Markdown（不落库） |
 
 > `/95-workspace/{机器人ID}/` 是机器人专属交付工作区，平台幂等创建；根目录与机器人 ID 目录不可移动、改名或删除，子目录和文章可正常维护。对话中交付 Markdown 文档时应写入此处并返回平台网页地址，不要返回工位本地路径或相对文件链接；非 Markdown 文件仍用 `upload_file`。
+
+### 机器人个人复盘
+
+| 工具 | 主要入参 | 说明 |
+|---|---|---|
+| `list_my_reviews` | `page?`、`pageSize?`、`from?`、`to?` | 查询自己的复盘清单（按创建时间倒序，不返回正文） |
+| `read_my_review` | `name` | 读取自己的一篇复盘全文；`name` 为 14 位北京时间时间戳 |
+| `create_my_review` | `title?`、`content` | 上传个人会话总结复盘，平台生成路径 `/95-workspace/{机器人ID}/reviews/{yyyyMMddHHmmss}` |
+| `update_my_review` | `name`、`title?`、`content?` | 修改自己的复盘标题或正文，不能移动、重命名、改归属或删除 |
+
+> 复盘工具只接受机器人身份，并固定使用当前令牌对应的机器人 ID，不能操作其它机器人的复盘。用户要求总结复盘或会话形成可复用经验时，机器人应先自行整理再上传；不要逐轮生成，也不要写入令牌、Secret 或隐私凭据。复盘默认不自动删除；`WORKER_REVIEWS_CLEANUP_ENABLED=true` 时每日清理创建时间超过 `WORKER_REVIEWS_RETENTION_DAYS`（默认 365 天）的文章。任务 `REVIEW` 复盘仍由任务中心维护。
 
 ### 缺陷
 
@@ -302,6 +320,15 @@ claude mcp add --transport http lita-work http://your-host:3100/api/mcp/work \
 | `get_trace_stats` | `workerId?` 等 | 执行记录统计 |
 | `get_settings` | — | 平台设置概览 |
 | `pull_scripts` | — | 更新脚本仓库（git 输出流式推送） |
+
+### 机器人个人复盘（只读）
+
+| 工具 | 主要入参 | 说明 |
+|---|---|---|
+| `list_worker_reviews` | `workerId`、`page?`、`pageSize?`、`from?`、`to?` | 查询指定机器人的复盘清单（按创建时间倒序，不返回正文） |
+| `read_worker_review` | `workerId`、`name` | 读取指定机器人的一篇复盘全文；`name` 为 14 位北京时间时间戳 |
+
+> 管理面只提供查询，不提供修改或删除；复盘仍由对应机器人通过 `lita-work` 的 `create_my_review` / `update_my_review` 维护。
 
 ### 测试集 / 用例 / 评估
 

@@ -43,6 +43,7 @@ import { WorkFileTools } from './work-tools/work-file.tools';
 import { WorkGithubTools } from './work-tools/work-github.tools';
 import { WorkIdeaTools } from './work-tools/work-idea.tools';
 import { WorkKnowledgeTools } from './work-tools/work-knowledge.tools';
+import { WorkReviewTools } from './work-tools/work-review.tools';
 import { WorkProjectTools } from './work-tools/work-project.tools';
 import { WorkRunTools } from './work-tools/work-run.tools';
 import { WorkTaskTools } from './work-tools/work-task.tools';
@@ -56,6 +57,7 @@ import { WorkTraceTools } from './work-tools/work-trace.tools';
 import { AdminEvalTools } from './admin-tools/admin-eval.tools';
 import { AdminRunTools } from './admin-tools/admin-run.tools';
 import { AdminTaskDefinesTools } from './admin-tools/admin-task-defines.tools';
+import { AdminWorkerReviewTools } from './admin-tools/admin-worker-review.tools';
 import { EvalModule } from '../eval/eval.module';
 import { TraceModule } from '../trace/trace.module';
 /**
@@ -109,6 +111,7 @@ import { TraceModule } from '../trace/trace.module';
     WorkProjectTools,
     WorkRunTools,
     WorkKnowledgeTools,
+    WorkReviewTools,
     WorkDefectTools,
     WorkFeedbackTools,
     WorkIdeaTools,
@@ -126,6 +129,7 @@ import { TraceModule } from '../trace/trace.module';
     AdminEvalTools,
     AdminRunTools,
     AdminTaskDefinesTools,
+    AdminWorkerReviewTools,
   ],
 })
 export class McpModule {}

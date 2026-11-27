@@ -1,6 +1,6 @@
 ---
 description: "> AI 助手提示：定义 lita-work / lita-work-admin / lita-bots / lita-proxy 四个 MCP 服务的令牌获取与客户端接入配置（opencode / Claude Code / Codex CLI）。"
-version: 1.3.0
+version: 1.3.2
 type: docs
 ---
 
@@ -12,8 +12,8 @@ type: docs
 
 | 服务 | 地址 | 用途 | 工具数 |
 |---|---|---|---|
-| `lita-work` | `http://work.cinta.team/api/mcp/work` | 基础业务操作：需求 / 迭代项 / 文档 / 知识库 / 脚本运行 / 缺陷 / 反馈 / 灵感 / 代码分支 / 任务协同 / 工单 / 话题 / 飞书 / 定时唤醒 | 94 |
-| `lita-work-admin` | `http://work.cinta.team/api/mcp/work-admin` | 管理面（仅管理员）：机器人 / 任务定义 / 测试集与评估 / 执行记录 / 平台设置 | 38 |
+| `lita-work` | `http://work.cinta.team/api/mcp/work` | 基础业务操作：需求 / 迭代项 / 文档 / 知识库 / 个人复盘 / 脚本运行 / 缺陷 / 反馈 / 灵感 / 代码分支 / 任务协同 / 工单 / 话题 / 飞书 / 定时唤醒 | 105 |
+| `lita-work-admin` | `http://work.cinta.team/api/mcp/work-admin` | 管理面（仅管理员）：机器人 / 任务定义 / 机器人复盘查询 / 测试集与评估 / 执行记录 / 平台设置 | 40 |
 | `lita-bots` | `http://work.cinta.team/api/mcp/bots` | 把平台机器人当**子 Agent** 调用（多轮会话、提问、中断、断线找回） | 6 |
 | `lita-proxy` | `http://proxy.cinta.team/mcp` | 内部资源运维：MySQL/ClickHouse/MaxCompute（ODPS）SQL、Redis 命令、阿里云 SLS 只读日志、Nacos 配置、XXL-JOB 任务、Firebase Firestore 只读查询、线上操作工单、GitHub PR 创建 | 31 |
 
@@ -80,14 +80,15 @@ Claude Code 的 `--header`、Codex 的 `bearer_token_env_var` 均见下文各节
 
 ### 2.1 lita-work：基础业务操作
 
-覆盖需求、迭代项、文档、脚本运行、知识库、缺陷、用户反馈、灵感、GitHub 代码分支、文件上传、任务协同、工单、话题、飞书会话历史查询、平台名义消息发送和定时唤醒（机器人、任务定义、测试集与评估等管理能力在 `lita-work-admin`）。代表性工具：
+覆盖需求、迭代项、文档、脚本运行、知识库、机器人个人复盘、缺陷、用户反馈、灵感、GitHub 代码分支、文件上传、任务协同、工单、话题、飞书会话历史查询、平台名义消息发送和定时唤醒（机器人、任务定义、机器人复盘查询、测试集与评估等管理能力在 `lita-work-admin`）。代表性工具：
 
 | 分类 | 代表工具 |
 |---|---|
-| 需求 / 文档 | `search_projects`、`get_project`、`update_project`、`read_document`、`upsert_document`、`sync_apipost_document` |
-| 迭代项 | `get_backlog`、`get_iteration`（迭代详情）、`update_backlog_members`（管理员或负责人整体替换成员）、`update_backlog`（预期上线/负责人改派）、`change_backlog_status`、`move_backlog`、`create_backlog_task`、`create_backlog_release`（批量提测：每个迭代项建提测工单+提测记录，提测群通知由工单节点发送） |
+| 需求 / 文档 | `search_projects`、`get_project`、`create_project`、`update_project`、`read_document`、`upsert_document`、`create_document`、`sync_feishu_document`、`sync_apipost_document`、`update_document_remark`、`delete_document` |
+| 迭代项 | `get_backlog`、`get_iteration`（迭代详情）、`list_iterations`（迭代清单）、`create_backlogs`（需求批量转入迭代，仅管理员）、`update_backlog_members`（管理员或负责人整体替换成员）、`update_backlog`（预期上线/负责人改派）、`change_backlog_status`、`move_backlog`、`create_backlog_task`、`create_backlog_release`（批量提测：每个迭代项建提测工单+提测记录，提测群通知由工单节点发送） |
 | 运行 / 脚本 | `run_check`、`run_test`、`run_export`、`run_schedule`、`get_run`、`list_runs`、`import_scripts` |
 | 知识库 | `search_knowledge`、`list_knowledge_dir`、`read_knowledge`、`create_knowledge`、`update_knowledge`、`delete_knowledge`、`read_feishu_doc` |
+| 个人复盘 | `list_my_reviews`、`read_my_review`、`create_my_review`、`update_my_review`（只能操作当前机器人自己的复盘） |
 | 缺陷 | `list_defects`、`get_defect`、`create_defect`、`update_defect`、`change_defect_status`、`add_defect_record`、`delete_defect` |
 | 用户反馈 | `list_feedbacks`、`get_feedback`（含「系统-反馈处理」从飞书反馈群自动收录的话题反馈与跟帖） |
 | 灵感 | `list_ideas`、`get_idea`、`create_idea`、`update_idea`、`delete_idea`、`change_idea_status`（采纳时新建或关联需求池需求） |
@@ -105,11 +106,12 @@ Claude Code 的 `--header`、Codex 的 `bearer_token_env_var` 均见下文各节
 
 ### 2.2 lita-work-admin：管理面（仅管理员）
 
-机器人、任务定义、测试集与评估、执行记录和平台设置的独立服务：
+机器人、任务定义、机器人复盘查询、测试集与评估、执行记录和平台设置的独立服务：
 
 | 分类 | 代表工具 |
 |---|---|
 | 机器人与任务定义 | `list_workers`、`get_worker`、`create_worker`、`update_worker`、`delete_worker`、`list_worker_skill_catalog`、`list_worker_standard_catalog`、`list_task_templates`、`get_task_template`、`create_task_template`、`update_task_template`、`delete_task_template`、`list_task_defines` |
+| 机器人复盘（只读） | `list_worker_reviews`、`read_worker_review`（按 `workerId` 查询其它机器人的会话复盘） |
 | 测试集 / 用例 / 评估 | `list_eval_suites`、`get_eval_suite`、`create_eval_suite`、`update_eval_suite`、`archive_eval_suite`、`delete_eval_suite`、`upsert_eval_case`、`delete_eval_case`、`import_eval_suite`、`export_eval_suite`、`list_eval_runs`、`create_eval_run`、`run_eval`（发起并等待终态）、`get_eval_run`（状态与进度）、`get_worker_eval_summary`（机器人评估成绩）、`get_eval_run_report`、`cancel_eval_run`、`get_eval_item`、`rerun_eval_item`、`rejudge_eval_item` |
 | 执行记录 / 设置 | `list_task_traces`、`read_task_trace`、`get_trace_stats`、`get_settings`、`pull_scripts` |
 

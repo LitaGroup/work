@@ -1,9 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
-import {
-  McpAuthMode,
-  McpServerType,
-  WorkerAccessLevel,
-} from '../common/enums';
+import { McpAuthMode, McpServerType, WorkerAccessLevel } from '../common/enums';
 import { McpServer } from './mcp-server.entity';
 import {
   buildOpencodeServerConfig,
@@ -20,10 +16,7 @@ function makeServerRepo(initial: McpServer[] = []) {
       const builder: Record<string, unknown> = {
         addSelect: () => builder,
         orderBy: () => builder,
-        where: (
-          condition: string,
-          params: { id?: number; ids?: number[] },
-        ) => {
+        where: (condition: string, params: { id?: number; ids?: number[] }) => {
           if (params.ids)
             rows = rows.filter((row) => params.ids!.includes(row.id));
           else if (params.id !== undefined)
@@ -314,7 +307,11 @@ describe('McpServersService', () => {
       oauth: false,
       headers: { 'X-Worker-Token': 'tok-a' },
     });
-    for (const level of [WorkerAccessLevel.NORMAL, WorkerAccessLevel.NONE, null]) {
+    for (const level of [
+      WorkerAccessLevel.NORMAL,
+      WorkerAccessLevel.NONE,
+      null,
+    ]) {
       const configs = await service.buildServersConfig(
         'http://work.cinta.team',
         'tok-b',

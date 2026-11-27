@@ -74,7 +74,7 @@
 - `backend/src/model-config/`：管理区「模型配置」（固定场景的 OpenAI 兼容连接：baseUrl/apiKey/model/思考等级）与通用单次大模型调用（`LlmService`，工单/任务标题命名等后台任务）。
 - `backend/src/github/`、`github-gateway/`：仓库/分支/提交集成与凭证网关。
 - `backend/src/agent/`、`remote-run/`、`app-versions/`：Appium Agent、远程运行与 APP 包。
-- `backend/src/files/`、`images/`、`settings/`、`mcp/`：上传、设置与 MCP 开放（`lita-bots` 调用机器人；`lita-work` 基础业务工具：需求/迭代项（含成员与状态流转）/知识/运行/缺陷/反馈/灵感/任务协同/工单/飞书会话历史与消息发送/定时唤醒；`lita-work-admin` 管理面工具：机器人/任务定义/测试集与评估/执行记录/平台设置，仅管理员可用）；`backend/src/mcp-servers/` 为管理区「MCP 配置」（机器人连接的外部 MCP 服务）。
+- `backend/src/files/`、`images/`、`settings/`、`mcp/`：上传、设置与 MCP 开放（`lita-bots` 调用机器人；`lita-work` 基础业务工具：需求（创建/文档读写/转入迭代）/迭代项（含成员与状态流转）/知识/个人复盘/运行/缺陷/反馈/灵感/任务协同/工单/飞书会话历史与消息发送/定时唤醒；`lita-work-admin` 管理面工具：机器人/任务定义/机器人复盘查询/测试集与评估/执行记录/平台设置，仅管理员可用）；`backend/src/mcp-servers/` 为管理区「MCP 配置」（机器人连接的外部 MCP 服务）。
 
 其他入口：
 
@@ -165,7 +165,7 @@
 - **负责人/需求方自动列入成员**（系统维护、不可手动移除、不授予成员操作权限）：负责人取 `ownerWorkerId`（真人或 AI 机器人），需求方取 `projects.owner` 姓名对应的真人机器人；自动行角色为 负责人/需求方，按 `(role, workerId)` 去重，同一人不同角色显示多次。需求方在需求编辑/飞书同步变更时联动刷新该需求全部未取消迭代项的成员行。
 - 成员权限按机器人判定：仅「手动成员」授予操作权限（管理员与负责人既有规则不变），自动列入的负责人/需求方只展示不入权限。
 - 迭代项飞书沟通群按成员机器人进群：真人机器人 → 绑定真人 open_id，AI 机器人 → 绑定的飞书应用 app_id；成员新增（含负责人/需求方自动列入）自动拉入已有群，**只加不减**（移除成员不踢人），`feishu_bot_backlog_chats.memberWorkerIds` 跟踪已入群机器人。升级前的存量群没有成员跟踪，不能假定成员已在群内：迁移 `1801300000000` 重置既有跟踪，对账（非终态）按当前全部成员实际补拉（飞书拉人接口忽略已入群成员，重复调用安全），上线后一轮对账补齐历史遗漏成员；对账校验群存活，飞书侧已解散（`chat_status=dissolved`）或 chat_id 失效（错误码 232006）时把绑定置为 `destroyed` 并记录原因，详情页重新提供「飞书建群」。
-- `lita-work` MCP 的迭代项工具与网页写能力等价（权限复用成员/负责人/管理员规则）：`get_backlog`、`get_iteration`（迭代详情）、`update_backlog_members`、`update_backlog`（预期上线时间、负责人改派）、`change_backlog_status`（状态 + 备注）、`move_backlog`（移动迭代）、`create_backlog_task`（子任务/交付任务）、`create_backlog_release`（批量提测：迭代项 + 提测端/补充描述/工单动态字段）。
+- `lita-work` MCP 的迭代项工具与网页写能力等价（权限复用成员/负责人/管理员规则）：`get_backlog`、`get_iteration`（迭代详情）、`list_iterations`（迭代清单，选择目标迭代）、`create_backlogs`（需求批量转入迭代，仅管理员）、`update_backlog_members`、`update_backlog`（预期上线时间、负责人改派）、`change_backlog_status`（状态 + 备注）、`move_backlog`（移动迭代）、`create_backlog_task`（子任务/交付任务）、`create_backlog_release`（批量提测：迭代项 + 提测端/补充描述/工单动态字段）。
 - 状态：等待 → 执行 → 测试 → 发布 → 完成，允许回退与取消；由成员或管理员手动流转，记录操作人与各阶段时间；取消时联动取消未结束的交付任务。状态与任务/需求状态解耦。推进走弹窗（选状态 + 备注可空，备注写入事件流），网页两处（迭代表格/迭代项详情）共用同一弹窗组件，不再使用行内下拉。
 - 迭代项有自己的标题：转入后异步用 `title-naming` 场景生成 `「BL-{id}」+ 模型标题`（乐观条件更新，失败保留需求名快照兜底，不覆盖人工修改）；迭代表格展示迭代项标题并链接 `/backlogs/{id}`（需求仅保留 `#id` 提示）。
 - 属性：预期上线时间到小时（`backlogs.expectedOnlineAt`，timestamptz，北京时间展示），成员或管理员可改（`PATCH /api/backlogs/{id}`）。
@@ -215,6 +215,7 @@
 - 检索为全文 + Embedding 的 RRF 混合检索，支持 `path/page/pageSize`，`pageSize` 最大 100。向量不可用时降级全文；低相似纯向量候选不进入 RRF。
 - 系统级知识目录固定为 `/01-backlogs/`（需求迭代）、`/95-workspace/`（机器人工作区）、`/98-tasks/`（任务记录）、`/99-system/`（系统设计）：路径、名称和父目录不可修改，不可删除，只允许修改展示标题；服务启动时确保存在且不覆盖用户改过的标题。旧 `/project/**`、`/task/**` 保留只读别名用于迁移后旧链接访问。
 - `/95-workspace/{机器人ID}/` 是每个机器人的专属交付工作区，平台在机器人配置同步和工位初始化时幂等创建，机器人删除后保留已有文档。目录本身由平台维护（`source=system`，子目录和文章可写），机器人交付 Markdown 文档或临时文本时应写入此处，并以 `/docs/detail/95-workspace/{机器人ID}/...` 网页地址分享；任务/需求/迭代已有归档规则的文档仍写各自业务目录。PDF/Excel/ZIP 等非 Markdown 文件走 `upload_file`，不存入知识库。
+- `/95-workspace/{机器人ID}/reviews/{yyyyMMddHHmmss}` 是机器人个人会话复盘：机器人用 `create_my_review` / `update_my_review` 维护自己的经验总结，`list_my_reviews` / `read_my_review` 查询；管理员用 `lita-work-admin` 的 `list_worker_reviews` / `read_worker_review` 查询其它机器人复盘。复盘默认不自动删除；`WORKER_REVIEWS_CLEANUP_ENABLED=true` 时每日清理创建时间超过 `WORKER_REVIEWS_RETENTION_DAYS`（默认 365 天）的文章，目录本身保留。任务 `REVIEW` 复盘仍由任务中心维护，两者不要混用。
 - `/01-backlogs/**` 是需求文档系统镜像，`/98-tasks/**` 是任务交付/复盘文档目录，均只读，分别走文档和任务流程。`/99-system/workers/{id}/README`、`/99-system/task-definitions/{id}/README`、`/99-system/evaluations/{suites|runs}/.../README` 为机器人设定、任务定义和机器人评测的自动只读镜像，不包含令牌、Secret、MCP 凭据、执行日志或原始工具调用。`/99-system/**` 仅管理员可读取、维护和搜索命中；普通成员与普通机器人浏览、搜索时隐藏该系统目录，避免验证集 Prompt、评分要点和返工提示泄露。
 - Agent 知识写操作按 path 定位；目录与文章的 URL 规则不可混淆。
 - 飞书云文档实时搜索已下线，不要恢复为搜索依赖；飞书文档仍可通过只读转换接口导入。

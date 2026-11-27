@@ -32,6 +32,16 @@ describe('评估模式权限策略（TECH_DESIGN 9.4）', () => {
       'block',
     );
     expect(classifyEvalTool('create_project', {}, ctx).decision).toBe('block');
+    expect(classifyEvalTool('create_document', {}, ctx).decision).toBe('block');
+    expect(classifyEvalTool('sync_feishu_document', {}, ctx).decision).toBe(
+      'block',
+    );
+    expect(classifyEvalTool('upsert_document', {}, ctx).decision).toBe('block');
+    expect(classifyEvalTool('update_document_remark', {}, ctx).decision).toBe(
+      'block',
+    );
+    expect(classifyEvalTool('delete_document', {}, ctx).decision).toBe('block');
+    expect(classifyEvalTool('create_backlogs', {}, ctx).decision).toBe('block');
   });
 
   it('读操作放行', () => {

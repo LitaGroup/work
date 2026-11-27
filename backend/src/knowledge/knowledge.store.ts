@@ -15,6 +15,7 @@ import {
   projectDocumentPath,
   projectRootPath,
   SYSTEM_KNOWLEDGE_DIRECTORIES,
+  workerReviewsRootPath,
   WORKER_WORKSPACE_ROOT,
 } from './knowledge.path';
 import type {
@@ -714,6 +715,60 @@ export class KnowledgeStore implements OnApplicationBootstrap, OnModuleDestroy {
       [normalized],
     );
     return result.rows.map(mapNode);
+  }
+
+  /**
+   * 机器人复盘清单：只取 reviews 直属的 14 位时间戳文章摘要。
+   * 列表不读取正文，避免复盘较多时把大字段全部载入内存。
+   */
+  async listWorkerReviewSummaries(input: {
+    workerId: number;
+    from?: Date;
+    to?: Date;
+    offset: number;
+    limit: number;
+  }): Promise<KnowledgeNodeSummary[]> {
+    const parentPath = workerReviewsRootPath(input.workerId);
+    const result = await this.db().query<NodeSummaryRow>(
+      `SELECT ${NODE_SUMMARY_COLUMNS} FROM knowledge_nodes
+       WHERE kind = 'article'
+         AND source = 'native'
+         AND parent_path = $1
+         AND name ~ '^[0-9]{14}$'
+         AND ($2::timestamptz IS NULL OR created_at >= $2)
+         AND ($3::timestamptz IS NULL OR created_at < $3)
+       ORDER BY created_at DESC, name DESC
+       LIMIT $4 OFFSET $5`,
+      [
+        parentPath,
+        input.from ?? null,
+        input.to ?? null,
+        input.limit,
+        input.offset,
+      ],
+    );
+    return result.rows.map(mapSummary);
+  }
+
+  /** 清理超过保留期的机器人复盘；路径正则兜底，绝不触碰工作区其它知识 */
+  async removeExpiredWorkerReviewArticles(
+    cutoff: Date,
+    limit: number,
+  ): Promise<number> {
+    const result = await this.db().query(
+      `DELETE FROM knowledge_nodes
+       WHERE id IN (
+         SELECT id FROM knowledge_nodes
+         WHERE kind = 'article'
+           AND source = 'native'
+           AND path ~ '^/95-workspace/[0-9]+/reviews/[0-9]{14}$'
+           AND created_at < $1
+         ORDER BY created_at ASC
+         LIMIT $2
+       )`,
+      [cutoff, limit],
+    );
+    return result.rowCount ?? 0;
   }
 
   /**

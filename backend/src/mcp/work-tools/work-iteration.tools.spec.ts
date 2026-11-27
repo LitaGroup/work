@@ -14,17 +14,22 @@ function buildTools(options?: {
     updateBacklog: jest.Mock;
     updateStatus: jest.Mock;
     move: jest.Mock;
+    createBatch: jest.Mock;
     createTask: jest.Mock;
     submitReleaseMarkdown: jest.Mock;
     findOneMarkdown: jest.Mock;
   };
-  iterations: { findOneMarkdown: jest.Mock };
+  iterations: { findOneMarkdown: jest.Mock; listMarkdown: jest.Mock };
 } {
   const backlogs = {
     updateMembers: jest.fn().mockResolvedValue({ id: 33 }),
     updateBacklog: jest.fn().mockResolvedValue({ id: 33 }),
     updateStatus: jest.fn().mockResolvedValue({ id: 33 }),
     move: jest.fn().mockResolvedValue({ id: 33 }),
+    createBatch: jest.fn().mockResolvedValue([
+      { id: 33, code: 'BL-0033', title: 'BL-0033 PK 活动优化' },
+      { id: 34, code: 'BL-0034', title: 'BL-0034 签到改版' },
+    ]),
     createTask: jest
       .fn()
       .mockResolvedValue({ id: 55, code: 'TK-0055', title: '子任务' }),
@@ -33,6 +38,7 @@ function buildTools(options?: {
   };
   const iterations = {
     findOneMarkdown: jest.fn().mockResolvedValue('# 迭代详情'),
+    listMarkdown: jest.fn().mockResolvedValue('# 迭代清单'),
   };
   const tools = new Map<string, Handler>();
   const server = {
@@ -60,10 +66,12 @@ describe('WorkIterationTools', () => {
     expect([...tools.keys()]).toEqual([
       'get_backlog',
       'get_iteration',
+      'list_iterations',
       'update_backlog_members',
       'update_backlog',
       'change_backlog_status',
       'move_backlog',
+      'create_backlogs',
       'create_backlog_task',
       'create_backlog_release',
     ]);
@@ -85,6 +93,76 @@ describe('WorkIterationTools', () => {
     })) as { content: { text: string }[] };
     expect(iterations.findOneMarkdown).toHaveBeenCalledWith(7);
     expect(result.content[0].text).toBe('# 迭代详情');
+  });
+
+  it('list_iterations 透传类型/状态过滤并返回清单 Markdown', async () => {
+    const { tools, iterations } = buildTools();
+    const result = (await tools.get('list_iterations')!({
+      type: 'T7',
+      status: '进行中',
+    })) as { content: { text: string }[] };
+    expect(iterations.listMarkdown).toHaveBeenCalledWith({
+      type: 'T7',
+      status: '进行中',
+    });
+    expect(result.content[0].text).toBe('# 迭代清单');
+  });
+
+  it('create_backlogs 以管理员身份批量转入并返回迭代项清单', async () => {
+    const { tools, backlogs } = buildTools();
+    const result = (await tools.get('create_backlogs')!({
+      iterationId: 7,
+      items: [
+        {
+          projectId: 21,
+          ownerWorkerId: 1002,
+          members: [{ role: '前端', userId: 7 }],
+        },
+        { projectId: 22 },
+      ],
+    })) as { content: { text: string }[] };
+    expect(backlogs.createBatch).toHaveBeenCalledWith(
+      7,
+      [
+        {
+          projectId: 21,
+          ownerWorkerId: 1002,
+          members: [{ role: '前端', userId: 7 }],
+        },
+        { projectId: 22, ownerWorkerId: null, members: undefined },
+      ],
+      expect.objectContaining({
+        userId: 1,
+        userName: '张三',
+        isAdmin: true,
+        workerId: null,
+      }),
+    );
+    expect(backlogs.findOneMarkdown).toHaveBeenCalledWith(33);
+    expect(backlogs.findOneMarkdown).toHaveBeenCalledWith(34);
+    expect(result.content[0].text).toContain('BL-0033');
+    expect(result.content[0].text).toContain('BL-0034');
+  });
+
+  it('create_backlogs 非管理员身份传入 isAdmin=false 由服务层拒绝', async () => {
+    const { tools, backlogs } = buildTools({
+      user: { id: 2, name: '负责人', role: UserRole.MEMBER },
+      worker: { id: 1002, name: '迭代负责人机器人' },
+    });
+    backlogs.createBatch.mockRejectedValueOnce(
+      new Error('仅管理员可将需求转入迭代'),
+    );
+    const result = (await tools.get('create_backlogs')!({
+      iterationId: 7,
+      items: [{ projectId: 21 }],
+    })) as { content: { text: string }[]; isError?: boolean };
+    expect(backlogs.createBatch).toHaveBeenCalledWith(
+      7,
+      [{ projectId: 21, ownerWorkerId: null, members: undefined }],
+      expect.objectContaining({ userId: 2, isAdmin: false, workerId: 1002 }),
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('仅管理员可将需求转入迭代');
   });
 
   it('update_backlog_members 以管理员身份更新并返回迭代项 Markdown', async () => {

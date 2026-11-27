@@ -271,6 +271,8 @@ describe('WorkerEnvironmentService', () => {
       'http://work.cinta.team/docs/detail/95-workspace/1001/tech-design',
     );
     expect(agents).toContain('不要把工位本地绝对路径');
+    expect(agents).toContain('/95-workspace/1001/reviews/');
+    expect(agents).toContain('create_my_review');
     expect(agents).toContain('- demo');
     expect(agents).toContain('## 目录结构');
     expect(agents).not.toContain('DONE');

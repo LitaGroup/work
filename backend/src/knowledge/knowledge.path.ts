@@ -168,8 +168,10 @@ export function isSystemManagedKnowledgePath(path: string): boolean {
   );
 }
 
-/** 北京时间 yyyyMMdd，用于系统目录按创建日期归档 */
-export function beijingDateStamp(value: Date | string): string {
+/** 北京时间日期时间片段（统一使用两位数字，便于拼装系统路径） */
+function beijingStampParts(
+  value: Date | string,
+): (type: Intl.DateTimeFormatPartTypes) => string {
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) {
     throw new Error(`非法日期：${String(value)}`);
@@ -179,10 +181,24 @@ export function beijingDateStamp(value: Date | string): string {
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
   }).formatToParts(date);
-  const read = (type: Intl.DateTimeFormatPartTypes): string =>
-    parts.find((part) => part.type === type)?.value ?? '';
+  return (type) => parts.find((part) => part.type === type)?.value ?? '';
+}
+
+/** 北京时间 yyyyMMdd，用于系统目录按创建日期归档 */
+export function beijingDateStamp(value: Date | string): string {
+  const read = beijingStampParts(value);
   return `${read('year')}${read('month')}${read('day')}`;
+}
+
+/** 北京时间 yyyyMMddHHmmss，用于机器人会话复盘文件名 */
+export function beijingDateTimeStamp(value: Date | string): string {
+  const read = beijingStampParts(value);
+  return `${read('year')}${read('month')}${read('day')}${read('hour')}${read('minute')}${read('second')}`;
 }
 
 /** 任务记录目录：/98-tasks/{yyyyMMdd}/{数字任务ID} */
@@ -224,6 +240,16 @@ export function systemWorkerRootPath(workerId: number): string {
 /** 机器人对话交付与临时文档目录：/95-workspace/{机器人ID} */
 export function workerWorkspaceRootPath(workerId: number): string {
   return `${WORKER_WORKSPACE_ROOT}/${workerId}`;
+}
+
+/** 机器人会话复盘目录：/95-workspace/{机器人ID}/reviews */
+export function workerReviewsRootPath(workerId: number): string {
+  return `${workerWorkspaceRootPath(workerId)}/reviews`;
+}
+
+/** 单篇复盘知识路径：/95-workspace/{机器人ID}/reviews/{yyyyMMddHHmmss} */
+export function workerReviewPath(workerId: number, name: string): string {
+  return `${workerReviewsRootPath(workerId)}/${name}`;
 }
 
 export function systemTaskDefinitionRootPath(templateId: number): string {

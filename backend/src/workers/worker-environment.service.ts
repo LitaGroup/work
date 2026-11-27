@@ -135,6 +135,13 @@ export function buildTaskCollaborationAgents(
 - PDF、Excel、ZIP 等非 Markdown 文件使用 \`upload_file\` 并返回其公共 URL；知识工作区只存 Markdown 知识文章。
 - 工作区根目录由平台维护；子目录和文章可用 \`create_knowledge\` / \`update_knowledge\` / \`delete_knowledge\` 正常维护，建议按日期或用途建立子目录。
 
+### 个人会话复盘
+
+- 复盘目录：\`${workspace}/reviews/\`。用户要求总结复盘，或本次对话形成明确、可复用的经验时，先自行整理，再调用 lita-work MCP 的 \`create_my_review\` 保存；不要逐轮自动生成。
+- 复盘应精炼记录背景、问题或弯路、原因、有效做法与可复用经验，不要整段复制原始对话，不要写入令牌、Secret 或隐私凭据。
+- 只管理自己的复盘：\`list_my_reviews\` / \`read_my_review\` / \`create_my_review\` / \`update_my_review\`。复盘由平台生成路径，修改时不要移动、重命名或删除。
+- 保存成功后把工具返回的「网页」地址拼上平台地址发给用户；复盘默认长期保留，只有平台开启清理时才按保留期删除。
+
 ### 任务状态与动作
 
 - 待分配 → 待接受：平台按任务定义分配机器人并发送邀约。

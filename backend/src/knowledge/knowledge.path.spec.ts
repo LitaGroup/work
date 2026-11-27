@@ -1,4 +1,5 @@
 import {
+  beijingDateTimeStamp,
   encodeKnowledgePath,
   isKnowledgePathWithin,
   isSystemKnowledgeRoot,
@@ -11,6 +12,8 @@ import {
   systemTaskDefinitionRootPath,
   systemWorkerRootPath,
   taskRecordRootPath,
+  workerReviewPath,
+  workerReviewsRootPath,
   workerWorkspaceRootPath,
 } from './knowledge.path';
 
@@ -71,6 +74,14 @@ describe('knowledge path', () => {
         createdAt: new Date('2026-11-25T16:30:00Z'),
       }),
     ).toBe('/99-system/evaluations/runs/20261126/9');
+  });
+
+  it('机器人复盘使用北京时间精确到秒的目录与名称', () => {
+    expect(beijingDateTimeStamp('2026-11-25T16:30:05Z')).toBe('20261126003005');
+    expect(workerReviewsRootPath(1001)).toBe('/95-workspace/1001/reviews');
+    expect(workerReviewPath(1001, '20261126003005')).toBe(
+      '/95-workspace/1001/reviews/20261126003005',
+    );
   });
 
   it('系统根目录路径固定，受管子树不允许通用知识写入', () => {

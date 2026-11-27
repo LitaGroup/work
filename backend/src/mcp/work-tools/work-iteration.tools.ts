@@ -4,6 +4,8 @@ import { z } from 'zod';
 import {
   MANUAL_BACKLOG_MEMBER_ROLES,
   BacklogStatus,
+  IterationStatus,
+  IterationType,
   UserRole,
 } from '../../common/enums';
 import type { BacklogMemberRole } from '../../common/enums';
@@ -22,6 +24,40 @@ const BacklogMemberRoleArg = z
 const BacklogStatusArg = z
   .enum(Object.values(BacklogStatus) as [BacklogStatus, ...BacklogStatus[]])
   .describe('迭代项状态：等待/执行/测试/发布/完成/取消');
+
+const IterationTypeArg = z
+  .enum(Object.values(IterationType) as [IterationType, ...IterationType[]])
+  .describe('迭代类型：T0 常驻快速通道 / T7 每周通道 / Tx 特殊通道');
+
+const IterationStatusArg = z
+  .enum(
+    Object.values(IterationStatus) as [IterationStatus, ...IterationStatus[]],
+  )
+  .describe('迭代状态：进行中 / 已结束');
+
+/** 迭代项成员入参：role + 机器人（workerId 直接选，或 userId/name 选真人映射其真人机器人） */
+const BacklogMemberInputArg = z.object({
+  role: BacklogMemberRoleArg,
+  workerId: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe('机器人 ID（workers.id，AI 或真人机器人）'),
+  userId: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe(
+      '平台用户 ID（真人，映射其为真人机器人；与 workerId/name 三选一）',
+    ),
+  name: z
+    .string()
+    .min(1)
+    .optional()
+    .describe('平台用户姓名（真人；多个顿号连接可一次添加多人）'),
+});
 
 /**
  * 迭代项（Backlog）：读取详情、维护成员与属性、状态流转、移动迭代、
@@ -68,6 +104,28 @@ export class WorkIterationTools implements WorkToolRegistrar {
         executeTool(this.logger, 'get_iteration', principal, async () =>
           markdownResult(
             await this.iterations.findOneMarkdown(args.iterationId),
+          ),
+        ),
+    );
+
+    server.registerTool(
+      'list_iterations',
+      {
+        title: '迭代清单',
+        description:
+          '读取迭代清单 Markdown（T0 置顶，其余按开始日期倒序，含迭代项进度）：用于选择转入/移动迭代项的目标迭代 ID。',
+        inputSchema: {
+          type: IterationTypeArg.optional(),
+          status: IterationStatusArg.optional(),
+        },
+      },
+      async (args) =>
+        executeTool(this.logger, 'list_iterations', principal, async () =>
+          markdownResult(
+            await this.iterations.listMarkdown({
+              type: args.type,
+              status: args.status,
+            }),
           ),
         ),
     );
@@ -219,6 +277,65 @@ export class WorkIterationTools implements WorkToolRegistrar {
           );
           return markdownResult(
             await this.backlogs.findOneMarkdown(backlog.id),
+          );
+        }),
+    );
+
+    server.registerTool(
+      'create_backlogs',
+      {
+        title: '需求批量转入迭代',
+        description:
+          '把需求池中的需求批量转入指定迭代（仅管理员；迭代须未结束，同一需求不能存在未取消迭代项）。负责人可暂不指定，指定后按负责人创建交付任务；成员支持 role + workerId/userId/name（真人与 AI 机器人）。返回新建迭代项的 Markdown 清单与详情。',
+        inputSchema: {
+          iterationId: z
+            .number()
+            .int()
+            .positive()
+            .describe('目标迭代 ID（可从 list_iterations 获取）'),
+          items: z
+            .array(
+              z.object({
+                projectId: z
+                  .number()
+                  .int()
+                  .positive()
+                  .describe('需求 ID（projects.id）'),
+                ownerWorkerId: z
+                  .number()
+                  .int()
+                  .positive()
+                  .optional()
+                  .describe('负责人机器人 ID（可空，暂不指定）'),
+                members: z
+                  .array(BacklogMemberInputArg)
+                  .optional()
+                  .describe('手动成员列表（可选）'),
+              }),
+            )
+            .min(1)
+            .describe('转入的需求（至少 1 个）'),
+        },
+      },
+      async (args) =>
+        executeTool(this.logger, 'create_backlogs', principal, async () => {
+          const created = await this.backlogs.createBatch(
+            args.iterationId,
+            args.items.map((item) => ({
+              projectId: item.projectId,
+              ownerWorkerId: item.ownerWorkerId ?? null,
+              members: item.members,
+            })),
+            iterationActorOf(principal),
+          );
+          const summary = created
+            .map((backlog) => `- ${backlog.code} ${backlog.title}`)
+            .join('\n');
+          const details = await Promise.all(
+            created.map((backlog) => this.backlogs.findOneMarkdown(backlog.id)),
+          );
+          return markdownResult(
+            `# 已转入迭代\n\n${summary}\n\n---\n\n${details.join('\n\n---\n\n')}`,
           );
         }),
     );

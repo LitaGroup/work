@@ -13,6 +13,7 @@ import { KnowledgeIndexService } from './knowledge-index.service';
 import { KnowledgeService } from './knowledge.service';
 import { KnowledgeStore } from './knowledge.store';
 import { SystemKnowledgeService } from './system-knowledge.service';
+import { WorkerReviewsService } from './worker-reviews.service';
 
 @Module({
   imports: [
@@ -35,7 +36,8 @@ import { SystemKnowledgeService } from './system-knowledge.service';
     KnowledgeIndexService,
     KnowledgeService,
     SystemKnowledgeService,
+    WorkerReviewsService,
   ],
-  exports: [KnowledgeService, SystemKnowledgeService],
+  exports: [KnowledgeService, SystemKnowledgeService, WorkerReviewsService],
 })
 export class KnowledgeModule {}

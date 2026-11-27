@@ -8,6 +8,7 @@ import { WorkFileTools } from './work-tools/work-file.tools';
 import { WorkGithubTools } from './work-tools/work-github.tools';
 import { WorkIdeaTools } from './work-tools/work-idea.tools';
 import { WorkKnowledgeTools } from './work-tools/work-knowledge.tools';
+import { WorkReviewTools } from './work-tools/work-review.tools';
 import { WorkProjectTools } from './work-tools/work-project.tools';
 import { WorkRunTools } from './work-tools/work-run.tools';
 import { WorkTaskTools } from './work-tools/work-task.tools';
@@ -41,6 +42,7 @@ export class McpWorkService {
     projectTools: WorkProjectTools,
     runTools: WorkRunTools,
     knowledgeTools: WorkKnowledgeTools,
+    reviewTools: WorkReviewTools,
     defectTools: WorkDefectTools,
     feedbackTools: WorkFeedbackTools,
     ideaTools: WorkIdeaTools,
@@ -59,6 +61,7 @@ export class McpWorkService {
       projectTools,
       runTools,
       knowledgeTools,
+      reviewTools,
       defectTools,
       feedbackTools,
       ideaTools,
