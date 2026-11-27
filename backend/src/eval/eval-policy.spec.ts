@@ -31,7 +31,9 @@ describe('评估模式权限策略（TECH_DESIGN 9.4）', () => {
     expect(classifyEvalTool('feishu_send_message', {}, ctx).decision).toBe(
       'block',
     );
-    expect(classifyEvalTool('create_project', {}, ctx).decision).toBe('block');
+    expect(classifyEvalTool('create_requirement', {}, ctx).decision).toBe(
+      'block',
+    );
     expect(classifyEvalTool('create_document', {}, ctx).decision).toBe('block');
     expect(classifyEvalTool('sync_feishu_document', {}, ctx).decision).toBe(
       'block',

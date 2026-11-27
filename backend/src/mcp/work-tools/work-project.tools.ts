@@ -27,33 +27,37 @@ export class WorkProjectTools implements WorkToolRegistrar {
 
   register(server: McpServer, principal: McpWorkPrincipal): void {
     server.registerTool(
-      'search_projects',
+      'list_requirements',
       {
-        title: '搜索项目',
+        title: '需求清单',
         description:
-          '按项目名称模糊搜索，返回匹配度排序的前 5 个项目（名称/类型/状态/id/更新时间与详情入口）。不知道项目 id 时先搜索。',
+          '按需求名称模糊搜索，返回匹配度排序的前 5 个需求（名称/类型/状态/id/更新时间与详情入口）。不知道需求 id 时先调用。',
         inputSchema: {
-          query: z.string().min(1).describe('项目名称关键词'),
+          query: z.string().min(1).describe('需求名称关键词'),
         },
       },
       async (args) =>
-        executeTool(this.logger, 'search_projects', principal, async () =>
+        executeTool(this.logger, 'list_requirements', principal, async () =>
           markdownResult(await this.projects.searchMarkdown(args.query)),
         ),
     );
 
     server.registerTool(
-      'get_project',
+      'get_requirement',
       {
         title: '需求详情',
         description:
           '获取需求基本详情：元信息、描述、对应的迭代（含已取消历史迭代项）与文档资料清单，末尾附需求级 AI 操作端点。研发操作请使用脚本运行、缺陷、提测等对应工具。',
         inputSchema: {
-          projectId: z.number().int().positive().describe('项目 ID'),
+          projectId: z
+            .number()
+            .int()
+            .positive()
+            .describe('需求 ID（projects.id）'),
         },
       },
       async (args) =>
-        executeTool(this.logger, 'get_project', principal, async () =>
+        executeTool(this.logger, 'get_requirement', principal, async () =>
           markdownResult(
             await this.projects.findOneRequirementMarkdown(args.projectId),
           ),
@@ -61,13 +65,17 @@ export class WorkProjectTools implements WorkToolRegistrar {
     );
 
     server.registerTool(
-      'update_project',
+      'update_requirement',
       {
-        title: '更新项目配置',
+        title: '更新需求配置',
         description:
-          '仅更新本地字段：脚本目录、Markdown 描述、需求方、涉及方、备注。只更新提供的字段，空串清除；类型/状态/优先级等来自飞书同步，不要通过本工具修改。',
+          '仅更新需求本地字段：脚本目录、Markdown 描述、需求方、涉及方、备注。只更新提供的字段，空串清除；类型/状态/优先级等来自飞书同步，不要通过本工具修改。',
         inputSchema: {
-          projectId: z.number().int().positive().describe('项目 ID'),
+          projectId: z
+            .number()
+            .int()
+            .positive()
+            .describe('需求 ID（projects.id）'),
           scriptsPath: z
             .string()
             .optional()
@@ -75,7 +83,7 @@ export class WorkProjectTools implements WorkToolRegistrar {
           description: z
             .string()
             .optional()
-            .describe('项目描述（Markdown），空串清除'),
+            .describe('需求描述（Markdown），空串清除'),
           owner: z
             .string()
             .optional()
@@ -95,13 +103,13 @@ export class WorkProjectTools implements WorkToolRegistrar {
         },
       },
       async ({ projectId, ...dto }) =>
-        executeTool(this.logger, 'update_project', principal, async () =>
+        executeTool(this.logger, 'update_requirement', principal, async () =>
           markdownResult(await this.projects.updateMarkdown(projectId, dto)),
         ),
     );
 
     server.registerTool(
-      'create_project',
+      'create_requirement',
       {
         title: '创建需求',
         description:
@@ -120,7 +128,7 @@ export class WorkProjectTools implements WorkToolRegistrar {
         },
       },
       async (args) =>
-        executeTool(this.logger, 'create_project', principal, async () => {
+        executeTool(this.logger, 'create_requirement', principal, async () => {
           const project = await this.projects.create({
             name: args.name,
             type: args.type,

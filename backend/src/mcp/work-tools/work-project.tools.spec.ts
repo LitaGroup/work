@@ -57,10 +57,10 @@ describe('WorkProjectTools', () => {
   it('注册需求/文档工具', () => {
     const { tools } = buildTools();
     expect([...tools.keys()]).toEqual([
-      'search_projects',
-      'get_project',
-      'update_project',
-      'create_project',
+      'list_requirements',
+      'get_requirement',
+      'update_requirement',
+      'create_requirement',
       'read_document',
       'upsert_document',
       'sync_apipost_document',
@@ -71,9 +71,9 @@ describe('WorkProjectTools', () => {
     ]);
   });
 
-  it('search_projects 返回 service 的 Markdown 正文', async () => {
+  it('list_requirements 返回 service 的 Markdown 正文', async () => {
     const { tools, projects } = buildTools();
-    const result = (await tools.get('search_projects')!({ query: 'pk' })) as {
+    const result = (await tools.get('list_requirements')!({ query: 'pk' })) as {
       content: { text: string }[];
       isError?: boolean;
     };
@@ -82,9 +82,9 @@ describe('WorkProjectTools', () => {
     expect(result.content[0].text).toBe('# 搜索结果');
   });
 
-  it('update_project 透传本地字段', async () => {
+  it('update_requirement 透传本地字段', async () => {
     const { tools, projects } = buildTools();
-    await tools.get('update_project')!({
+    await tools.get('update_requirement')!({
       projectId: 9,
       owner: '张三',
       remark: 'P0',
@@ -95,9 +95,9 @@ describe('WorkProjectTools', () => {
     });
   });
 
-  it('create_project 创建需求并返回需求 Markdown', async () => {
+  it('create_requirement 创建需求并返回需求 Markdown', async () => {
     const { tools, projects } = buildTools();
-    const result = (await tools.get('create_project')!({
+    const result = (await tools.get('create_requirement')!({
       name: 'PK 活动优化',
       type: '功能',
       expectedReleaseAt: '2026-12-01',
@@ -113,9 +113,9 @@ describe('WorkProjectTools', () => {
     expect(result.content[0].text).toBe('# 需求详情');
   });
 
-  it('create_project 缺省字段原样传递（由服务层补默认值）', async () => {
+  it('create_requirement 缺省字段原样传递（由服务层补默认值）', async () => {
     const { tools, projects } = buildTools();
-    await tools.get('create_project')!({ name: '快速记录' });
+    await tools.get('create_requirement')!({ name: '快速记录' });
     expect(projects.create).toHaveBeenCalledWith({
       name: '快速记录',
       type: undefined,
@@ -183,7 +183,7 @@ describe('WorkProjectTools', () => {
   it('工具失败返回 isError 与原始错误信息', async () => {
     const { tools, projects } = buildTools();
     projects.searchMarkdown.mockRejectedValueOnce(new Error('数据库不可用'));
-    const result = (await tools.get('search_projects')!({ query: 'pk' })) as {
+    const result = (await tools.get('list_requirements')!({ query: 'pk' })) as {
       content: { text: string }[];
       isError?: boolean;
     };

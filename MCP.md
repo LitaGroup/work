@@ -84,7 +84,7 @@ Claude Code 的 `--header`、Codex 的 `bearer_token_env_var` 均见下文各节
 
 | 分类 | 代表工具 |
 |---|---|
-| 需求 / 文档 | `search_projects`、`get_project`、`create_project`、`update_project`、`read_document`、`upsert_document`、`create_document`、`sync_feishu_document`、`sync_apipost_document`、`update_document_remark`、`delete_document` |
+| 需求 / 文档 | `list_requirements`、`get_requirement`、`create_requirement`、`update_requirement`、`read_document`、`upsert_document`、`create_document`、`sync_feishu_document`、`sync_apipost_document`、`update_document_remark`、`delete_document` |
 | 迭代项 | `get_backlog`、`get_iteration`（迭代详情）、`list_iterations`（迭代清单）、`create_backlogs`（需求批量转入迭代，仅管理员）、`update_backlog_members`（管理员或负责人整体替换成员）、`update_backlog`（预期上线/负责人改派）、`change_backlog_status`、`move_backlog`、`create_backlog_task`、`create_backlog_release`（批量提测：每个迭代项建提测工单+提测记录，提测群通知由工单节点发送） |
 | 运行 / 脚本 | `run_check`、`run_test`、`run_export`、`run_schedule`、`get_run`、`list_runs`、`import_scripts` |
 | 知识库 | `search_knowledge`、`list_knowledge_dir`、`read_knowledge`、`create_knowledge`、`update_knowledge`、`delete_knowledge`、`read_feishu_doc` |
@@ -378,7 +378,7 @@ codex mcp list
 ```bash
 export LITA_WORK_TOKEN="<你的机器人令牌>"
 
-# lita-work：应返回 search_projects / get_task 等工具
+# lita-work：应返回 list_requirements / get_task 等工具
 curl -sS -X POST http://work.cinta.team/api/mcp/work \
   -H "Authorization: Bearer $LITA_WORK_TOKEN" \
   -H 'Content-Type: application/json' \
@@ -412,7 +412,7 @@ curl -sS -X POST http://proxy.cinta.team/mcp \
 ### 7.2 Agent 内验证
 
 1. 让 Agent 列出可用 MCP 工具，应看到各服务的工具；
-2. `lita-work`：调用 `search_projects` 或 `list_my_tasks`；
+2. `lita-work`：调用 `list_requirements` 或 `list_my_tasks`；
 3. `lita-work-admin`（仅管理员）：调用 `list_workers` 或 `list_eval_suites`；
 4. `lita-bots`：调用 `list_bots`，应返回机器人清单；
 5. `lita-proxy`：调用 `list_resources`，应返回当前机器人有权访问的资源。

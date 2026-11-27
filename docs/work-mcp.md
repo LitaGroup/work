@@ -89,10 +89,10 @@ claude mcp add --transport http lita-work http://your-host:3100/api/mcp/work \
 
 | 工具 | 主要入参 | 说明 |
 |---|---|---|
-| `search_projects` | `query` | 按名称模糊搜索需求，返回前 5 个 |
-| `get_project` | `projectId` | 需求基本信息（描述 / 对应的迭代 / 文档资料清单与需求级 AI 操作入口） |
-| `create_project` | `name`、`type?`、`expectedReleaseAt?`、`description?` | 在需求池新建需求；摘要/描述为空时后台自动生成 |
-| `update_project` | `projectId`、`scriptsPath?`、`description?`、`owner?`、`involvedParties?`、`remark?` | 仅更新平台本地字段（脚本目录/描述/需求方/涉及方/备注） |
+| `list_requirements` | `query` | 按名称模糊搜索需求，返回前 5 个 |
+| `get_requirement` | `projectId` | 需求基本信息（描述 / 对应的迭代 / 文档资料清单与需求级 AI 操作入口） |
+| `create_requirement` | `name`、`type?`、`expectedReleaseAt?`、`description?` | 在需求池新建需求；摘要/描述为空时后台自动生成 |
+| `update_requirement` | `projectId`、`scriptsPath?`、`description?`、`owner?`、`involvedParties?`、`remark?` | 仅更新平台本地字段（脚本目录/描述/需求方/涉及方/备注） |
 | `read_document` | `documentId` | 文档元信息 + Markdown 正文 |
 | `upsert_document` | `projectId`、`fileName`、`content`、`title?`、`type?`、`description?` | 按 `(projectId, fileName)` upsert |
 | `create_document` | `projectId`、`title`、`type`、`content?`、`url?` | 显式新建文档（不按 fileName 判重）；传 `url` 创建链接型设计文档 |

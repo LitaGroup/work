@@ -71,9 +71,9 @@ const WRITE_TOOLS = new Set([
   'update_task_definition',
   'delete_task_definition',
   // 项目 / 文档 / 知识库 / 缺陷 / 提测 / 代码分支 写（创建、更新、删除、运行检查等）
-  'create_project',
-  'update_project',
-  'delete_project',
+  'create_requirement',
+  'update_requirement',
+  'delete_requirement',
   'create_document',
   'update_document',
   'upsert_document',
