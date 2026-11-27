@@ -374,7 +374,7 @@ claude mcp add --transport http lita-work http://your-host:3100/api/mcp/work \
 | 现象 | 原因与处理 |
 |---|---|
 | 401 缺少鉴权 / 无效令牌 | 检查 `Authorization: Bearer`（或 `X-Agent-Token` / `X-Worker-Token` / `?token=`）；令牌可能已被重置，去个人中心重新复制并更新 `LITA_WORK_TOKEN` |
-| 工具返回 403（系统知识） | `/98-tasks/**`、`/01-backlogs/**`、`/99-system/**` 受管知识由对应业务维护，请通过任务、文档或管理页面修改 |
+| 工具返回 403（系统知识） | `/98-tasks/**`、`/01-backlogs/**` 与 `/99-system/workers|task-definitions|evaluations/**` 受管镜像由对应业务或平台自动同步维护，请通过任务、文档或管理页面修改；`/99-system` 下人工资料可正常读写 |
 | `lita-work` 返回未知工具（机器人/任务定义/测试集） | 管理类工具已迁 `lita-work-admin`，且仅管理员令牌可用 |
 | `lita-work-admin` 返回 403 | 当前令牌不是公共 Agent，或绑定的真人不是管理员；AI 机器人令牌与评估令牌不可用 |
 | `upload_file` 失败 | 检查 base64 是否为空、文件是否超过 50MB |

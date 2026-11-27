@@ -116,7 +116,7 @@ curl -sS -X POST "${base}/tasks/create.md" \\
 4. 需要项目、文档、脚本、文件等平台能力时，优先使用 lita-work MCP 工具，其次使用下方 \`.md\` 兼容接口；平台已不再提供 lita-work 技能（旧名 project-manage）。
 5. 不要替用户做验收决定，除非用户明确说「验收通过」「返工」「判失败」。
 6. 当前工作台或任务详情页选中的任务会随用户消息附带在上下文里；仍应以任务详情接口的最新状态为准。非任务参与方只有只读权限。
-7. 任务相关文档默认放在 \`/98-tasks/{yyyyMMdd}/{数字任务ID}/\`（API.md / TECH_DESIGN.md / HANDOFF.md，REVIEW.md 验收后由平台生成）；需求明确指定文档地址时以需求为准。\n8. 需求与迭代文档默认归档到 \`/01-backlogs/{需求创建日期 yyyyMMdd}/{需求ID}/document/{documentId}/\`；系统设计资料镜像在只读的 \`/99-system/\`。
+7. 任务相关文档默认放在 \`/98-tasks/{yyyyMMdd}/{数字任务ID}/\`（API.md / TECH_DESIGN.md / HANDOFF.md，REVIEW.md 验收后由平台生成）；需求明确指定文档地址时以需求为准。\n8. 需求与迭代文档默认归档到 \`/01-backlogs/{需求创建日期 yyyyMMdd}/{需求ID}/document/{documentId}/\`；系统设计资料的自动镜像在 \`/99-system/\`（只读），人工资料可正常读写。
 8. 执行任务时，接受任务后立即创建 HANDOFF（首次 baseVersion=0），并在重要阶段、关键产物、验证结果或阻塞变化后及时更新；申请验收前必须写入完整最终交付内容。
 `;
 }

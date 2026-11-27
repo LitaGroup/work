@@ -4,11 +4,6 @@ import { z } from 'zod';
 import { FeishuService } from '../../feishu/feishu.service';
 import { KnowledgeService } from '../../knowledge/knowledge.service';
 import { assertSystemKnowledgeWritable } from '../../knowledge/system-knowledge.guard';
-import {
-  assertCanManageSystemKnowledge,
-  assertCanReadSystemKnowledge,
-  knowledgeSearchExcludes,
-} from '../../knowledge/knowledge.access';
 import { isSystemKnowledgeRoot } from '../../knowledge/knowledge.path';
 import { executeTool, markdownResult } from './work-tools.util';
 import type { McpWorkPrincipal, WorkToolRegistrar } from './work-tools.types';
@@ -45,7 +40,6 @@ export class WorkKnowledgeTools implements WorkToolRegistrar {
       },
       async (args) =>
         executeTool(this.logger, 'search_knowledge', principal, async () => {
-          if (args.path) assertCanReadSystemKnowledge(principal, args.path);
           return markdownResult(
             this.knowledge.renderSearchMarkdown(
               await this.knowledge.search({
@@ -53,7 +47,6 @@ export class WorkKnowledgeTools implements WorkToolRegistrar {
                 path: args.path,
                 page: args.page,
                 pageSize: args.pageSize,
-                excludePaths: knowledgeSearchExcludes(principal),
               }),
             ),
           );
@@ -75,11 +68,8 @@ export class WorkKnowledgeTools implements WorkToolRegistrar {
       async (args) =>
         executeTool(this.logger, 'list_knowledge_dir', principal, async () => {
           const path = args.path ?? '/';
-          assertCanReadSystemKnowledge(principal, path);
           return markdownResult(
-            await this.knowledge.renderDirectoryMarkdown(path, {
-              excludePaths: knowledgeSearchExcludes(principal),
-            }),
+            await this.knowledge.renderDirectoryMarkdown(path),
           );
         }),
     );
@@ -89,14 +79,13 @@ export class WorkKnowledgeTools implements WorkToolRegistrar {
       {
         title: '读取知识文章',
         description:
-          '读取指定知识路径的完整 Markdown 文章（含需求文档 /01-backlogs/**、任务文档 /98-tasks/** 与系统镜像 /99-system/**，均只读）。',
+          '读取指定知识路径的完整 Markdown 文章（含需求文档 /01-backlogs/**、任务文档 /98-tasks/** 与系统设计资料 /99-system/**）。',
         inputSchema: {
           path: z.string().min(1).describe('知识路径（不带 .md 后缀）'),
         },
       },
       async (args) =>
         executeTool(this.logger, 'read_knowledge', principal, async () => {
-          assertCanReadSystemKnowledge(principal, args.path);
           return markdownResult(
             this.knowledge.renderArticleMarkdown(
               await this.knowledge.readArticle(args.path),
@@ -110,7 +99,7 @@ export class WorkKnowledgeTools implements WorkToolRegistrar {
       {
         title: '创建知识',
         description:
-          '创建知识文章或目录：parentPath 目录必须存在，路径冲突返回 400。机器人对话交付可写 /95-workspace/{机器人ID}/**（根目录与机器人 ID 目录由平台维护）；/01-backlogs/**、/98-tasks/** 与 /99-system/** 受管内容只读。',
+          '创建知识文章或目录：parentPath 目录必须存在，路径冲突返回 400。机器人对话交付可写 /95-workspace/{机器人ID}/**（根目录与机器人 ID 目录由平台维护）；`/99-system/` 下人工系统设计资料可正常读写；`/01-backlogs/**`、`/98-tasks/**` 与 `/99-system/workers|task-definitions|evaluations/**` 的受管镜像只读。',
         inputSchema: {
           kind: z.enum(['directory', 'article']).describe('节点类型'),
           parentPath: z.string().optional().describe('父目录绝对路径，缺省 /'),
@@ -124,7 +113,6 @@ export class WorkKnowledgeTools implements WorkToolRegistrar {
       },
       async (args) =>
         executeTool(this.logger, 'create_knowledge', principal, async () => {
-          assertCanManageSystemKnowledge(principal, args.parentPath);
           assertSystemKnowledgeWritable(args.parentPath);
           const node = await this.knowledge.create({
             kind: args.kind,
@@ -154,8 +142,6 @@ export class WorkKnowledgeTools implements WorkToolRegistrar {
       async (args) =>
         executeTool(this.logger, 'update_knowledge', principal, async () => {
           const current = await this.knowledge.getNodeByPath(args.path);
-          assertCanManageSystemKnowledge(principal, current.path);
-          assertCanManageSystemKnowledge(principal, args.parentPath);
           assertSystemKnowledgeWritable(
             isSystemKnowledgeRoot(current.path) ? undefined : current.path,
             args.parentPath,
@@ -188,7 +174,6 @@ export class WorkKnowledgeTools implements WorkToolRegistrar {
       },
       async (args) =>
         executeTool(this.logger, 'delete_knowledge', principal, async () => {
-          assertCanManageSystemKnowledge(principal, args.path);
           assertSystemKnowledgeWritable(args.path);
           const node = await this.knowledge.getNodeByPath(args.path);
           await this.knowledge.remove(node.id, args.recursive === true);

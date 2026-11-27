@@ -63,9 +63,7 @@ describe('KnowledgeController routes', () => {
       .get('/api/docs/detail/guides/')
       .expect(200);
     expect((res.body as { path: string }).path).toBe('/guides');
-    expect(service.readDirectory).toHaveBeenCalledWith('/guides', {
-      excludePaths: ['/99-system'],
-    });
+    expect(service.readDirectory).toHaveBeenCalledWith('/guides');
   });
 
   it('文章 JSON 不带结尾 /', async () => {
@@ -90,9 +88,7 @@ describe('KnowledgeController routes', () => {
       .get('/api/docs/detail/guides/.md')
       .expect(200);
     expect(res.headers['content-type']).toContain('text/markdown');
-    expect(service.renderDirectoryMarkdown).toHaveBeenCalledWith('/guides', {
-      excludePaths: ['/99-system'],
-    });
+    expect(service.renderDirectoryMarkdown).toHaveBeenCalledWith('/guides');
   });
 
   it('根目录支持 JSON 与 /.md', async () => {
@@ -102,12 +98,8 @@ describe('KnowledgeController routes', () => {
     await request(app.getHttpServer() as Server)
       .get('/api/docs/detail/.md')
       .expect(200);
-    expect(service.readDirectory).toHaveBeenCalledWith('/', {
-      excludePaths: ['/99-system'],
-    });
-    expect(service.renderDirectoryMarkdown).toHaveBeenCalledWith('/', {
-      excludePaths: ['/99-system'],
-    });
+    expect(service.readDirectory).toHaveBeenCalledWith('/');
+    expect(service.renderDirectoryMarkdown).toHaveBeenCalledWith('/');
   });
 
   it('拒绝编码斜杠，防止一个路径段被当成多级目录', async () => {
@@ -170,6 +162,43 @@ describe('KnowledgeController routes', () => {
         .send({
           path: '/task/20261102/TK-0001/HANDOFF',
           content: '绕过任务中心直接改版本',
+        })
+        .expect(403);
+      expect(service.update).not.toHaveBeenCalled();
+    });
+
+    it('/99-system 人工系统设计资料允许直接读写', async () => {
+      service.getNodeByPath.mockResolvedValue({
+        ...node,
+        path: '/99-system/star2026/rules',
+      });
+      service.update.mockResolvedValue({
+        ...node,
+        path: '/99-system/star2026/rules',
+      });
+      service.renderNodeUpdatedMarkdown.mockReturnValue('# 已更新');
+      await request(app.getHttpServer() as Server)
+        .post('/api/docs/nodes/update.md')
+        .send({ path: '/99-system/star2026/rules', content: '# 规则' })
+        .expect(200);
+      expect(service.update).toHaveBeenCalledWith('node-1', {
+        title: undefined,
+        content: '# 规则',
+        name: undefined,
+        parentPath: undefined,
+      });
+    });
+
+    it('/99-system 受管镜像仍禁止通用写入', async () => {
+      service.getNodeByPath.mockResolvedValue({
+        ...node,
+        path: '/99-system/evaluations/suites/3/README',
+      });
+      await request(app.getHttpServer() as Server)
+        .post('/api/docs/nodes/update.md')
+        .send({
+          path: '/99-system/evaluations/suites/3/README',
+          content: '篡改评测镜像',
         })
         .expect(403);
       expect(service.update).not.toHaveBeenCalled();

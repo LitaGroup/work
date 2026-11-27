@@ -754,7 +754,7 @@ export class KnowledgeService {
       '',
       '> `/95-workspace` 根目录及机器人 ID 目录由平台维护；`/95-workspace/{机器人ID}/**` 的普通知识可读写。',
       '>',
-      '> `/01-backlogs/**`、`/98-tasks/**` 与 `/99-system/**` 的受管内容由业务流程维护，只读，不能通过上述接口修改或删除。',
+      '> `/01-backlogs/**`、`/98-tasks/**` 与 `/99-system/workers|task-definitions|evaluations/**` 的受管镜像由业务流程或平台自动同步维护，只读，不能通过上述接口修改或删除；`/99-system` 下的人工系统设计资料可正常读写。',
       '',
     ].join('\n');
   }

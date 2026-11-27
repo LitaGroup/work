@@ -216,7 +216,7 @@
 - 系统级知识目录固定为 `/01-backlogs/`（需求迭代）、`/95-workspace/`（机器人工作区）、`/98-tasks/`（任务记录）、`/99-system/`（系统设计）：路径、名称和父目录不可修改，不可删除，只允许修改展示标题；服务启动时确保存在且不覆盖用户改过的标题。旧 `/project/**`、`/task/**` 保留只读别名用于迁移后旧链接访问。
 - `/95-workspace/{机器人ID}/` 是每个机器人的专属交付工作区，平台在机器人配置同步和工位初始化时幂等创建，机器人删除后保留已有文档。目录本身由平台维护（`source=system`，子目录和文章可写），机器人交付 Markdown 文档或临时文本时应写入此处，并以 `/docs/detail/95-workspace/{机器人ID}/...` 网页地址分享；任务/需求/迭代已有归档规则的文档仍写各自业务目录。PDF/Excel/ZIP 等非 Markdown 文件走 `upload_file`，不存入知识库。
 - `/95-workspace/{机器人ID}/reviews/{yyyyMMddHHmmss}` 是机器人个人会话复盘：机器人用 `create_my_review` / `update_my_review` 维护自己的经验总结，`list_my_reviews` / `read_my_review` 查询；管理员用 `lita-work-admin` 的 `list_worker_reviews` / `read_worker_review` 查询其它机器人复盘。复盘默认不自动删除；`WORKER_REVIEWS_CLEANUP_ENABLED=true` 时每日清理创建时间超过 `WORKER_REVIEWS_RETENTION_DAYS`（默认 365 天）的文章，目录本身保留。任务 `REVIEW` 复盘仍由任务中心维护，两者不要混用。
-- `/01-backlogs/**` 是需求文档系统镜像，`/98-tasks/**` 是任务交付/复盘文档目录，均只读，分别走文档和任务流程。`/99-system/workers/{id}/README`、`/99-system/task-definitions/{id}/README`、`/99-system/evaluations/{suites|runs}/.../README` 为机器人设定、任务定义和机器人评测的自动只读镜像，不包含令牌、Secret、MCP 凭据、执行日志或原始工具调用。`/99-system/**` 仅管理员可读取、维护和搜索命中；普通成员与普通机器人浏览、搜索时隐藏该系统目录，避免验证集 Prompt、评分要点和返工提示泄露。
+- `/01-backlogs/**` 是需求文档系统镜像，`/98-tasks/**` 是任务交付/复盘文档目录，均只读，分别走文档和任务流程。`/99-system/workers/{id}/README`、`/99-system/task-definitions/{id}/README`、`/99-system/evaluations/{suites|runs}/.../README` 为机器人设定、任务定义和机器人评测的自动只读镜像，不包含令牌、Secret、MCP 凭据、执行日志或原始工具调用。知识库读取对所有登录身份（网页用户、机器人、评估令牌）开放，`/99-system/**` 不再做管理员读取限制；三个受管镜像子树仍由平台自动同步，通用知识接口不可写，`/99-system` 下人工维护的系统设计资料可正常读写。
 - Agent 知识写操作按 path 定位；目录与文章的 URL 规则不可混淆。
 - 飞书云文档实时搜索已下线，不要恢复为搜索依赖；飞书文档仍可通过只读转换接口导入。
 
