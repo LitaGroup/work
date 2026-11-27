@@ -36,6 +36,7 @@ import {
   FeishuBotMessageService,
   mapTextAnswer,
 } from './feishu-bot-message.service';
+import { isFeishuNewSessionCommand } from './feishu-bot-command';
 
 /** 「正在处理」表情回应（敲键盘）；飞书表情 key 不支持时自动降级为无回应 */
 export const TYPING_EMOJI = 'Typing';
@@ -66,6 +67,8 @@ interface P2PRun {
   userId: number;
   workerId: number;
   scope: string;
+  /** 会话代次：/new 后旧轮次和迟到回调全部失效 */
+  generation: number;
   chatId: string;
   incomingMessageId: string;
   reactionId: string | null;
@@ -102,6 +105,8 @@ export class FeishuBotP2PService {
   private readonly logger = new Logger(FeishuBotP2PService.name);
   /** 进行中的一轮会话：configId:chatId → run */
   private readonly runs = new Map<string, P2PRun>();
+  /** 会话代次：configId:scope → generation，/new 时递增 */
+  private readonly sessionGenerations = new Map<string, number>();
 
   constructor(
     private readonly client: FeishuBotClientService,
@@ -124,6 +129,27 @@ export class FeishuBotP2PService {
     const receiveId = message.chatId;
     const runKey = `${config.id}:${message.chatId}`;
     const active = this.runs.get(runKey);
+
+    // /new 优先于待答问题与 busy 判断：立即作废旧轮次并重置当前私聊会话
+    if (message.messageType === 'text' || message.messageType === 'post') {
+      const { text: commandText } = await this.inboundContent(
+        config,
+        secrets,
+        message,
+        { skipMedia: true },
+      );
+      if (isFeishuNewSessionCommand(commandText)) {
+        await this.handleNewSessionCommand(
+          config,
+          secrets,
+          user,
+          message,
+          active,
+          runKey,
+        );
+        return;
+      }
+    }
 
     // 有待回答提问时，文本/附件优先作为答案
     if (active?.pendingQuestion) {
@@ -237,6 +263,7 @@ export class FeishuBotP2PService {
       userId: user.id,
       workerId,
       scope,
+      generation: this.sessionGenerationOf(config.id, scope),
       chatId: message.chatId,
       incomingMessageId: message.messageId,
       reactionId: reaction.reactionId,
@@ -261,7 +288,8 @@ export class FeishuBotP2PService {
         });
       }
     } catch (error) {
-      this.runs.delete(runKey);
+      if (run.settled || !this.isCurrentGeneration(run)) return;
+      if (this.runs.get(runKey) === run) this.runs.delete(runKey);
       if (reaction.reactionId) {
         await this.client.unreact(
           config.id,
@@ -283,7 +311,110 @@ export class FeishuBotP2PService {
       );
       return;
     }
+    if (run.settled || !this.isCurrentGeneration(run)) return;
     this.waitForRun(run, secrets, runKey);
+  }
+
+  /**
+   * `/new`：中断并作废当前轮次，重置该飞书私聊的会话。
+   * 自定义机器人重置绑定 Worker；官方机器人重置发送者的个人 AGENT。
+   */
+  private async handleNewSessionCommand(
+    config: FeishuBotConfig,
+    secrets: FeishuBotSecrets,
+    user: User,
+    message: FeishuInboundMessage,
+    active: P2PRun | undefined,
+    runKey: string,
+  ): Promise<void> {
+    const scope = `feishu:p2p:${message.chatId}`;
+    let reset: () => Promise<unknown>;
+    try {
+      if (config.kind === 'official') {
+        const agent = await this.personalAgents.ensureForUser(user);
+        if (!agent) {
+          await this.client.sendText(
+            config.id,
+            secrets,
+            'chat_id',
+            message.chatId,
+            '个人 AGENT 尚未就绪（需要平台配置可用的执行器与模型）；请稍后重试或在工作台检查配置。',
+          );
+          return;
+        }
+        reset = () => this.personalAgents.reset(user, null, scope);
+      } else {
+        const worker = await this.workers.findOne({
+          where: { id: config.workerId ?? 0 },
+        });
+        if (!worker || !worker.enabled || !isAgentRuntime(worker.runtime)) {
+          await this.client.sendText(
+            config.id,
+            secrets,
+            'chat_id',
+            message.chatId,
+            '该机器人当前不可用（未启用或非 AI 运行时）。',
+          );
+          return;
+        }
+        reset = () => this.debug.reset(user.id, worker.id, scope);
+      }
+    } catch (error) {
+      await this.client.sendText(
+        config.id,
+        secrets,
+        'chat_id',
+        message.chatId,
+        `新会话创建失败：${(error as Error).message}`,
+      );
+      return;
+    }
+
+    // 必须先退订旧轮次：reset 的空快照会被旧 waitForRun 误判为失败终态
+    const hadActive = Boolean(active);
+    this.bumpSessionGeneration(config.id, scope);
+    if (active) await this.cancelRun(active, secrets, runKey);
+    await this.expirePendingCards(config.id, scope);
+    try {
+      await reset();
+    } catch (error) {
+      await this.client.sendText(
+        config.id,
+        secrets,
+        'chat_id',
+        message.chatId,
+        `新会话创建失败：${(error as Error).message}`,
+      );
+      return;
+    }
+    await this.client
+      .sendText(
+        config.id,
+        secrets,
+        'chat_id',
+        message.chatId,
+        hadActive
+          ? '已中断上一轮并开启新会话，下一条消息将使用全新上下文。'
+          : '已开启新会话，下一条消息将使用全新上下文。',
+      )
+      .catch((error: Error) =>
+        this.logger.warn(`飞书新会话确认发送失败: ${error.message}`),
+      );
+  }
+
+  private sessionGenerationOf(configId: number, scope: string): number {
+    return this.sessionGenerations.get(`${configId}:${scope}`) ?? 0;
+  }
+
+  private bumpSessionGeneration(configId: number, scope: string): void {
+    this.sessionGenerations.set(
+      `${configId}:${scope}`,
+      this.sessionGenerationOf(configId, scope) + 1,
+    );
+  }
+
+  private isCurrentGeneration(run: P2PRun): boolean {
+    return this.sessionGenerationOf(run.configId, run.scope) === run.generation;
   }
 
   /** 发送通用提示文本（身份引导/系统提示等） */
@@ -362,6 +493,7 @@ export class FeishuBotP2PService {
       userId: card.userId,
       workerId: card.workerId,
       scope: card.scope,
+      generation: this.sessionGenerationOf(config.id, card.scope),
       chatId,
       incomingMessageId: '',
       reactionId: null,
@@ -658,6 +790,7 @@ export class FeishuBotP2PService {
     secrets: FeishuBotSecrets,
     runKey: string,
   ): void {
+    if (run.settled || !this.isCurrentGeneration(run)) return;
     const state = initialRunState();
     const sentQuestionIds = new Set<string>();
     const subscription = this.debug
@@ -665,6 +798,7 @@ export class FeishuBotP2PService {
       .subscribe({
         next: ({ data }: { data: DebugStreamPayload }) => {
           if (run.settled || data.type !== 'snapshot' || !data.snapshot) return;
+          if (!this.isCurrentGeneration(run)) return;
           const snapshot = data.snapshot;
           const questions = pendingQuestionsOf(snapshot.messages);
           if (questions.length > 0) {
@@ -738,6 +872,7 @@ export class FeishuBotP2PService {
     sentQuestionIds: Set<string>,
   ): Promise<void> {
     for (const group of groups) {
+      if (run.settled || !this.isCurrentGeneration(run)) return;
       if (sentQuestionIds.has(group.id)) continue;
       sentQuestionIds.add(group.id);
       const questions: FeishuBotCardQuestion[] = group.questions.map((q) => ({
@@ -761,6 +896,10 @@ export class FeishuBotP2PService {
           questions,
         }),
       );
+      if (run.settled) {
+        await this.cards.update({ id: card.id }, { state: 'expired' });
+        return;
+      }
       const result = await this.messages.sendQuestionCard(
         run.configId,
         secrets,
@@ -771,6 +910,10 @@ export class FeishuBotP2PService {
         questions,
       );
       await this.cards.update({ id: card.id }, { messageId: result.messageId });
+      if (run.settled) {
+        await this.cards.update({ id: card.id }, { state: 'expired' });
+        return;
+      }
       run.cards.set(group.id, card.id);
     }
   }
@@ -784,9 +927,15 @@ export class FeishuBotP2PService {
     error?: string,
   ): void {
     if (run.settled) return;
+    if (!this.isCurrentGeneration(run)) {
+      run.settled = true;
+      this.cleanup(run, runKey);
+      return;
+    }
     run.settled = true;
     this.cleanup(run, runKey);
     void (async () => {
+      if (!this.isCurrentGeneration(run)) return;
       const body = error
         ? `${content ? `${content}\n\n` : ''}⚠️ ${error}`
         : content || '（本轮没有产生回复）';
@@ -879,6 +1028,33 @@ export class FeishuBotP2PService {
     }
   }
 
+  /** 作废旧轮次：停止跟进、撤下处理中表情，旧终态不再回传飞书 */
+  private async cancelRun(
+    run: P2PRun,
+    secrets: FeishuBotSecrets,
+    runKey: string,
+  ): Promise<void> {
+    run.settled = true;
+    run.pendingQuestion = null;
+    this.cleanup(run, runKey);
+    if (!run.reactionId) return;
+    await this.client
+      .unreact(run.configId, secrets, run.incomingMessageId, run.reactionId)
+      .catch(() => {});
+  }
+
+  /** 新会话后旧提问卡片不可再恢复或提交 */
+  private async expirePendingCards(
+    configId: number,
+    scope: string,
+  ): Promise<void> {
+    await this.cards
+      .update({ configId, scope, state: 'pending' }, { state: 'expired' })
+      .catch((error: Error) =>
+        this.logger.warn(`飞书旧提问卡片失效失败: ${error.message}`),
+      );
+  }
+
   /** 退订流与定时器，并从运行表移除 */
   private cleanup(
     run: P2PRun,
@@ -887,7 +1063,7 @@ export class FeishuBotP2PService {
   ): void {
     (subscription ?? run.subscription)?.unsubscribe();
     if (run.timeout) clearTimeout(run.timeout);
-    this.runs.delete(runKey);
+    if (this.runs.get(runKey) === run) this.runs.delete(runKey);
   }
 }
 

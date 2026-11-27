@@ -995,6 +995,8 @@ export class WorkerDebugService implements OnModuleInit, OnModuleDestroy {
       : await this.initialModelOf(userId, workerId, context);
     this.sessions.delete(key);
     this.clearPersistTimer(key);
+    // 丢弃 reset 前排队但尚未推送的旧快照，避免新会话订阅后收到旧上下文
+    this.clearUpdateTimer(key);
     await this.debugSessions
       .delete({ userId, workerId, contextKey: scope })
       .catch((error: Error) => {
@@ -2133,6 +2135,15 @@ export class WorkerDebugService implements OnModuleInit, OnModuleDestroy {
     if (!timer) return;
     clearTimeout(timer);
     this.persistTimers.delete(key);
+  }
+
+  private clearUpdateTimer(key: string): void {
+    const timer = this.updateTimers.get(key);
+    if (timer) {
+      clearTimeout(timer);
+      this.updateTimers.delete(key);
+    }
+    this.pendingUpdates.delete(key);
   }
 
   /** 会话快照落库（同一 key 串行，避免并发插入唯一键冲突） */

@@ -9,7 +9,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Cron } from '@nestjs/schedule';
 import { mkdir, writeFile } from 'fs/promises';
 import { dirname } from 'path';
-import { FindOptionsWhere, In, LessThan, Repository } from 'typeorm';
+import { FindOptionsWhere, In, IsNull, LessThan, Repository } from 'typeorm';
 import type { User } from '../auth/user.entity';
 import { isAgentRuntime } from '../common/worker-runtime';
 import { fileWebroot } from '../common/paths';
@@ -57,6 +57,10 @@ import {
 } from './feishu-bot-message.service';
 import type { FeishuInboundMessage } from './feishu-bot-p2p.service';
 import { TYPING_EMOJI } from './feishu-bot-p2p.service';
+import {
+  FEISHU_NEW_SESSION_COMMAND,
+  isFeishuNewSessionCommand,
+} from './feishu-bot-command';
 import { FeishuBotProjectChat } from './feishu-bot-project-chat.entity';
 import type { FeishuSenderId } from './feishu-bot-identity.service';
 import { FeishuBotIdentityService } from './feishu-bot-identity.service';
@@ -190,6 +194,8 @@ interface GroupRun {
   chatId: string;
   workerId: number;
   scope: string;
+  /** 会话代次：/new 后旧轮次、旧批次和迟到回调全部失效 */
+  generation: number;
   /** 入站消息所属话题 id（非话题消息为 null） */
   threadId: string | null;
   /** 回执回复目标消息 id（话题/引用消息为触发消息，普通消息为 null=群发） */
@@ -229,6 +235,8 @@ interface GroupBatch {
   chatId: string;
   threadId: string | null;
   scope: string;
+  /** 创建批次时的会话代次，/new 后不再投递 */
+  generation: number;
   /** 批次生效策略（决定投递提示词与静默语义） */
   policy: FeishuBotGroupPolicy;
   /** 反馈采集批次对应的平台反馈 ID（智能批次为 null） */
@@ -486,6 +494,8 @@ export class FeishuBotGroupChatService {
   private readonly batches = new Map<string, GroupBatch>();
   /** 正在构建批次的群（避免同群并发 flush） */
   private readonly flushingChats = new Set<string>();
+  /** 会话代次：configId:scope → generation，/new 时递增 */
+  private readonly sessionGenerations = new Map<string, number>();
 
   constructor(
     private readonly configs: FeishuBotConfigService,
@@ -624,6 +634,36 @@ export class FeishuBotGroupChatService {
       return;
     }
 
+    // 反馈采集群的非话题消息不收录，也没有可重置的话题会话
+    if (policy === 'feedback' && !threadId) {
+      await this.markDecision(record.id, 'record_only');
+      return;
+    }
+
+    const botOpenId =
+      policy === 'at' ? await this.ensureBotOpenId(config, secrets) : null;
+    const mentioned =
+      policy === 'at' && groupBotMentioned(message.mentions, botOpenId);
+    if (policy === 'at' && !mentioned) {
+      await this.markDecision(record.id, 'not_mentioned');
+      return;
+    }
+
+    // /new 在待答题、busy、反馈收录和智能批次之前处理
+    if (extracted.supported && isFeishuNewSessionCommand(extracted.text)) {
+      await this.handleNewSessionCommand(
+        config,
+        secrets,
+        group,
+        worker,
+        message,
+        threadId,
+        replyToMessageId,
+        record,
+      );
+      return;
+    }
+
     // 反馈采集模式：话题消息先由平台确定性收录（首帖建反馈并英文回执链接、自动创建处理任务），再按批次交给机器人
     if (policy === 'feedback') {
       await this.handleFeedbackMessage(
@@ -643,13 +683,6 @@ export class FeishuBotGroupChatService {
 
     const runKey = `${config.id}:${message.chatId}`;
     const active = this.runs.get(runKey);
-
-    const botOpenId = await this.ensureBotOpenId(config, secrets);
-    const mentioned = groupBotMentioned(message.mentions, botOpenId);
-    if (policy === 'at' && !mentioned) {
-      await this.markDecision(record.id, 'not_mentioned');
-      return;
-    }
 
     // 有待回答提问时，文本优先作为答案（仅限同一话题；@ 模式仅响应对机器人的 @）
     if (active?.pendingQuestion && active.threadId === threadId) {
@@ -750,6 +783,7 @@ export class FeishuBotGroupChatService {
       const history = await this.historyPrompt(
         config,
         secrets,
+        group.id,
         message.chatId,
         threadId,
         message.messageId,
@@ -776,6 +810,10 @@ export class FeishuBotGroupChatService {
       chatId: message.chatId,
       workerId: worker.id,
       scope: groupScopeOf(message.chatId, threadId),
+      generation: this.sessionGenerationOf(
+        config.id,
+        groupScopeOf(message.chatId, threadId),
+      ),
       threadId,
       replyToMessageId,
       policy,
@@ -799,7 +837,8 @@ export class FeishuBotGroupChatService {
         }),
       });
     } catch (error) {
-      this.runs.delete(runKey);
+      if (run.settled) return;
+      if (this.runs.get(runKey) === run) this.runs.delete(runKey);
       if (reaction.reactionId) {
         await this.client.unreact(
           config.id,
@@ -822,7 +861,75 @@ export class FeishuBotGroupChatService {
       await this.markDecision(record.id, 'error', (error as Error).message);
       return;
     }
+    if (
+      run.settled ||
+      !this.isCurrentGeneration(run.configId, run.scope, run.generation)
+    ) {
+      return;
+    }
     this.waitForRun(run, secrets, runKey);
+  }
+
+  /**
+   * `/new`：作废当前群/话题的旧轮次与待处理批次，再重置对应会话。
+   * 同群其它话题的运行与批次不受影响。
+   */
+  private async handleNewSessionCommand(
+    config: FeishuBotConfig,
+    secrets: FeishuBotSecrets,
+    group: FeishuBotGroup,
+    worker: Worker,
+    message: FeishuInboundMessage,
+    threadId: string | null,
+    replyToMessageId: string | null,
+    record: FeishuBotGroupRecord,
+  ): Promise<void> {
+    const scope = groupScopeOf(message.chatId, threadId);
+    const runKey = `${config.id}:${message.chatId}`;
+    const active = this.runs.get(runKey);
+    const sameScopeRun = active?.scope === scope ? active : undefined;
+    const hadActive = Boolean(sameScopeRun);
+    this.bumpSessionGeneration(config.id, scope);
+    if (sameScopeRun) await this.cancelRun(sameScopeRun, secrets, runKey);
+    await this.discardBatch(config.id, message.chatId, threadId);
+    await this.expirePendingCards(config.id, scope);
+    try {
+      await this.debug.reset(FEISHU_GROUP_SESSION_OWNER_ID, worker.id, scope);
+    } catch (error) {
+      await this.sendTextTo(
+        config.id,
+        secrets,
+        message.chatId,
+        replyToMessageId,
+        `新会话创建失败：${(error as Error).message}`,
+      );
+      await this.markDecision(record.id, 'error', (error as Error).message);
+      return;
+    }
+
+    const paused = feishuGroupSendPaused();
+    const content = hadActive
+      ? '已中断上一轮并开启新会话，下一条消息将使用全新上下文。'
+      : '已开启新会话，下一条消息将使用全新上下文。';
+    await this.sendTextTo(
+      config.id,
+      secrets,
+      message.chatId,
+      replyToMessageId,
+      content,
+    );
+    if (!paused) {
+      await this.writeRecord({
+        configId: config.id,
+        groupId: group.id,
+        kind: 'reply',
+        threadId,
+        content,
+      }).catch((error: Error) => {
+        this.logger.warn(`飞书群新会话确认记录写入失败: ${error.message}`);
+      });
+    }
+    await this.markDecision(record.id, paused ? 'silent' : 'replied');
   }
 
   // ==== 反馈采集模式 ====
@@ -977,6 +1084,10 @@ export class FeishuBotGroupChatService {
         chatId: message.chatId,
         threadId,
         scope: groupScopeOf(message.chatId, threadId),
+        generation: this.sessionGenerationOf(
+          config.id,
+          groupScopeOf(message.chatId, threadId),
+        ),
         policy,
         feedbackId: options?.feedbackId ?? null,
         messages: [],
@@ -1027,6 +1138,47 @@ export class FeishuBotGroupChatService {
     batch.timer = null;
   }
 
+  private generationKeyOf(configId: number, scope: string): string {
+    return `${configId}:${scope}`;
+  }
+
+  private sessionGenerationOf(configId: number, scope: string): number {
+    return (
+      this.sessionGenerations.get(this.generationKeyOf(configId, scope)) ?? 0
+    );
+  }
+
+  private bumpSessionGeneration(configId: number, scope: string): void {
+    this.sessionGenerations.set(
+      this.generationKeyOf(configId, scope),
+      this.sessionGenerationOf(configId, scope) + 1,
+    );
+  }
+
+  private isCurrentGeneration(
+    configId: number,
+    scope: string,
+    generation: number,
+  ): boolean {
+    return this.sessionGenerationOf(configId, scope) === generation;
+  }
+
+  /** 丢弃当前群/话题尚未投递的批次，其它话题保持不变 */
+  private async discardBatch(
+    configId: number,
+    chatId: string,
+    threadId: string | null,
+  ): Promise<void> {
+    const key = batchKeyOf(configId, chatId, threadId);
+    const batch = this.batches.get(key);
+    if (!batch) return;
+    this.clearBatchTimer(batch);
+    this.batches.delete(key);
+    for (const item of batch.messages) {
+      await this.markDecision(item.recordId, 'silent');
+    }
+  }
+
   /**
    * 处理一个批次：同群有运行中的轮次时等待（结束后会再次触发），
    * 否则把批次消息拼成一条提示词投递给执行器。
@@ -1035,6 +1187,16 @@ export class FeishuBotGroupChatService {
     const batch = this.batches.get(key);
     if (!batch || batch.messages.length === 0) {
       this.batches.delete(key);
+      return;
+    }
+    if (
+      !this.isCurrentGeneration(batch.config.id, batch.scope, batch.generation)
+    ) {
+      this.batches.delete(key);
+      this.clearBatchTimer(batch);
+      for (const item of batch.messages) {
+        await this.markDecision(item.recordId, 'silent');
+      }
       return;
     }
     const runKey = `${batch.config.id}:${batch.chatId}`;
@@ -1068,6 +1230,18 @@ export class FeishuBotGroupChatService {
         }
         return;
       }
+      if (
+        !this.isCurrentGeneration(
+          batch.config.id,
+          batch.scope,
+          batch.generation,
+        )
+      ) {
+        for (const item of messages) {
+          await this.markDecision(item.recordId, 'silent');
+        }
+        return;
+      }
       const last = messages[messages.length - 1];
       const run: GroupRun = {
         configId: batch.config.id,
@@ -1075,6 +1249,7 @@ export class FeishuBotGroupChatService {
         chatId: batch.chatId,
         workerId: worker.id,
         scope: batch.scope,
+        generation: batch.generation,
         threadId: batch.threadId,
         replyToMessageId: last.replyToMessageId,
         policy: batch.policy,
@@ -1107,7 +1282,8 @@ export class FeishuBotGroupChatService {
           },
         );
       } catch (error) {
-        this.runs.delete(runKey);
+        if (this.runs.get(runKey) === run) this.runs.delete(runKey);
+        if (run.settled) return;
         for (const item of messages) {
           await this.markDecision(
             item.recordId,
@@ -1124,6 +1300,23 @@ export class FeishuBotGroupChatService {
             ? '上一条消息仍在处理中，请稍候再发送。'
             : `消息处理失败：${(error as Error).message}`,
         );
+        return;
+      }
+      if (
+        run.settled ||
+        !this.isCurrentGeneration(run.configId, run.scope, run.generation)
+      ) {
+        const currentRun = this.runs.get(runKey);
+        if (currentRun === run) this.runs.delete(runKey);
+        // 命令在投递窗口内到达：没有更新的轮次时再次清空被旧批次写入的会话
+        if (!currentRun || currentRun === run) {
+          await this.debug
+            .reset(FEISHU_GROUP_SESSION_OWNER_ID, worker.id, run.scope)
+            .catch(() => undefined);
+        }
+        for (const item of messages) {
+          await this.markDecision(item.recordId, 'silent');
+        }
         return;
       }
       this.waitForRun(run, batch.secrets, runKey);
@@ -1606,6 +1799,7 @@ export class FeishuBotGroupChatService {
       chatId,
       workerId: card.workerId,
       scope: card.scope,
+      generation: this.sessionGenerationOf(config.id, card.scope),
       threadId: threadIdOfGroupScope(card.scope),
       replyToMessageId: null,
       policy: resolveGroupPolicy(group.policy, defaultPolicy),
@@ -1757,6 +1951,12 @@ export class FeishuBotGroupChatService {
     secrets: FeishuBotSecrets,
     runKey: string,
   ): void {
+    if (
+      run.settled ||
+      !this.isCurrentGeneration(run.configId, run.scope, run.generation)
+    ) {
+      return;
+    }
     const state = initialRunState();
     const sentQuestionIds = new Set<string>();
     const subscription = this.debug
@@ -1764,6 +1964,11 @@ export class FeishuBotGroupChatService {
       .subscribe({
         next: ({ data }: { data: DebugStreamPayload }) => {
           if (run.settled || data.type !== 'snapshot' || !data.snapshot) return;
+          if (
+            !this.isCurrentGeneration(run.configId, run.scope, run.generation)
+          ) {
+            return;
+          }
           const snapshot = data.snapshot;
           const questions = pendingQuestionsOf(snapshot.messages);
           if (questions.length > 0) {
@@ -1835,6 +2040,12 @@ export class FeishuBotGroupChatService {
     // 暂停期间不发群提问卡片（不创建待答卡片，避免恢复后出现无主卡片）
     if (feishuGroupSendPaused()) return;
     for (const group of groups) {
+      if (
+        run.settled ||
+        !this.isCurrentGeneration(run.configId, run.scope, run.generation)
+      ) {
+        return;
+      }
       if (sentQuestionIds.has(group.id)) continue;
       sentQuestionIds.add(group.id);
       const questions: FeishuBotCardQuestion[] = group.questions.map((q) => ({
@@ -1858,6 +2069,13 @@ export class FeishuBotGroupChatService {
           questions,
         }),
       );
+      if (
+        run.settled ||
+        !this.isCurrentGeneration(run.configId, run.scope, run.generation)
+      ) {
+        await this.cards.update({ id: card.id }, { state: 'expired' });
+        return;
+      }
       try {
         const result = await this.messages.sendQuestionCard(
           run.configId,
@@ -1873,6 +2091,13 @@ export class FeishuBotGroupChatService {
           { id: card.id },
           { messageId: result.messageId },
         );
+        if (
+          run.settled ||
+          !this.isCurrentGeneration(run.configId, run.scope, run.generation)
+        ) {
+          await this.cards.update({ id: card.id }, { state: 'expired' });
+          return;
+        }
       } catch (error) {
         await this.cards.update({ id: card.id }, { state: 'expired' });
         this.logger.warn(
@@ -1893,9 +2118,21 @@ export class FeishuBotGroupChatService {
     error?: string,
   ): void {
     if (run.settled) return;
+    if (!this.isCurrentGeneration(run.configId, run.scope, run.generation)) {
+      run.settled = true;
+      this.cleanup(run, runKey);
+      return;
+    }
     run.settled = true;
     this.cleanup(run, runKey);
     void (async () => {
+      if (!this.isCurrentGeneration(run.configId, run.scope, run.generation)) {
+        if (run.recordId) await this.markDecision(run.recordId, 'silent');
+        for (const recordId of run.recordIds ?? []) {
+          await this.markDecision(recordId, 'silent');
+        }
+        return;
+      }
       if (run.reactionId) {
         await this.client.unreact(
           run.configId,
@@ -1944,6 +2181,15 @@ export class FeishuBotGroupChatService {
           ? segments
           : [{ targetMessageId: null, content: body }];
       for (const segment of replies) {
+        if (
+          !this.isCurrentGeneration(run.configId, run.scope, run.generation)
+        ) {
+          if (run.recordId) await this.markDecision(run.recordId, 'silent');
+          for (const recordId of run.recordIds ?? []) {
+            await this.markDecision(recordId, 'silent');
+          }
+          return;
+        }
         const target =
           segment.targetMessageId ?? run.replyToMessageId ?? undefined;
         try {
@@ -2025,12 +2271,35 @@ export class FeishuBotGroupChatService {
   }
 
   /**
+   * 最近一次成功 `/new` 的时间水位：命令记录已持久化，
+   * 服务重启后仍能阻止旧飞书原生消息重新进入新会话。
+   */
+  private async resetWatermarkOf(
+    groupId: number,
+    threadId: string | null,
+  ): Promise<number> {
+    const row = await this.records
+      .findOne({
+        where: {
+          groupId,
+          threadId: threadId ?? IsNull(),
+          content: FEISHU_NEW_SESSION_COMMAND,
+          decision: In(['replied', 'silent']),
+        },
+        order: { id: 'DESC' },
+      })
+      .catch(() => null);
+    return row?.createdAt?.getTime() ?? 0;
+  }
+
+  /**
    * 上文提示词：仅被 @ 策略下补拉最近消息（话题内拉话题、普通群拉群聊），
    * 只保留机器人最后一次回复之后的消息；接口失败时返回空串，不阻断本轮回复。
    */
   private async historyPrompt(
     config: FeishuBotConfig,
     secrets: FeishuBotSecrets,
+    groupId: number,
     chatId: string,
     threadId: string | null,
     currentMessageId: string,
@@ -2047,10 +2316,19 @@ export class FeishuBotGroupChatService {
       return [];
     });
     if (rows.length === 0) return '';
+    const resetAfter = await this.resetWatermarkOf(groupId, threadId);
     const names = new Map<string, string>();
     const entries: { senderName: string; text: string }[] = [];
     for (const row of historySinceBotReply(rows, config.appId)) {
       if (row.messageId === currentMessageId) continue;
+      // /new 之后只补拉新消息，严格切断旧群聊/话题上文
+      if (
+        resetAfter > 0 &&
+        row.createTime > 0 &&
+        row.createTime <= resetAfter
+      ) {
+        continue;
+      }
       const text = historyMessageText(row.messageType, row.content);
       if (!text) continue;
       entries.push({
@@ -2083,6 +2361,37 @@ export class FeishuBotGroupChatService {
     return name;
   }
 
+  /** 作废旧轮次：停止跟进、撤下处理中表情，旧终态不再回传群聊 */
+  private async cancelRun(
+    run: GroupRun,
+    secrets: FeishuBotSecrets,
+    runKey: string,
+  ): Promise<void> {
+    run.settled = true;
+    run.pendingQuestion = null;
+    this.cleanup(run, runKey);
+    if (run.recordId) await this.markDecision(run.recordId, 'silent');
+    for (const recordId of run.recordIds ?? []) {
+      await this.markDecision(recordId, 'silent');
+    }
+    if (!run.reactionId) return;
+    await this.client
+      .unreact(run.configId, secrets, run.incomingMessageId, run.reactionId)
+      .catch(() => {});
+  }
+
+  /** 新会话后旧提问卡片不可再恢复或提交 */
+  private async expirePendingCards(
+    configId: number,
+    scope: string,
+  ): Promise<void> {
+    await this.cards
+      .update({ configId, scope, state: 'pending' }, { state: 'expired' })
+      .catch((error: Error) =>
+        this.logger.warn(`飞书群旧提问卡片失效失败: ${error.message}`),
+      );
+  }
+
   /** 退订流与定时器，并从运行表移除 */
   private cleanup(
     run: GroupRun,
@@ -2091,7 +2400,7 @@ export class FeishuBotGroupChatService {
   ): void {
     (subscription ?? run.subscription)?.unsubscribe();
     if (run.timeout) clearTimeout(run.timeout);
-    this.runs.delete(runKey);
+    if (this.runs.get(runKey) === run) this.runs.delete(runKey);
   }
 }
 

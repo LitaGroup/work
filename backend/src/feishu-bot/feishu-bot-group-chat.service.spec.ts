@@ -262,6 +262,7 @@ describe('FeishuBotGroupChatService 群消息策略', () => {
         Promise.resolve({ ...value, id: 99 }),
       ),
       update: jest.fn(() => Promise.resolve({ affected: 1 })),
+      findOne: jest.fn(() => Promise.resolve(null as unknown)),
     };
     const configs = {
       groupDefaultPolicy: jest.fn(() => Promise.resolve(defaultPolicy)),
@@ -288,6 +289,7 @@ describe('FeishuBotGroupChatService 群消息策略', () => {
       stream: jest.fn(() => EMPTY),
       replyQuestion: jest.fn(() => Promise.resolve({})),
       interrupt: jest.fn(() => Promise.resolve({})),
+      reset: jest.fn(() => Promise.resolve({})),
     };
     const identities = {
       resolve: jest.fn(() =>
@@ -319,6 +321,12 @@ describe('FeishuBotGroupChatService 群消息策略', () => {
     };
     const taskChats = { count: jest.fn(() => Promise.resolve(0)) };
     const projectChats = { count: jest.fn(() => Promise.resolve(0)) };
+    const cards = {
+      findOne: jest.fn(),
+      save: jest.fn(),
+      create: jest.fn(),
+      update: jest.fn(() => Promise.resolve({ affected: 1 })),
+    };
     const service = new FeishuBotGroupChatService(
       configs as never,
       client as never,
@@ -331,12 +339,7 @@ describe('FeishuBotGroupChatService 群消息策略', () => {
       debug as never,
       groups as never,
       records as never,
-      {
-        findOne: jest.fn(),
-        save: jest.fn(),
-        create: jest.fn(),
-        update: jest.fn(),
-      } as never,
+      cards as never,
       taskChats as never,
       projectChats as never,
       workers as never,
@@ -350,6 +353,7 @@ describe('FeishuBotGroupChatService 群消息策略', () => {
       configs,
       taskChats,
       feedback,
+      cards,
     };
   }
 
@@ -646,6 +650,216 @@ describe('FeishuBotGroupChatService 群消息策略', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+
+  describe('/new 命令', () => {
+    it('仅被@策略下重置群会话，不回传模型且记录回复', async () => {
+      const { service, client, debug, records } = setup('at');
+      await service.handleGroupMessage(
+        config(),
+        { appId: 'cli_app' } as never,
+        { openId: 'ou_user', unionId: null },
+        message({
+          content: JSON.stringify({ text: '/new' }),
+          mentions: [{ key: '@_user_1', openId: 'ou_bot', name: '机器人' }],
+        }),
+      );
+      expect(debug.reset).toHaveBeenCalledWith(-1, 5, 'feishu:group:oc_group');
+      expect(debug.send).not.toHaveBeenCalled();
+      expect(client.sendText).toHaveBeenCalledWith(
+        2,
+        expect.anything(),
+        'chat_id',
+        'oc_group',
+        expect.stringContaining('已开启新会话'),
+      );
+      expect(records.update).toHaveBeenCalledWith(
+        { id: 99 },
+        { decision: 'replied' },
+      );
+    });
+
+    it('仅被@策略下未 @ 的 /new 不重置会话', async () => {
+      const { service, debug, records } = setup('at');
+      await service.handleGroupMessage(
+        config(),
+        { appId: 'cli_app' } as never,
+        { openId: 'ou_user', unionId: null },
+        message({ content: JSON.stringify({ text: '/new' }) }),
+      );
+      expect(debug.reset).not.toHaveBeenCalled();
+      expect(records.update).toHaveBeenCalledWith(
+        { id: 99 },
+        { decision: 'not_mentioned' },
+      );
+    });
+
+    it('话题内只重置当前话题并以回复形式确认', async () => {
+      const { service, client, debug } = setup('at');
+      await service.handleGroupMessage(
+        config(),
+        { appId: 'cli_app' } as never,
+        { openId: 'ou_user', unionId: null },
+        message({
+          content: JSON.stringify({ text: '/new' }),
+          threadId: 'omt_1',
+          mentions: [{ key: '@_user_1', openId: 'ou_bot', name: '机器人' }],
+        }),
+      );
+      expect(debug.reset).toHaveBeenCalledWith(
+        -1,
+        5,
+        'feishu:group:oc_group:t:omt_1',
+      );
+      expect(client.replyText).toHaveBeenCalledWith(
+        2,
+        expect.anything(),
+        'om_1',
+        expect.stringContaining('已开启新会话'),
+      );
+    });
+
+    it('智能模式 /new 不进入批量缓冲且清理旧批次', async () => {
+      jest.useFakeTimers();
+      try {
+        const { service, debug } = setup('smart');
+        await service.handleGroupMessage(
+          config(),
+          { appId: 'cli_app' } as never,
+          { openId: 'ou_user', unionId: null },
+          message({
+            messageId: 'om_old',
+            content: JSON.stringify({ text: '上一条普通消息' }),
+          }),
+        );
+        await service.handleGroupMessage(
+          config(),
+          { appId: 'cli_app' } as never,
+          { openId: 'ou_user', unionId: null },
+          message({
+            messageId: 'om_new',
+            content: JSON.stringify({ text: '/new' }),
+          }),
+        );
+        await jest.advanceTimersByTimeAsync(5_000);
+        expect(debug.reset).toHaveBeenCalledWith(
+          -1,
+          5,
+          'feishu:group:oc_group',
+        );
+        expect(debug.send).not.toHaveBeenCalled();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('反馈采集话题中的 /new 不收录反馈', async () => {
+      const { service, feedback, debug } = setup('at', 'feedback');
+      await service.handleGroupMessage(
+        config(),
+        { appId: 'cli_app' } as never,
+        { openId: 'ou_user', unionId: null },
+        message({
+          content: JSON.stringify({ text: '/new' }),
+          threadId: 'omt_1',
+        }),
+      );
+      expect(feedback.collect).not.toHaveBeenCalled();
+      expect(debug.reset).toHaveBeenCalledWith(
+        -1,
+        5,
+        'feishu:group:oc_group:t:omt_1',
+      );
+    });
+
+    it('仅记录策略不执行 /new', async () => {
+      const { service, debug } = setup('record');
+      await service.handleGroupMessage(
+        config(),
+        { appId: 'cli_app' } as never,
+        { openId: 'ou_user', unionId: null },
+        message({ content: JSON.stringify({ text: '/new' }) }),
+      );
+      expect(debug.reset).not.toHaveBeenCalled();
+    });
+
+    it('话题 A 的 /new 不中断话题 B 的旧轮次', async () => {
+      const { service, client, debug } = setup('at');
+      const activeRuns = (service as unknown as { runs: Map<string, unknown> })
+        .runs;
+      await service.handleGroupMessage(
+        config(),
+        { appId: 'cli_app' } as never,
+        { openId: 'ou_user', unionId: null },
+        message({
+          messageId: 'om_a',
+          content: JSON.stringify({ text: '话题 A 消息' }),
+          threadId: 'omt_a',
+          mentions: [{ key: '@_user_1', openId: 'ou_bot', name: '机器人' }],
+        }),
+      );
+      await service.handleGroupMessage(
+        config(),
+        { appId: 'cli_app' } as never,
+        { openId: 'ou_user', unionId: null },
+        message({
+          messageId: 'om_b',
+          content: JSON.stringify({ text: '/new' }),
+          threadId: 'omt_b',
+          mentions: [{ key: '@_user_1', openId: 'ou_bot', name: '机器人' }],
+        }),
+      );
+      expect(debug.reset).toHaveBeenCalledWith(
+        -1,
+        5,
+        'feishu:group:oc_group:t:omt_b',
+      );
+      expect(activeRuns.size).toBe(1);
+      expect(client.unreact).not.toHaveBeenCalled();
+    });
+
+    it('/new 之后的 @ 补拉只包含命令之后的消息', async () => {
+      const { service, client, debug, records } = setup('at');
+      records.findOne.mockResolvedValue({
+        id: 200,
+        content: '/new',
+        decision: 'replied',
+        createdAt: new Date(2_000),
+      });
+      client.listThreadMessages.mockResolvedValue([
+        {
+          messageId: 'om_old',
+          messageType: 'text',
+          content: JSON.stringify({ text: '旧话题消息' }),
+          senderOpenId: 'ou_user',
+          senderType: 'user',
+          createTime: 1_000,
+        },
+        {
+          messageId: 'om_recent',
+          messageType: 'text',
+          content: JSON.stringify({ text: '新话题消息' }),
+          senderOpenId: 'ou_user',
+          senderType: 'user',
+          createTime: 3_000,
+        },
+      ]);
+      await service.handleGroupMessage(
+        config(),
+        { appId: 'cli_app' } as never,
+        { openId: 'ou_user', unionId: null },
+        message({
+          messageId: 'om_cur',
+          content: JSON.stringify({ text: '继续讨论' }),
+          threadId: 'omt_1',
+          mentions: [{ key: '@_user_1', openId: 'ou_bot', name: '机器人' }],
+        }),
+      );
+      const debugCalls = debug.send.mock.calls as unknown[][];
+      const prompt = String(debugCalls[0]?.[2]);
+      expect(prompt).toContain('新话题消息');
+      expect(prompt).not.toContain('旧话题消息');
+    });
   });
 
   describe('反馈采集策略', () => {

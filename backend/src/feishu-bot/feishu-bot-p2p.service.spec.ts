@@ -1,4 +1,4 @@
-import { EMPTY } from 'rxjs';
+import { EMPTY, Subject } from 'rxjs';
 import { WorkerRuntime } from '../common/enums';
 import type { FeishuBotConfig } from './feishu-bot-config.entity';
 import {
@@ -34,6 +34,16 @@ describe('FeishuBotP2PService 私聊消息', () => {
     ...over,
   });
 
+  const textMessage = (
+    text: string,
+    over: Partial<FeishuInboundMessage> = {},
+  ) =>
+    message({
+      messageType: 'text',
+      content: JSON.stringify({ text }),
+      ...over,
+    });
+
   function setup() {
     const client = {
       sendText: jest.fn(() => Promise.resolve({ messageId: null })),
@@ -56,10 +66,12 @@ describe('FeishuBotP2PService 私聊消息', () => {
       stream: jest.fn(() => EMPTY),
       replyQuestion: jest.fn(() => Promise.resolve({})),
       interrupt: jest.fn(() => Promise.resolve({})),
+      reset: jest.fn(() => Promise.resolve({})),
     };
     const personalAgents = {
       ensureForUser: jest.fn(() => Promise.resolve({ id: 8 })),
       send: jest.fn(() => Promise.resolve({})),
+      reset: jest.fn(() => Promise.resolve({})),
     };
     const cards = {
       findOne: jest.fn(() => Promise.resolve(null)),
@@ -176,5 +188,129 @@ describe('FeishuBotP2PService 私聊消息', () => {
       expect.stringContaining('附件接收失败'),
     );
     expect(personalAgents.send).not.toHaveBeenCalled();
+  });
+
+  it('/new 重置自定义机器人私聊会话并发送确认', async () => {
+    const { service, client, debug, personalAgents, cards } = setup();
+
+    await service.handleMessage(
+      config(),
+      {} as never,
+      user(),
+      textMessage('/new'),
+    );
+
+    expect(debug.reset).toHaveBeenCalledWith(7, 5, 'feishu:p2p:oc_p2p');
+    expect(cards.update).toHaveBeenCalledWith(
+      { configId: 2, scope: 'feishu:p2p:oc_p2p', state: 'pending' },
+      { state: 'expired' },
+    );
+    expect(debug.send).not.toHaveBeenCalled();
+    expect(personalAgents.send).not.toHaveBeenCalled();
+    expect(client.react).not.toHaveBeenCalled();
+    expect(client.sendText).toHaveBeenCalledWith(
+      2,
+      expect.anything(),
+      'chat_id',
+      'oc_p2p',
+      expect.stringContaining('已开启新会话'),
+    );
+  });
+
+  it('官方机器人 /new 重置发送者的个人 AGENT 会话', async () => {
+    const { service, debug, personalAgents } = setup();
+
+    await service.handleMessage(
+      config({ kind: 'official', workerId: null }),
+      {} as never,
+      user(),
+      textMessage('/new'),
+    );
+
+    expect(personalAgents.reset).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 7 }),
+      null,
+      'feishu:p2p:oc_p2p',
+    );
+    expect(debug.reset).not.toHaveBeenCalled();
+    expect(personalAgents.send).not.toHaveBeenCalled();
+  });
+
+  it('/new 附带其它内容时仍作为普通消息投递', async () => {
+    const { service, debug } = setup();
+
+    await service.handleMessage(
+      config(),
+      {} as never,
+      user(),
+      textMessage('/new 继续分析'),
+    );
+
+    expect(debug.reset).not.toHaveBeenCalled();
+    expect(debug.send).toHaveBeenCalledWith(
+      7,
+      5,
+      '/new 继续分析',
+      expect.objectContaining({ scope: 'feishu:p2p:oc_p2p' }),
+    );
+  });
+
+  it('执行中 /new 优先于 busy，作废旧轮次且不再回传旧结果', async () => {
+    const { service, client, debug, messages } = setup();
+    const events = new Subject<{
+      data: {
+        type: 'snapshot';
+        snapshot: {
+          status: string;
+          messages: Array<Record<string, unknown>>;
+        };
+      };
+    }>();
+    debug.stream.mockReturnValue(events.asObservable());
+
+    const activeRuns = (service as unknown as { runs: Map<string, unknown> })
+      .runs;
+    await service.handleMessage(
+      config(),
+      {} as never,
+      user(),
+      textMessage('先做一件事', { messageId: 'om_first' }),
+    );
+    expect(activeRuns.size).toBe(1);
+
+    await service.handleMessage(
+      config(),
+      {} as never,
+      user(),
+      textMessage('/new', { messageId: 'om_new' }),
+    );
+
+    expect(debug.reset).toHaveBeenCalledWith(7, 5, 'feishu:p2p:oc_p2p');
+    expect(client.sendText).not.toHaveBeenCalledWith(
+      2,
+      expect.anything(),
+      'chat_id',
+      'oc_p2p',
+      expect.stringContaining('正在处理上一条消息'),
+    );
+    expect(activeRuns.size).toBe(0);
+
+    events.next({
+      data: {
+        type: 'snapshot',
+        snapshot: {
+          status: 'idle',
+          messages: [
+            {
+              id: 'assistant:old',
+              role: 'assistant',
+              status: 'complete',
+              content: '旧会话结果',
+            },
+          ],
+        },
+      },
+    });
+    expect(messages.sendMarkdown).not.toHaveBeenCalled();
   });
 });
